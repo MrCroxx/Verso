@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createConcurrencyLimiter } from "../lib/concurrency-limiter";
+import { isDocumentSearchShortcut } from "../lib/keyboard-shortcuts";
 import { deduplicatePageBoundary, normalizeTranslationPayload } from "../lib/translation-layout";
 import { searchTranslationPayload } from "../lib/translation-search";
 
@@ -873,6 +874,7 @@ function BookLibrary({
 
 export default function Home() {
   const fileInput = useRef<HTMLInputElement>(null);
+  const searchInput = useRef<HTMLInputElement>(null);
   const pdfRef = useRef<PdfDocument>();
   const imageCache = useRef(new Map<number, Promise<string>>());
   const inFlight = useRef(new Set<string>());
@@ -983,6 +985,32 @@ export default function Home() {
   useEffect(() => {
     indexedDB.deleteDatabase("verso-translation-cache");
   }, []);
+
+  useEffect(() => {
+    function handleSearchShortcut(event: KeyboardEvent) {
+      if (isDocumentSearchShortcut(event)) {
+        event.preventDefault();
+        setSettingsOpen(false);
+        setLibraryOpen(false);
+        setSidebarOpen(true);
+        setSearchOpen(true);
+        window.requestAnimationFrame(() => {
+          searchInput.current?.focus();
+          searchInput.current?.select();
+        });
+        return;
+      }
+      if (event.key === "Escape" && searchOpen && document.activeElement === searchInput.current) {
+        event.preventDefault();
+        setSearchOpen(false);
+        setSearchLoading(false);
+        searchInput.current?.blur();
+      }
+    }
+
+    window.addEventListener("keydown", handleSearchShortcut);
+    return () => window.removeEventListener("keydown", handleSearchShortcut);
+  }, [searchOpen]);
 
   useEffect(() => {
     const query = searchQuery.trim();
@@ -1395,7 +1423,7 @@ export default function Home() {
                 <div className="search-panel">
                   <div className="search-field">
                     <Search size={15} />
-                    <input autoFocus value={searchQuery} placeholder={messages.searchPlaceholder} aria-label={messages.searchPlaceholder} onChange={(event) => {
+                    <input ref={searchInput} autoFocus value={searchQuery} placeholder={messages.searchPlaceholder} aria-label={messages.searchPlaceholder} onChange={(event) => {
                       const value = event.target.value;
                       setSearchQuery(value);
                       if (!value.trim()) {

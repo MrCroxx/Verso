@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createConcurrencyLimiter } from "../lib/concurrency-limiter.ts";
+import { isDocumentSearchShortcut } from "../lib/keyboard-shortcuts.ts";
 import { deduplicatePageBoundary, normalizeTranslationPayload } from "../lib/translation-layout.ts";
 import { searchTranslationPayload } from "../lib/translation-search.ts";
 
@@ -78,6 +79,13 @@ test("searches source transcription and translated blocks independently", () => 
   assert.deepEqual(matches.map(({ page, kind }) => ({ page, kind })), [{ page: 7, kind: "source" }]);
   assert.deepEqual(translatedMatches.map(({ page, kind }) => ({ page, kind })), [{ page: 7, kind: "translation" }]);
   assert.match(matches[0].snippet, /patient reader/i);
+});
+
+test("recognizes browser find shortcuts without hijacking modified keys", () => {
+  assert.equal(isDocumentSearchShortcut({ key: "f", ctrlKey: true, metaKey: false, altKey: false }), true);
+  assert.equal(isDocumentSearchShortcut({ key: "F", ctrlKey: false, metaKey: true, altKey: false }), true);
+  assert.equal(isDocumentSearchShortcut({ key: "f", ctrlKey: true, metaKey: false, altKey: true }), false);
+  assert.equal(isDocumentSearchShortcut({ key: "g", ctrlKey: true, metaKey: false, altKey: false }), false);
 });
 
 test("preserves list markers and trailing page references from compatible providers", () => {
