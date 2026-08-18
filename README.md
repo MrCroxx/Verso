@@ -80,6 +80,37 @@ on the same network.
 Provider credentials are configured in the application. Translation results,
 uploaded books, and page indexes are not stored in browser caches.
 
+## Docker Deployment
+
+Images for `linux/amd64` and `linux/arm64` are published from the `main` branch
+to `ghcr.io/mrcroxx/verso`. Start the latest image with Docker Compose:
+
+```bash
+docker compose up -d
+```
+
+Then open `http://localhost:3000`. The named `verso-data` volume stores the D1
+database and R2 objects used for uploaded books, page indexes, and translations.
+Back up this volume before replacing or moving the deployment.
+
+The equivalent Docker command is:
+
+```bash
+docker run -d \
+  --name verso \
+  --restart unless-stopped \
+  -p 3000:3000 \
+  -v verso-data:/data \
+  ghcr.io/mrcroxx/verso:latest
+```
+
+To update an existing Compose deployment:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
 ## Validation
 
 ```bash
