@@ -18,12 +18,35 @@ function validKey(key: unknown) {
 export async function GET(request: NextRequest) {
   try {
     const key = request.nextUrl.searchParams.get("key");
-    if (!validKey(key)) return NextResponse.json({ error: "Invalid cache key." }, { status: 400 });
+    if (key !== null) {
+      if (!validKey(key)) return NextResponse.json({ error: "Invalid cache key." }, { status: 400 });
+      const { db } = getStorage();
+      await ensureStorageSchema(db);
+      const row = await db.prepare("SELECT payload FROM translations WHERE cache_key = ?1 LIMIT 1").bind(key).first<{ payload: string }>();
+      return NextResponse.json({ translation: row ? normalizeTranslationPayload(JSON.parse(row.payload)) : null });
+    }
 
+    const documentId = request.nextUrl.searchParams.get("documentId");
+    const suffix = request.nextUrl.searchParams.get("cacheKeySuffix");
+    if (
+      !documentId
+      || documentId.length > 128
+      || !suffix
+      || suffix.length > 1800
+    ) {
+      return NextResponse.json({ error: "Invalid translation cache index request." }, { status: 400 });
+    }
     const { db } = getStorage();
     await ensureStorageSchema(db);
-    const row = await db.prepare("SELECT payload FROM translations WHERE cache_key = ?1 LIMIT 1").bind(key).first<{ payload: string }>();
-    return NextResponse.json({ translation: row ? normalizeTranslationPayload(JSON.parse(row.payload)) : null });
+    const expectedSuffix = `::${suffix}`;
+    const result = await db.prepare(`SELECT DISTINCT page
+      FROM translations
+      WHERE document_id = ?1
+        AND substr(cache_key, -length(?2)) = ?2
+      ORDER BY page`)
+      .bind(documentId, expectedSuffix)
+      .all<{ page: number }>();
+    return NextResponse.json({ pages: result.results.map((row) => Number(row.page)) });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to read translation cache.";
     return NextResponse.json({ error: message }, { status: 503 });

@@ -48,6 +48,7 @@ import { createLatestTaskRegistry } from "../lib/latest-task-registry";
 import { isDocumentSearchShortcut } from "../lib/keyboard-shortcuts";
 import { deduplicatePageBoundary, normalizeTranslationPayload } from "../lib/translation-layout";
 import { searchTranslationPayload } from "../lib/translation-search";
+import { DEFAULT_TYPEWRITER_CHARACTERS_PER_SECOND, typewriterProgress } from "../lib/translation-typewriter";
 import { isPageWorkEnabled } from "../lib/viewport-work";
 
 type PdfDocument = import("pdfjs-dist").PDFDocumentProxy;
@@ -91,7 +92,10 @@ type ProviderSettings = {
 };
 
 type AppSettings = ProviderSettings & {
+  schemaVersion: number;
   smoothScrolling: boolean;
+  translationAnimation: boolean;
+  translationAnimationSpeed: number;
 };
 
 type CloudBook = {
@@ -135,6 +139,8 @@ type TranslationResponse = {
   previousPageRevision?: { page: number; blocks: TranslationBlock[] } | null;
 };
 
+type TranslationSource = "cache" | "api";
+
 type SearchMatch = {
   page: number;
   snippet: string;
@@ -159,6 +165,7 @@ const UI_MESSAGES = {
     retranslate: "重新翻译本页",
     restartTranslation: "停止当前任务并重新翻译本页",
     readingContext: (page: number) => `正在读取第 ${page} 页及相邻上下文`,
+    loadingCachedTranslation: (page: number) => `正在载入第 ${page} 页的缓存译文`,
     retry: "重试",
     settingsDialog: "设置",
     settings: "设置",
@@ -178,6 +185,9 @@ const UI_MESSAGES = {
     crossPageHelp: "每次最多向模型发送连续 3 页；后页可修订上一页未闭合的段落。",
     smoothScrolling: "平滑滚动",
     smoothScrollingHelp: "目录跳转和翻页时播放滚动动画",
+    translationAnimation: "渐变打字效果",
+    translationAnimationHelp: "仅在 API 生成新译文时播放；缓存译文直接显示。",
+    translationAnimationSpeed: (speed: number) => `动画速度 · ${speed} 字/秒`,
     saveSettings: "保存设置",
     libraryDialog: "云端书库",
     cloudLibrary: "云端书库",
@@ -255,6 +265,9 @@ const UI_MESSAGES = {
     navigationReadFailed: "无法读取云端目录",
     navigationWriteFailed: "无法写入云端目录",
     translationRequestFailed: "翻译请求失败",
+    translationCacheHit: "已从云端译文缓存载入",
+    translationApiSucceeded: "API 翻译成功",
+    translationInProgress: "正在读取或生成译文",
     openPdfFailed: (detail: string) => `无法打开这个 PDF：${detail}`,
     openedFromCloud: "已从云端书库打开",
     openCloudFailed: (detail: string) => `无法打开云端 PDF：${detail}`,
@@ -277,6 +290,7 @@ const UI_MESSAGES = {
     retranslate: "Translate this page again",
     restartTranslation: "Stop the current task and translate this page again",
     readingContext: (page: number) => `Reading page ${page} and adjacent context`,
+    loadingCachedTranslation: (page: number) => `Loading cached translation for page ${page}`,
     retry: "Retry",
     settingsDialog: "Settings",
     settings: "Settings",
@@ -296,6 +310,9 @@ const UI_MESSAGES = {
     crossPageHelp: "Each request includes at most 3 consecutive pages; a later page may revise an unfinished paragraph.",
     smoothScrolling: "Smooth scrolling",
     smoothScrollingHelp: "Animate page and contents navigation",
+    translationAnimation: "Gradient typewriter effect",
+    translationAnimationHelp: "Play only for new API translations; show cached translations immediately.",
+    translationAnimationSpeed: (speed: number) => `Animation speed · ${speed} chars/s`,
     saveSettings: "Save settings",
     libraryDialog: "Cloud library",
     cloudLibrary: "Cloud Library",
@@ -373,6 +390,9 @@ const UI_MESSAGES = {
     navigationReadFailed: "Unable to read cloud contents",
     navigationWriteFailed: "Unable to write cloud contents",
     translationRequestFailed: "Translation request failed",
+    translationCacheHit: "Loaded from the cloud translation cache",
+    translationApiSucceeded: "API translation succeeded",
+    translationInProgress: "Loading or generating translation",
     openPdfFailed: (detail: string) => `Unable to open this PDF: ${detail}`,
     openedFromCloud: "Opened from cloud library",
     openCloudFailed: (detail: string) => `Unable to open cloud PDF: ${detail}`,
@@ -404,6 +424,7 @@ function targetLanguageLabel(value: string, locale: UiLocale) {
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
+  schemaVersion: 1,
   provider: "openai",
   endpoint: "https://api.openai.com/v1/responses",
   apiKey: "",
@@ -413,6 +434,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   nearbyPages: 2,
   translationConcurrency: 4,
   smoothScrolling: true,
+  translationAnimation: true,
+  translationAnimationSpeed: DEFAULT_TYPEWRITER_CHARACTERS_PER_SECOND,
 };
 
 const translationLimiter = createConcurrencyLimiter();
@@ -496,6 +519,20 @@ async function readCloudCache(key: string, fallbackMessage: string, signal?: Abo
   const result = await response.json() as { translation?: Translation | null; error?: string };
   if (!response.ok) throw new Error(result.error || fallbackMessage);
   return result.translation ? normalizeTranslationPayload(result.translation) as Translation : undefined;
+}
+
+async function readCloudTranslationIndex(
+  documentId: string,
+  settings: ProviderSettings,
+  fallbackMessage: string,
+): Promise<number[]> {
+  const query = new URLSearchParams({ documentId, cacheKeySuffix: cacheKeySuffix(settings) });
+  const response = await fetch(`/api/translations?${query}`, { cache: "no-store" });
+  const result = await response.json() as { pages?: unknown; error?: string };
+  if (!response.ok) throw new Error(result.error || fallbackMessage);
+  return Array.isArray(result.pages)
+    ? result.pages.map(Number).filter((page) => Number.isSafeInteger(page) && page > 0)
+    : [];
 }
 
 async function readCloudBook(id: string, fallbackMessage: string): Promise<CloudBook> {
@@ -655,7 +692,101 @@ function HighlightedText({ text, query }: { text: string; query: string }) {
   return parts;
 }
 
-function TranslationText({ value, messages, searchQuery }: { value: Translation; messages: UiMessages; searchQuery: string }) {
+function TypewriterText({ text, query, offset, progress }: { text: string; query: string; offset: number; progress: number }) {
+  const characters = useMemo(() => Array.from(text), [text]);
+  const revealedCount = Math.min(characters.length, Math.max(0, progress - offset));
+  const tailLength = revealedCount < characters.length ? Math.min(5, revealedCount) : 0;
+  const stableText = characters.slice(0, revealedCount - tailLength).join("");
+  const tailText = characters.slice(revealedCount - tailLength, revealedCount).join("");
+  const pendingText = characters.slice(revealedCount).join("");
+
+  return (
+    <span className="typewriter-text" aria-label={text}>
+      <span aria-hidden="true"><HighlightedText text={stableText} query={query} /></span>
+      {tailText && <span className="typewriter-tail" aria-hidden="true">{tailText}</span>}
+      {pendingText && <span className="typewriter-pending" aria-hidden="true">{pendingText}</span>}
+    </span>
+  );
+}
+
+function useTypewriterProgress(
+  texts: string[],
+  pending: boolean,
+  active: boolean,
+  version: number | undefined,
+  charactersPerSecond: number,
+  onComplete: () => void,
+) {
+  const animationKey = texts.join("\u0000");
+  const runKey = `${version ?? "none"}\u0001${animationKey}\u0001${charactersPerSecond}`;
+  const { offsets, total } = useMemo(() => {
+    const characterCounts = animationKey
+      ? animationKey.split("\u0000").map((text) => Array.from(text).length)
+      : [];
+    return {
+      offsets: characterCounts.map((_, index) => characterCounts
+        .slice(0, index)
+        .reduce((sum, count) => sum + count, 0)),
+      total: characterCounts.reduce((sum, count) => sum + count, 0),
+    };
+  }, [animationKey]);
+  const [animation, setAnimation] = useState({ key: "", progress: 0 });
+  const running = pending && (active || animation.key === runKey);
+
+  useEffect(() => {
+    if (!running) return;
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const startedAt = performance.now();
+    let frame = 0;
+    const update = (now: number) => {
+      const next = reducedMotion ? total : typewriterProgress(now - startedAt, total, charactersPerSecond);
+      setAnimation({ key: runKey, progress: next });
+      if (next < total) frame = requestAnimationFrame(update);
+      else onComplete();
+    };
+    frame = requestAnimationFrame(update);
+    return () => cancelAnimationFrame(frame);
+  }, [charactersPerSecond, onComplete, runKey, running, total]);
+
+  const progress = !pending
+    ? total
+    : running && animation.key === runKey ? animation.progress : 0;
+  return { offsets, progress };
+}
+
+function TranslationText({
+  value,
+  messages,
+  searchQuery,
+  animate,
+  animationActive,
+  animationSpeed,
+  onAnimationComplete,
+}: {
+  value: Translation;
+  messages: UiMessages;
+  searchQuery: string;
+  animate: boolean;
+  animationActive: boolean;
+  animationSpeed: number;
+  onAnimationComplete: () => void;
+}) {
+  const texts = value.blocks?.length
+    ? value.blocks.flatMap((block) => {
+      if (block.kind === "spacer") return [];
+      if (block.kind === "list_item") return [block.marker, block.text, block.trailing];
+      return [block.text];
+    })
+    : value.markdown.split(/\n{2,}/);
+  const { offsets, progress } = useTypewriterProgress(
+    value.isBlank ? [] : texts,
+    animate,
+    animationActive,
+    value.cacheVersion,
+    animationSpeed,
+    onAnimationComplete,
+  );
+
   if (value.isBlank) {
     return (
       <article className="translation-copy blank-translation">
@@ -671,6 +802,7 @@ function TranslationText({ value, messages, searchQuery }: { value: Translation;
     );
   }
   if (value.blocks?.length) {
+    let segmentIndex = 0;
     return (
       <article className="translation-copy structured-translation">
         <div className="layout-blocks">
@@ -686,19 +818,37 @@ function TranslationText({ value, messages, searchQuery }: { value: Translation;
             if (block.kind === "spacer") {
               return <div key={index} className={className} aria-hidden="true" />;
             }
-            if (block.kind === "heading") {
-              return <h2 key={index} className={className}><HighlightedText text={block.text} query={searchQuery} /></h2>;
-            }
             if (block.kind === "list_item") {
+              const markerIndex = segmentIndex++;
+              const textIndex = segmentIndex++;
+              const trailingIndex = segmentIndex++;
               return (
                 <div key={index} className={className}>
-                  <span className="block-marker">{block.marker}</span>
-                  <span className="block-text"><HighlightedText text={block.text} query={searchQuery} /></span>
-                  <span className="block-trailing">{block.trailing}</span>
+                  <span className="block-marker">
+                    <TypewriterText text={block.marker} query="" offset={offsets[markerIndex] ?? 0} progress={progress} />
+                  </span>
+                  <span className="block-text">
+                    <TypewriterText text={block.text} query={searchQuery} offset={offsets[textIndex] ?? 0} progress={progress} />
+                  </span>
+                  <span className="block-trailing">
+                    <TypewriterText text={block.trailing} query="" offset={offsets[trailingIndex] ?? 0} progress={progress} />
+                  </span>
                 </div>
               );
             }
-            return <p key={index} className={className}><HighlightedText text={block.text} query={searchQuery} /></p>;
+            const currentTextIndex = segmentIndex++;
+            const content = (
+              <TypewriterText
+                text={block.text}
+                query={searchQuery}
+                offset={offsets[currentTextIndex] ?? 0}
+                progress={progress}
+              />
+            );
+            if (block.kind === "heading") {
+              return <h2 key={index} className={className}>{content}</h2>;
+            }
+            return <p key={index} className={className}>{content}</p>;
           })}
         </div>
         <div className="translation-meta">
@@ -712,8 +862,10 @@ function TranslationText({ value, messages, searchQuery }: { value: Translation;
   }
   return (
     <article className="translation-copy">
-      {value.markdown.split(/\n{2,}/).map((paragraph) => (
-        <p key={paragraph}><HighlightedText text={paragraph} query={searchQuery} /></p>
+      {texts.map((paragraph, index) => (
+        <p key={`${index}-${paragraph}`}>
+          <TypewriterText text={paragraph} query={searchQuery} offset={offsets[index] ?? 0} progress={progress} />
+        </p>
       ))}
       <div className="translation-meta">
         <CircleCheck size={14} />
@@ -723,10 +875,13 @@ function TranslationText({ value, messages, searchQuery }: { value: Translation;
   );
 }
 
-function TranslationSkeleton({ page, messages }: { page: number; messages: UiMessages }) {
+function TranslationSkeleton({ page, messages, cached }: { page: number; messages: UiMessages; cached: boolean }) {
   return (
     <div className="translation-skeleton">
-      <div className="ai-working"><Sparkles size={15} /> {messages.readingContext(page)}</div>
+      <div className="ai-working">
+        {cached ? <Cloud size={15} /> : <Sparkles size={15} />}
+        {cached ? messages.loadingCachedTranslation(page) : messages.readingContext(page)}
+      </div>
       <i /><i /><i /><i className="short" />
     </div>
   );
@@ -740,11 +895,15 @@ type PageSpreadProps = {
   workDistance: number;
   isDemo: boolean;
   translation?: Translation;
+  translationSource?: TranslationSource;
+  animateTranslation: boolean;
+  translationAnimationSpeed: number;
   loading: boolean;
   error?: string;
   renderPage: (page: number) => Promise<string>;
-  requestTranslation: (page: number, force?: boolean) => void;
+  requestTranslation: (page: number, force?: boolean, cacheOnly?: boolean) => void;
   cancelTranslation: (page: number) => void;
+  onTranslationAnimationComplete: (page: number, cacheVersion?: number) => void;
   setCurrentPage: (page: number) => void;
   messages: UiMessages;
   searchQuery: string;
@@ -758,11 +917,15 @@ function PageSpread({
   workDistance,
   isDemo,
   translation,
+  translationSource,
+  animateTranslation,
+  translationAnimationSpeed,
   loading,
   error,
   renderPage,
   requestTranslation,
   cancelTranslation,
+  onTranslationAnimationComplete,
   setCurrentPage,
   messages,
   searchQuery,
@@ -770,15 +933,28 @@ function PageSpread({
   const { ref, near } = useNearViewport(`${Math.max(1, nearbyPages) * 720}px 0px`);
   const [image, setImage] = useState<string>();
   const [renderError, setRenderError] = useState("");
+  const cachedTranslation = translationSource === "cache";
+  const finishTranslationAnimation = useCallback(
+    () => onTranslationAnimationComplete(page, translation?.cacheVersion),
+    [onTranslationAnimationComplete, page, translation?.cacheVersion],
+  );
 
   useEffect(() => {
-    if (!near || !workEnabled) return;
+    if (!near || !cachedTranslation) return;
+    requestTranslation(page, false, true);
+    return () => {
+      cancelTranslation(page);
+    };
+  }, [cachedTranslation, cancelTranslation, near, page, requestTranslation]);
+
+  useEffect(() => {
+    if (!near || cachedTranslation || !workEnabled) return;
     const timer = window.setTimeout(() => requestTranslation(page), 250 + workDistance * 250);
     return () => {
       window.clearTimeout(timer);
       cancelTranslation(page);
     };
-  }, [cancelTranslation, near, page, requestTranslation, workDistance, workEnabled]);
+  }, [cachedTranslation, cancelTranslation, near, page, requestTranslation, workDistance, workEnabled]);
 
   useEffect(() => {
     if (isDemo) return;
@@ -855,16 +1031,24 @@ function PageSpread({
           )}
         </div>
         {translation ? (
-          <TranslationText value={translation} messages={messages} searchQuery={searchQuery} />
+          <TranslationText
+            value={translation}
+            messages={messages}
+            searchQuery={searchQuery}
+            animate={animateTranslation}
+            animationActive={workDistance === 0}
+            animationSpeed={translationAnimationSpeed}
+            onAnimationComplete={finishTranslationAnimation}
+          />
         ) : loading ? (
-          <TranslationSkeleton page={page} messages={messages} />
+          <TranslationSkeleton page={page} messages={messages} cached={cachedTranslation} />
         ) : error ? (
           <div className="translation-error">
             <p>{error}</p>
             <button className="secondary-button" onClick={() => requestTranslation(page, true)}>{messages.retry}</button>
           </div>
         ) : (
-          <TranslationSkeleton page={page} messages={messages} />
+          <TranslationSkeleton page={page} messages={messages} cached={cachedTranslation} />
         )}
       </div>
       {page < totalPages && <div className="spread-divider"><span>{messages.pageDivider(page + 1)}</span></div>}
@@ -956,6 +1140,32 @@ function SettingsPanel({
           <span><strong>{messages.smoothScrolling}</strong><small>{messages.smoothScrollingHelp}</small></span>
           <i aria-hidden="true"><span /></i>
         </button>
+
+        <button
+          type="button"
+          className={cn("setting-switch", settings.translationAnimation && "active")}
+          role="switch"
+          aria-checked={settings.translationAnimation}
+          onClick={() => update("translationAnimation", !settings.translationAnimation)}
+        >
+          <span><strong>{messages.translationAnimation}</strong><small>{messages.translationAnimationHelp}</small></span>
+          <i aria-hidden="true"><span /></i>
+        </button>
+
+        <label className="field-label" htmlFor="translation-animation-speed">
+          {messages.translationAnimationSpeed(settings.translationAnimationSpeed)}
+        </label>
+        <input
+          id="translation-animation-speed"
+          className="range"
+          type="range"
+          min="20"
+          max="120"
+          step="5"
+          disabled={!settings.translationAnimation}
+          value={settings.translationAnimationSpeed}
+          onChange={(event) => update("translationAnimationSpeed", Number(event.target.value))}
+        />
 
         <div className="context-note">
           <Sparkles size={16} />
@@ -1163,6 +1373,7 @@ export default function Home() {
   const documentLoadSequence = useRef(0);
   const documentIdRef = useRef("verso-demo");
   const currentPageRef = useRef(1);
+  const translationAnimationEnabledRef = useRef(DEFAULT_SETTINGS.translationAnimation);
   const sourceScrollAnchor = useRef<{ page: number; top: number } | null>(null);
   const sourceAnchorReleaseFrame = useRef<number>();
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -1180,7 +1391,17 @@ export default function Home() {
   const [settings, setSettings] = useState<AppSettings>(() => {
     if (typeof window === "undefined") return DEFAULT_SETTINGS;
     const stored = localStorage.getItem("verso-settings");
-    return stored ? { ...DEFAULT_SETTINGS, ...JSON.parse(stored) } : DEFAULT_SETTINGS;
+    if (!stored) return DEFAULT_SETTINGS;
+    const storedSettings = JSON.parse(stored) as Partial<AppSettings>;
+    const restored = { ...DEFAULT_SETTINGS, ...storedSettings } as AppSettings;
+    return {
+      ...restored,
+      schemaVersion: DEFAULT_SETTINGS.schemaVersion,
+      translationAnimationSpeed: storedSettings.schemaVersion === DEFAULT_SETTINGS.schemaVersion
+        && restored.translationAnimationSpeed >= 10
+        ? restored.translationAnimationSpeed
+        : DEFAULT_TYPEWRITER_CHARACTERS_PER_SECOND,
+    };
   });
   const translationSettings = useMemo<ProviderSettings>(() => ({
     provider: settings.provider,
@@ -1212,6 +1433,8 @@ export default function Home() {
   const [documentError, setDocumentError] = useState("");
   const [isDemo, setIsDemo] = useState(true);
   const [translations, setTranslations] = useState<Record<number, Translation>>(DEMO_TRANSLATIONS);
+  const [translationSources, setTranslationSources] = useState<Record<number, TranslationSource>>({});
+  const [translationAnimationVersions, setTranslationAnimationVersions] = useState<Record<number, number>>({});
   const [loadingPages, setLoadingPages] = useState<Set<number>>(new Set());
   const [errors, setErrors] = useState<Record<number, string>>({});
   const [cloudBooks, setCloudBooks] = useState<CloudBook[]>([]);
@@ -1225,6 +1448,25 @@ export default function Home() {
   useLayoutEffect(() => {
     currentPageRef.current = currentPage;
   }, [currentPage]);
+
+  useEffect(() => {
+    translationAnimationEnabledRef.current = settings.translationAnimation;
+  }, [settings.translationAnimation]);
+
+  const updateSettings = useCallback((next: AppSettings) => {
+    translationAnimationEnabledRef.current = next.translationAnimation;
+    setSettings(next);
+    if (!next.translationAnimation) setTranslationAnimationVersions({});
+  }, []);
+
+  const completeTranslationAnimation = useCallback((page: number, cacheVersion?: number) => {
+    setTranslationAnimationVersions((existing) => {
+      if (!(page in existing) || (cacheVersion !== undefined && existing[page] !== cacheVersion)) return existing;
+      const next = { ...existing };
+      delete next[page];
+      return next;
+    });
+  }, []);
 
   const captureSourceScrollAnchor = useCallback(() => {
     if (sourceScrollAnchor.current) return;
@@ -1476,25 +1718,45 @@ export default function Home() {
     void refreshBooks();
   }, [refreshBooks]);
 
-  const loadNavigation = useCallback(async (id: string, sequence: number) => {
+  const loadNavigation = useCallback(async (id: string, sequence: number, providerSettings: ProviderSettings) => {
     setNavigationLoading(true);
     setNavigationError("");
     try {
-      const remote = await readCloudNavigation(id, messagesRef.current.navigationReadFailed);
+      const [navigationResult, translationIndexResult] = await Promise.allSettled([
+        readCloudNavigation(id, messagesRef.current.navigationReadFailed),
+        readCloudTranslationIndex(id, providerSettings, messagesRef.current.cloudTranslationReadFailed),
+      ]);
       if (sequence !== documentLoadSequence.current) return;
-      for (const observation of remote.observations) {
-        navigationWrites.current.add(`${id}:${observation.pdfPage}:${JSON.stringify(observation)}`);
+      if (navigationResult.status === "fulfilled") {
+        const remote = navigationResult.value;
+        for (const observation of remote.observations) {
+          navigationWrites.current.add(`${id}:${observation.pdfPage}:${JSON.stringify(observation)}`);
+        }
+        setNavigation((existing) => ({
+          manualOffset: manualOffsetTouched.current ? existing.manualOffset : remote.manualOffset,
+          observations: existing.observations.reduce(
+            (observations, observation) => mergeNavigationObservation(observations, observation),
+            remote.observations,
+          ),
+        }));
+      } else {
+        setNavigationError(
+          navigationResult.reason instanceof Error
+            ? navigationResult.reason.message
+            : messagesRef.current.navigationReadFailed,
+        );
       }
-      setNavigation((existing) => ({
-        manualOffset: manualOffsetTouched.current ? existing.manualOffset : remote.manualOffset,
-        observations: existing.observations.reduce(
-          (observations, observation) => mergeNavigationObservation(observations, observation),
-          remote.observations,
-        ),
-      }));
-    } catch (error) {
-      if (sequence !== documentLoadSequence.current) return;
-      setNavigationError(error instanceof Error ? error.message : messagesRef.current.navigationReadFailed);
+      if (translationIndexResult.status === "fulfilled") {
+        setTranslationSources((existing) => {
+          const indexed = Object.fromEntries(
+            translationIndexResult.value.map((page) => [page, "cache" as const]),
+          );
+          const apiSources = Object.fromEntries(
+            Object.entries(existing).filter(([, source]) => source === "api"),
+          );
+          return { ...indexed, ...apiSources };
+        });
+      }
     } finally {
       if (sequence === documentLoadSequence.current) setNavigationLoading(false);
     }
@@ -1521,6 +1783,8 @@ export default function Home() {
     setTotalPages(Math.max(1, pageCount));
     setCurrentPage(1);
     setTranslations({});
+    setTranslationSources({});
+    setTranslationAnimationVersions({});
     setSearchQuery("");
     setSearchMatches([]);
     setSearchError("");
@@ -1716,8 +1980,8 @@ export default function Home() {
     return job;
   }, []);
 
-  const requestTranslation = useCallback(async (page: number, force = false) => {
-    if (isDemo || (!force && !viewportWorkEnabledRef.current)) return;
+  const requestTranslation = useCallback(async (page: number, force = false, cacheOnly = false) => {
+    if (isDemo || (!cacheOnly && !force && !viewportWorkEnabledRef.current)) return;
     const flightKey = `${documentId}:${page}`;
     if (force) {
       translationRuns.current.cancel(flightKey);
@@ -1759,11 +2023,22 @@ export default function Home() {
           previousTranslation = await readPreviousTranslation();
           requireCurrentRun();
           const reconciled = reconcilePageBoundary(previousTranslation, cached);
+          completeTranslationAnimation(page);
+          setTranslationSources((existing) => ({ ...existing, [page]: "cache" }));
           updateTranslations((existing) => ({ ...existing, [page]: reconciled }));
           recordNavigation(page, reconciled);
           if (reconciled !== cached) {
             void writeCloudCache(key, documentId, page, reconciled, currentMessages.cloudTranslationWriteFailed).catch(() => undefined);
           }
+          return;
+        }
+        if (cacheOnly) {
+          setTranslationSources((existing) => {
+            if (existing[page] !== "cache") return existing;
+            const next = { ...existing };
+            delete next[page];
+            return next;
+          });
           return;
         }
       }
@@ -1816,6 +2091,14 @@ export default function Home() {
         cachedAt: Date.now(),
       });
       requireCurrentRun();
+      if (translationAnimationEnabledRef.current) {
+        setTranslationAnimationVersions((existing) => ({ ...existing, [page]: requestVersion }));
+      }
+      setTranslationSources((existing) => ({
+        ...existing,
+        ...(revision ? { [page - 1]: "api" as const } : {}),
+        [page]: "api",
+      }));
       updateTranslations((existing) => ({
         ...existing,
         ...(revision ? { [page - 1]: revision } : {}),
@@ -1843,7 +2126,7 @@ export default function Home() {
         });
       }
     }
-  }, [documentId, isDemo, recordNavigation, renderPage, totalPages, translationSettings, updateTranslations]);
+  }, [completeTranslationAnimation, documentId, isDemo, recordNavigation, renderPage, totalPages, translationSettings, updateTranslations]);
 
   const cancelTranslation = useCallback((page: number) => {
     const flightKey = `${documentId}:${page}`;
@@ -1863,7 +2146,7 @@ export default function Home() {
     replaceBookInUrl(null);
     const fileFingerprint = await fingerprint(file);
     const sequence = beginDocumentLoad(fileFingerprint, file.name, 1, false);
-    void loadNavigation(fileFingerprint, sequence);
+    void loadNavigation(fileFingerprint, sequence, translationSettings);
     try {
       const { pdfjs, worker } = await loadPdfRuntime();
       const data = new Uint8Array(await file.arrayBuffer());
@@ -1891,13 +2174,13 @@ export default function Home() {
       setDocumentError(messages.openPdfFailed(detail));
       setLoadingDocument(false);
     }
-  }, [beginDocumentLoad, finishDocumentLoad, loadNavigation, messages, uploadToCloud]);
+  }, [beginDocumentLoad, finishDocumentLoad, loadNavigation, messages, translationSettings, uploadToCloud]);
 
   const loadCloudBook = useCallback(async (book: CloudBook, updateUrl = true) => {
     setLibraryOpen(false);
     if (updateUrl) replaceBookInUrl(book.fingerprint);
     const sequence = beginDocumentLoad(book.fingerprint, book.name, book.pageCount, true);
-    void loadNavigation(book.fingerprint, sequence);
+    void loadNavigation(book.fingerprint, sequence, translationSettings);
     const currentMessages = messagesRef.current;
     try {
       const { pdfjs, worker } = await loadPdfRuntime();
@@ -1943,7 +2226,7 @@ export default function Home() {
       setDocumentError(currentMessages.openCloudFailed(detail));
       setLoadingDocument(false);
     }
-  }, [beginDocumentLoad, finishDocumentLoad, loadNavigation]);
+  }, [beginDocumentLoad, finishDocumentLoad, loadNavigation, translationSettings]);
 
   useEffect(() => {
     const requestedBookId = bookIdFromUrl();
@@ -2133,13 +2416,33 @@ export default function Home() {
               </div>
               {sidebarView === "pages" ? (
                 <nav id="sidebar-pages" className="page-nav" aria-label={messages.pages}>
-                  {pageNumbers.map((page) => (
-                    <button key={page} className={cn(page === currentPage && "active")} onClick={() => goToPage(page)}>
-                      <span className="page-thumbnail">{page <= 2 && isDemo ? <SampleScan page={page} messages={messages} /> : page}</span>
-                      <span>{messages.page(page)}</span>
-                      {translations[page] && <CircleCheck size={14} />}
-                    </button>
-                  ))}
+                  {pageNumbers.map((page) => {
+                    const source = translationSources[page];
+                    const status = source === "cache"
+                      ? messages.translationCacheHit
+                      : source === "api" ? messages.translationApiSucceeded : "";
+                    return (
+                      <button key={page} className={cn(page === currentPage && "active")} onClick={() => goToPage(page)}>
+                        <span className="page-thumbnail">{page <= 2 && isDemo ? <SampleScan page={page} messages={messages} /> : page}</span>
+                        <span>{messages.page(page)}</span>
+                        {source === "cache" ? (
+                          <span className="page-translation-status source-cache" title={status} aria-label={status}>
+                            CACHE
+                          </span>
+                        ) : loadingPages.has(page) ? (
+                          <span className="page-translation-status loading" title={messages.translationInProgress} aria-label={messages.translationInProgress}>
+                            <LoaderCircle className="spin" size={13} aria-hidden="true" />
+                          </span>
+                        ) : source ? (
+                          <span className={cn("page-translation-status", `source-${source}`)} title={status} aria-label={status}>
+                            {source.toUpperCase()}
+                          </span>
+                        ) : translations[page] ? (
+                          <CircleCheck size={14} aria-hidden="true" />
+                        ) : null}
+                      </button>
+                    );
+                  })}
                 </nav>
               ) : sidebarView === "contents" ? (
                 <div id="sidebar-contents" className="sidebar-contents">
@@ -2257,11 +2560,17 @@ export default function Home() {
                   workDistance={Math.abs(page - currentPage)}
                   isDemo={isDemo}
                   translation={displayedTranslations[page]}
+                  translationSource={translationSources[page]}
+                  animateTranslation={translationSources[page] === "api"
+                    && settings.translationAnimation
+                    && translationAnimationVersions[page] === displayedTranslations[page]?.cacheVersion}
+                  translationAnimationSpeed={settings.translationAnimationSpeed}
                   loading={loadingPages.has(page)}
                   error={errors[page]}
                   renderPage={renderPage}
                   requestTranslation={requestTranslation}
                   cancelTranslation={cancelTranslation}
+                  onTranslationAnimationComplete={completeTranslationAnimation}
                   setCurrentPage={observeCurrentPage}
                   messages={messages}
                   searchQuery={sidebarView === "search" ? searchQuery.trim() : ""}
@@ -2273,7 +2582,7 @@ export default function Home() {
       </div>
 
       <div className="floating-status"><Sparkles size={15} /><span>{messages.contextWindow}</span><strong>{messages.pageRange(Math.max(1, currentPage - 1), Math.min(totalPages, currentPage + 1))}</strong></div>
-      {settingsOpen && <SettingsPanel settings={settings} locale={locale} messages={messages} onChange={setSettings} onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && <SettingsPanel settings={settings} locale={locale} messages={messages} onChange={updateSettings} onClose={() => setSettingsOpen(false)} />}
       {libraryOpen && (
         <BookLibrary
           books={cloudBooks}
