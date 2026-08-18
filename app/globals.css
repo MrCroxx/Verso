@@ -78,6 +78,20 @@ button { color: inherit; }
 .page-nav button > svg { color: #53a580; }
 .page-thumbnail { width: 36px; height: 50px; overflow: hidden; display: grid; place-items: center; background: white; border: 1px solid #dfe3df; border-radius: 3px; color: #a0aaa4; font-size: 10px; }
 .page-thumbnail .sample-scan { width: 310px; min-height: 440px; transform: scale(.113); transform-origin: top left; pointer-events: none; }
+.search-panel { min-height: 0; flex: 1; display: flex; flex-direction: column; padding: 10px 8px; }
+.search-field { height: 39px; display: flex; align-items: center; gap: 7px; padding: 0 5px 0 10px; border: 1px solid #d9dfda; border-radius: 9px; background: white; color: #7d8882; }
+.search-field:focus-within { border-color: #78a995; box-shadow: 0 0 0 3px #e5f0eb; }
+.search-field input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 11px; }
+.search-field .icon-button { width: 27px; height: 27px; }
+.search-summary { padding: 11px 4px 7px; color: #87928c; font-size: 9px; }
+.search-results { min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 5px; }
+.search-results > button { width: 100%; padding: 10px; border: 0; border-radius: 8px; background: transparent; color: #59655e; text-align: left; cursor: pointer; }
+.search-results > button:hover { background: #e9efeb; }
+.search-results > button > span { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.search-results strong { color: var(--green-dark); font-size: 10px; }
+.search-results p { margin: 6px 0 0; font-family: Georgia, "Songti SC", serif; font-size: 11px; line-height: 1.55; }
+.search-results mark, .translation-copy mark { padding: 0 .08em; border-radius: 2px; background: #ffdf83; color: #30270e; }
+.search-empty { padding: 28px 8px; color: #929c96; text-align: center; font-family: inherit !important; font-size: 10px !important; }
 
 .reader { margin-left: 252px; width: calc(100% - 252px); transition: margin .2s ease, width .2s ease; }
 .sidebar.collapsed + .reader { margin-left: 54px; width: calc(100% - 54px); }
@@ -221,6 +235,12 @@ body, .topbar, .sidebar, .reader-toolbar, .page-spread, .page-surface, .settings
 :root[data-theme="dark"] .page-thumbnail { background: #1d231f; border-color: #354039; }
 :root[data-theme="dark"] .page-nav button:hover { background: #202822; }
 :root[data-theme="dark"] .page-nav button.active { background: #20342a; color: var(--green-dark); }
+:root[data-theme="dark"] .search-field { background: #1d231f; border-color: #354039; }
+:root[data-theme="dark"] .search-field:focus-within { border-color: #5b9e80; box-shadow: 0 0 0 3px #21382e; }
+:root[data-theme="dark"] .search-results > button { color: #aab6af; }
+:root[data-theme="dark"] .search-results > button:hover { background: #202822; }
+:root[data-theme="dark"] .search-results mark,
+:root[data-theme="dark"] .translation-copy mark { background: #735d20; color: #fff0bb; }
 :root[data-theme="dark"] .progress-track { background: #303a34; }
 :root[data-theme="dark"] .reader-toolbar { background: rgba(21,27,23,.95); }
 :root[data-theme="dark"] .page-stepper,
@@ -280,6 +300,7 @@ body, .topbar, .sidebar, .reader-toolbar, .page-spread, .page-surface, .settings
   .topbar { grid-template-columns: 1fr auto; }
   .document-title, .cache-status, .top-actions .secondary-button, .brand em { display: none; }
   .sidebar { display: none; }
+  .sidebar.searching { display: flex; width: min(360px, 100%); box-shadow: 12px 0 30px rgba(20,29,25,.18); }
   .reader, .sidebar.collapsed + .reader { margin-left: 0; width: 100%; }
   .reader-toolbar { grid-template-columns: 130px 1fr 40px; }
   .spreads { width: calc(100% - 24px); margin-top: 15px; }
@@ -291,6 +312,7 @@ body, .topbar, .sidebar, .reader-toolbar, .page-spread, .page-surface, .settings
 @media (max-width: 560px) {
   .topbar { height: 56px; padding: 0 10px; }
   .workspace { padding-top: 56px; }
+  .sidebar.searching { top: 56px; }
   .reader-toolbar { top: 56px; }
   .primary-button { padding: 0 10px; }
   .brand span { font-size: 18px; }

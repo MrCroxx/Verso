@@ -27,7 +27,9 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createConcurrencyLimiter } from "../lib/concurrency-limiter";
+import { isDocumentSearchShortcut } from "../lib/keyboard-shortcuts";
 import { deduplicatePageBoundary, normalizeTranslationPayload } from "../lib/translation-layout";
+import { searchTranslationPayload } from "../lib/translation-search";
 
 type PdfDocument = import("pdfjs-dist").PDFDocumentProxy;
 type PdfWorker = import("pdfjs-dist").PDFWorker;
@@ -108,6 +110,11 @@ type TranslationResponse = {
   previousPageRevision?: { page: number; blocks: TranslationBlock[] } | null;
 };
 
+type SearchMatch = {
+  page: number;
+  snippet: string;
+};
+
 const UI_MESSAGES = {
   "zh-CN": {
     blankPage: "此页没有可翻译文本",
@@ -164,6 +171,11 @@ const UI_MESSAGES = {
     toggleSidebar: "切换侧栏",
     pages: "页码",
     searchPages: "搜索页码",
+    searchPlaceholder: "搜索译文",
+    searchResults: (count: number) => `${count} 条结果`,
+    searching: "正在搜索已翻译页面",
+    noSearchResults: "未找到匹配内容",
+    searchFailed: "无法搜索已翻译内容",
     scannedEdition: (pages: number) => `${pages} 页 · 扫描版`,
     readingProgress: "阅读进度",
     page: (page: number) => `第 ${page} 页`,
@@ -257,6 +269,11 @@ const UI_MESSAGES = {
     toggleSidebar: "Toggle sidebar",
     pages: "Pages",
     searchPages: "Search pages",
+    searchPlaceholder: "Search translations",
+    searchResults: (count: number) => `${count} result${count === 1 ? "" : "s"}`,
+    searching: "Searching translated pages",
+    noSearchResults: "No matching text found",
+    searchFailed: "Unable to search translated content",
     scannedEdition: (pages: number) => `${pages} pages · Scanned edition`,
     readingProgress: "Reading progress",
     page: (page: number) => `Page ${page}`,
@@ -383,7 +400,11 @@ function cn(...values: Array<string | false | null | undefined>) {
 }
 
 function cacheKey(documentId: string, page: number, settings: ProviderSettings) {
-  return ["layout-v3", documentId, page, settings.provider, settings.endpoint, settings.model, settings.reasoningEffort, settings.targetLanguage].join("::");
+  return ["layout-v3", documentId, page, cacheKeySuffix(settings)].join("::");
+}
+
+function cacheKeySuffix(settings: ProviderSettings) {
+  return [settings.provider, settings.endpoint, settings.model, settings.reasoningEffort, settings.targetLanguage].join("::");
 }
 
 async function readCloudCache(key: string, fallbackMessage: string): Promise<Translation | undefined> {
@@ -482,7 +503,27 @@ function SampleScan({ page, messages }: { page: number; messages: UiMessages }) 
   );
 }
 
-function TranslationText({ value, messages }: { value: Translation; messages: UiMessages }) {
+function HighlightedText({ text, query }: { text: string; query: string }) {
+  const needle = query.trim();
+  if (!needle) return text;
+  const normalizedText = text.toLocaleLowerCase();
+  const normalizedNeedle = needle.toLocaleLowerCase();
+  const parts = [];
+  let offset = 0;
+  while (offset < text.length) {
+    const match = normalizedText.indexOf(normalizedNeedle, offset);
+    if (match < 0) {
+      parts.push(text.slice(offset));
+      break;
+    }
+    if (match > offset) parts.push(text.slice(offset, match));
+    parts.push(<mark key={match}>{text.slice(match, match + needle.length)}</mark>);
+    offset = match + needle.length;
+  }
+  return parts;
+}
+
+function TranslationText({ value, messages, searchQuery }: { value: Translation; messages: UiMessages; searchQuery: string }) {
   if (value.isBlank) {
     return (
       <article className="translation-copy blank-translation">
@@ -514,18 +555,18 @@ function TranslationText({ value, messages }: { value: Translation; messages: Ui
               return <div key={index} className={className} aria-hidden="true" />;
             }
             if (block.kind === "heading") {
-              return <h2 key={index} className={className}>{block.text}</h2>;
+              return <h2 key={index} className={className}><HighlightedText text={block.text} query={searchQuery} /></h2>;
             }
             if (block.kind === "list_item") {
               return (
                 <div key={index} className={className}>
                   <span className="block-marker">{block.marker}</span>
-                  <span className="block-text">{block.text}</span>
+                  <span className="block-text"><HighlightedText text={block.text} query={searchQuery} /></span>
                   <span className="block-trailing">{block.trailing}</span>
                 </div>
               );
             }
-            return <p key={index} className={className}>{block.text}</p>;
+            return <p key={index} className={className}><HighlightedText text={block.text} query={searchQuery} /></p>;
           })}
         </div>
         <div className="translation-meta">
@@ -540,7 +581,7 @@ function TranslationText({ value, messages }: { value: Translation; messages: Ui
   return (
     <article className="translation-copy">
       {value.markdown.split(/\n{2,}/).map((paragraph) => (
-        <p key={paragraph}>{paragraph}</p>
+        <p key={paragraph}><HighlightedText text={paragraph} query={searchQuery} /></p>
       ))}
       <div className="translation-meta">
         <CircleCheck size={14} />
@@ -562,6 +603,7 @@ type PageSpreadProps = {
   requestTranslation: (page: number, force?: boolean) => void;
   setCurrentPage: (page: number) => void;
   messages: UiMessages;
+  searchQuery: string;
 };
 
 function PageSpread({
@@ -576,6 +618,7 @@ function PageSpread({
   requestTranslation,
   setCurrentPage,
   messages,
+  searchQuery,
 }: PageSpreadProps) {
   const { ref, near } = useNearViewport(`${Math.max(1, nearbyPages) * 720}px 0px`);
   const [image, setImage] = useState<string>();
@@ -648,7 +691,7 @@ function PageSpread({
           )}
         </div>
         {translation ? (
-          <TranslationText value={translation} messages={messages} />
+          <TranslationText value={translation} messages={messages} searchQuery={searchQuery} />
         ) : loading ? (
           <div className="translation-skeleton">
             <div className="ai-working"><Sparkles size={15} /> {messages.readingContext(page)}</div>
@@ -824,6 +867,7 @@ function BookLibrary({
 
 export default function Home() {
   const fileInput = useRef<HTMLInputElement>(null);
+  const searchInput = useRef<HTMLInputElement>(null);
   const pdfRef = useRef<PdfDocument>();
   const imageCache = useRef(new Map<number, Promise<string>>());
   const inFlight = useRef(new Set<string>());
@@ -832,6 +876,11 @@ export default function Home() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchMatches, setSearchMatches] = useState<SearchMatch[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState("");
   const [locale, setLocale] = useState<UiLocale>("zh-CN");
   const [theme, setTheme] = useState<ThemeMode>("light");
   const messages = UI_MESSAGES[locale];
@@ -930,6 +979,71 @@ export default function Home() {
     indexedDB.deleteDatabase("verso-translation-cache");
   }, []);
 
+  useEffect(() => {
+    function handleSearchShortcut(event: KeyboardEvent) {
+      if (isDocumentSearchShortcut(event)) {
+        event.preventDefault();
+        setSettingsOpen(false);
+        setLibraryOpen(false);
+        setSidebarOpen(true);
+        setSearchOpen(true);
+        window.requestAnimationFrame(() => {
+          searchInput.current?.focus();
+          searchInput.current?.select();
+        });
+        return;
+      }
+      if (event.key === "Escape" && searchOpen && document.activeElement === searchInput.current) {
+        event.preventDefault();
+        setSearchOpen(false);
+        setSearchLoading(false);
+        searchInput.current?.blur();
+      }
+    }
+
+    window.addEventListener("keydown", handleSearchShortcut);
+    return () => window.removeEventListener("keydown", handleSearchShortcut);
+  }, [searchOpen]);
+
+  useEffect(() => {
+    const query = searchQuery.trim();
+    if (!searchOpen || !query) return;
+
+    const controller = new AbortController();
+    const search = window.setTimeout(async () => {
+      setSearchLoading(true);
+      setSearchError("");
+      try {
+        if (isDemo) {
+          const matches = Object.entries(translations).flatMap(([page, translation]) =>
+            searchTranslationPayload(translation, Number(page), query));
+          setSearchMatches(matches);
+          return;
+        }
+
+        const response = await fetch("/api/search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ documentId, query, cacheKeySuffix: cacheKeySuffix(settings) }),
+          signal: controller.signal,
+        });
+        const result = await response.json() as { matches?: SearchMatch[]; error?: string };
+        if (!response.ok) throw new Error(result.error || messages.searchFailed);
+        setSearchMatches(result.matches || []);
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        setSearchMatches([]);
+        setSearchError(error instanceof Error ? error.message : messages.searchFailed);
+      } finally {
+        if (!controller.signal.aborted) setSearchLoading(false);
+      }
+    }, 250);
+    return () => {
+      window.clearTimeout(search);
+      controller.abort();
+    };
+  }, [documentId, isDemo, messages.searchFailed, searchOpen, searchQuery, settings, translations]);
+
   const openLibrary = useCallback(() => {
     setLibraryOpen(true);
     void refreshBooks();
@@ -946,6 +1060,9 @@ export default function Home() {
     setTotalPages(Math.max(1, pageCount));
     setCurrentPage(1);
     setTranslations({});
+    setSearchQuery("");
+    setSearchMatches([]);
+    setSearchError("");
     setLoadingPages(new Set());
     setErrors({});
     setIsDemo(false);
@@ -1123,6 +1240,7 @@ export default function Home() {
       const revision: Translation | undefined = payload.previousPageRevision?.page === page - 1
         && payload.previousPageRevision.blocks.length
         ? {
+            ...previousTranslation,
             page: page - 1,
             markdown: translationMarkdown(payload.previousPageRevision.blocks),
             blocks: payload.previousPageRevision.blocks,
@@ -1253,6 +1371,10 @@ export default function Home() {
             {uploadProgress !== null && uploadProgress < 100 ? messages.cloudProgress(uploadProgress) : uploadProgress === 100 ? messages.cloudCached : messages.cloudLibrary}
           </div>
           <button className="icon-button locale-button" title={messages.switchLanguage} aria-label={messages.switchLanguage} onClick={() => setLocale((value) => value === "zh-CN" ? "en-US" : "zh-CN")}><Globe2 size={16} /><span>{locale === "zh-CN" ? "EN" : "中"}</span></button>
+          <button className="icon-button top-search-button" aria-label={messages.searchPages} onClick={() => {
+            setSidebarOpen(true);
+            setSearchOpen(true);
+          }}><Search size={17} /></button>
           <button className="icon-button" title={messages.switchTheme} aria-label={messages.switchTheme} aria-pressed={theme === "dark"} onClick={() => setTheme((value) => value === "light" ? "dark" : "light")}>{theme === "light" ? <Moon size={17} /> : <Sun size={17} />}</button>
           <button className="secondary-button library-button" onClick={openLibrary}><BookOpen size={16} /> {messages.cloudLibrary}</button>
           <button className="secondary-button" onClick={() => setSettingsOpen(true)}><Settings2 size={16} /> {messages.aiSettings}</button>
@@ -1266,10 +1388,13 @@ export default function Home() {
       </header>
 
       <div className="workspace">
-        <aside className={cn("sidebar", !sidebarOpen && "collapsed")}>
+        <aside className={cn("sidebar", !sidebarOpen && "collapsed", searchOpen && "searching")}>
           <div className="sidebar-head">
             <button className="icon-button" aria-label={messages.toggleSidebar} onClick={() => setSidebarOpen((open) => !open)}>{sidebarOpen ? <PanelLeftClose size={18} /> : <Menu size={18} />}</button>
-            {sidebarOpen && <><span>{messages.pages}</span><button className="icon-button" aria-label={messages.searchPages}><Search size={17} /></button></>}
+            {sidebarOpen && <><span>{searchOpen ? messages.searchPages : messages.pages}</span><button className="icon-button" aria-label={messages.searchPages} aria-pressed={searchOpen} onClick={() => {
+              setSearchOpen((open) => !open);
+              if (searchOpen) setSearchLoading(false);
+            }}>{searchOpen ? <X size={17} /> : <Search size={17} />}</button></>}
           </div>
           {sidebarOpen && (
             <>
@@ -1281,15 +1406,52 @@ export default function Home() {
                 <div><span>{messages.readingProgress}</span><strong>{progress}%</strong></div>
                 <div className="progress-track"><i style={{ width: `${progress}%` }} /></div>
               </div>
-              <nav className="page-nav" aria-label={messages.pages}>
-                {pageNumbers.map((page) => (
-                  <button key={page} className={cn(page === currentPage && "active")} onClick={() => goToPage(page)}>
-                    <span className="page-thumbnail">{page <= 2 && isDemo ? <SampleScan page={page} messages={messages} /> : page}</span>
-                    <span>{messages.page(page)}</span>
-                    {translations[page] && <CircleCheck size={14} />}
-                  </button>
-                ))}
-              </nav>
+              {searchOpen ? (
+                <div className="search-panel">
+                  <div className="search-field">
+                    <Search size={15} />
+                    <input ref={searchInput} autoFocus value={searchQuery} placeholder={messages.searchPlaceholder} aria-label={messages.searchPlaceholder} onChange={(event) => {
+                      const value = event.target.value;
+                      setSearchQuery(value);
+                      if (!value.trim()) {
+                        setSearchMatches([]);
+                        setSearchLoading(false);
+                        setSearchError("");
+                      }
+                    }} />
+                    {searchQuery && <button className="icon-button" aria-label={messages.closeError} onClick={() => {
+                      setSearchQuery("");
+                      setSearchMatches([]);
+                      setSearchLoading(false);
+                      setSearchError("");
+                    }}><X size={14} /></button>}
+                  </div>
+                  {searchQuery.trim() && (
+                    <div className="search-summary">
+                      {searchLoading ? messages.searching : searchError || messages.searchResults(searchMatches.length)}
+                    </div>
+                  )}
+                  <div className="search-results" role="list">
+                    {searchMatches.map((match, index) => (
+                      <button key={`${match.page}-${index}`} role="listitem" onClick={() => goToPage(match.page)}>
+                        <span><strong>{messages.page(match.page)}</strong></span>
+                        <p><HighlightedText text={match.snippet} query={searchQuery} /></p>
+                      </button>
+                    ))}
+                    {!searchLoading && !searchError && searchQuery.trim() && searchMatches.length === 0 && <p className="search-empty">{messages.noSearchResults}</p>}
+                  </div>
+                </div>
+              ) : (
+                <nav className="page-nav" aria-label={messages.pages}>
+                  {pageNumbers.map((page) => (
+                    <button key={page} className={cn(page === currentPage && "active")} onClick={() => goToPage(page)}>
+                      <span className="page-thumbnail">{page <= 2 && isDemo ? <SampleScan page={page} messages={messages} /> : page}</span>
+                      <span>{messages.page(page)}</span>
+                      {translations[page] && <CircleCheck size={14} />}
+                    </button>
+                  ))}
+                </nav>
+              )}
             </>
           )}
         </aside>
@@ -1345,6 +1507,7 @@ export default function Home() {
                   requestTranslation={requestTranslation}
                   setCurrentPage={setCurrentPage}
                   messages={messages}
+                  searchQuery={searchOpen ? searchQuery.trim() : ""}
                 />
               ))}
             </div>
