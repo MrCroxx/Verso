@@ -89,7 +89,6 @@ button { color: inherit; }
 .search-results > button:hover { background: #e9efeb; }
 .search-results > button > span { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .search-results strong { color: var(--green-dark); font-size: 10px; }
-.search-results em { padding: 2px 5px; border-radius: 5px; background: var(--green-soft); color: var(--green-dark); font-size: 8px; font-style: normal; }
 .search-results p { margin: 6px 0 0; font-family: Georgia, "Songti SC", serif; font-size: 11px; line-height: 1.55; }
 .search-results mark, .translation-copy mark { padding: 0 .08em; border-radius: 2px; background: #ffdf83; color: #30270e; }
 .search-empty { padding: 28px 8px; color: #929c96; text-align: center; font-family: inherit !important; font-size: 10px !important; }

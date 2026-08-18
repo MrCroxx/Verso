@@ -33,7 +33,14 @@ export async function POST(request: NextRequest) {
     const result = await db.prepare(`SELECT page, payload
       FROM translations
       WHERE document_id = ?1
-        AND instr(lower(payload), lower(?2)) > 0
+        AND (
+          instr(lower(COALESCE(json_extract(payload, '$.markdown'), '')), lower(?2)) > 0
+          OR EXISTS (
+            SELECT 1
+            FROM json_each(translations.payload, '$.blocks')
+            WHERE instr(lower(COALESCE(json_extract(value, '$.text'), '')), lower(?2)) > 0
+          )
+        )
         AND substr(cache_key, -length(?3)) = ?3
       ORDER BY page
       LIMIT 250`)

@@ -96,7 +96,6 @@ type Translation = {
   blocks?: TranslationBlock[];
   isBlank?: boolean;
   boundaryDeduplicated?: boolean;
-  sourceText?: string;
   sourceSummary?: string;
   revised?: boolean;
   cacheVersion?: number;
@@ -107,14 +106,12 @@ type TranslationResponse = {
   page: number;
   blocks: TranslationBlock[];
   isBlank: boolean;
-  sourceText?: string;
   sourceSummary?: string;
   previousPageRevision?: { page: number; blocks: TranslationBlock[] } | null;
 };
 
 type SearchMatch = {
   page: number;
-  kind: "source" | "translation";
   snippet: string;
 };
 
@@ -174,12 +171,10 @@ const UI_MESSAGES = {
     toggleSidebar: "切换侧栏",
     pages: "页码",
     searchPages: "搜索页码",
-    searchPlaceholder: "搜索原文或译文",
+    searchPlaceholder: "搜索译文",
     searchResults: (count: number) => `${count} 条结果`,
     searching: "正在搜索已翻译页面",
     noSearchResults: "未找到匹配内容",
-    sourceMatch: "原文",
-    translationMatch: "译文",
     searchFailed: "无法搜索已翻译内容",
     scannedEdition: (pages: number) => `${pages} 页 · 扫描版`,
     readingProgress: "阅读进度",
@@ -274,12 +269,10 @@ const UI_MESSAGES = {
     toggleSidebar: "Toggle sidebar",
     pages: "Pages",
     searchPages: "Search pages",
-    searchPlaceholder: "Search source or translation",
+    searchPlaceholder: "Search translations",
     searchResults: (count: number) => `${count} result${count === 1 ? "" : "s"}`,
     searching: "Searching translated pages",
     noSearchResults: "No matching text found",
-    sourceMatch: "Source",
-    translationMatch: "Translation",
     searchFailed: "Unable to search translated content",
     scannedEdition: (pages: number) => `${pages} pages · Scanned edition`,
     readingProgress: "Reading progress",
@@ -1022,13 +1015,8 @@ export default function Home() {
       setSearchError("");
       try {
         if (isDemo) {
-          const matches = Object.entries(translations).flatMap(([page, translation]) => {
-            const sample = SAMPLE_PAGES[(Number(page) - 1) % SAMPLE_PAGES.length];
-            return searchTranslationPayload({
-              ...translation,
-              sourceText: [sample.kicker, sample.title, ...sample.body].join("\n"),
-            }, Number(page), query);
-          });
+          const matches = Object.entries(translations).flatMap(([page, translation]) =>
+            searchTranslationPayload(translation, Number(page), query));
           setSearchMatches(matches);
           return;
         }
@@ -1266,7 +1254,6 @@ export default function Home() {
         markdown: translationMarkdown(payload.blocks),
         blocks: payload.blocks,
         isBlank: payload.isBlank,
-        sourceText: payload.sourceText,
         sourceSummary: payload.sourceSummary,
         cacheVersion: requestVersion,
         cachedAt: Date.now(),
@@ -1446,8 +1433,8 @@ export default function Home() {
                   )}
                   <div className="search-results" role="list">
                     {searchMatches.map((match, index) => (
-                      <button key={`${match.page}-${match.kind}-${index}`} role="listitem" onClick={() => goToPage(match.page)}>
-                        <span><strong>{messages.page(match.page)}</strong><em>{match.kind === "source" ? messages.sourceMatch : messages.translationMatch}</em></span>
+                      <button key={`${match.page}-${index}`} role="listitem" onClick={() => goToPage(match.page)}>
+                        <span><strong>{messages.page(match.page)}</strong></span>
                         <p><HighlightedText text={match.snippet} query={searchQuery} /></p>
                       </button>
                     ))}

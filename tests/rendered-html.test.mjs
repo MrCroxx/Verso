@@ -66,19 +66,17 @@ test("rejects incomplete search requests", async () => {
   assert.deepEqual(await response.json(), { error: "Invalid search request." });
 });
 
-test("searches source transcription and translated blocks independently", () => {
-  const matches = searchTranslationPayload({
+test("searches translated blocks without matching source text", () => {
+  const payload = {
     sourceText: "A patient reader gives an argument time to arrive.",
     blocks: [{ kind: "paragraph", text: "耐心的读者愿意等待论证逐渐展开。" }],
-  }, 7, "patient");
-  const translatedMatches = searchTranslationPayload({
-    sourceText: "A patient reader gives an argument time to arrive.",
-    blocks: [{ kind: "paragraph", text: "耐心的读者愿意等待论证逐渐展开。" }],
-  }, 7, "耐心");
+  };
+  const sourceMatches = searchTranslationPayload(payload, 7, "patient");
+  const translatedMatches = searchTranslationPayload(payload, 7, "耐心");
 
-  assert.deepEqual(matches.map(({ page, kind }) => ({ page, kind })), [{ page: 7, kind: "source" }]);
-  assert.deepEqual(translatedMatches.map(({ page, kind }) => ({ page, kind })), [{ page: 7, kind: "translation" }]);
-  assert.match(matches[0].snippet, /patient reader/i);
+  assert.deepEqual(sourceMatches, []);
+  assert.deepEqual(translatedMatches.map(({ page }) => page), [7]);
+  assert.match(translatedMatches[0].snippet, /耐心/);
 });
 
 test("recognizes browser find shortcuts without hijacking modified keys", () => {

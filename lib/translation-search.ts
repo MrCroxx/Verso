@@ -2,7 +2,6 @@ import { normalizeLayoutBlocks } from "./translation-layout.ts";
 
 export type TranslationSearchMatch = {
   page: number;
-  kind: "source" | "translation";
   snippet: string;
 };
 
@@ -29,12 +28,6 @@ export function searchTranslationPayload(payloadValue: unknown, page: number, qu
   const normalizedQuery = query.trim();
   if (!normalizedQuery) return [];
 
-  const documents = [
-    { kind: "source" as const, text: searchableText(payload.sourceText) },
-    { kind: "translation" as const, text: translatedText(payload) },
-  ];
-  return documents.flatMap(({ kind, text }) => {
-    const snippet = excerpt(text, normalizedQuery);
-    return snippet ? [{ page, kind, snippet }] : [];
-  });
+  const snippet = excerpt(translatedText(payload), normalizedQuery);
+  return snippet ? [{ page, snippet }] : [];
 }
