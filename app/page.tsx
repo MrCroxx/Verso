@@ -582,9 +582,16 @@ function PageSpread({
   const [renderError, setRenderError] = useState("");
 
   useEffect(() => {
-    if (!near) return;
-    requestTranslation(page);
+    if (near) requestTranslation(page);
+  }, [near, page, requestTranslation]);
+
+  useEffect(() => {
     if (isDemo) return;
+    if (!near) {
+      const releaseImage = window.setTimeout(() => setImage(undefined), 500);
+      return () => window.clearTimeout(releaseImage);
+    }
+
     let active = true;
     renderPage(page)
       .then((result) => active && setImage(result))
@@ -594,9 +601,8 @@ function PageSpread({
       });
     return () => {
       active = false;
-      window.setTimeout(() => setImage(undefined), 500);
     };
-  }, [isDemo, near, page, renderPage, requestTranslation]);
+  }, [isDemo, near, page, renderPage]);
 
   useEffect(() => {
     const node = ref.current;
@@ -829,6 +835,7 @@ export default function Home() {
   const [locale, setLocale] = useState<UiLocale>("zh-CN");
   const [theme, setTheme] = useState<ThemeMode>("light");
   const messages = UI_MESSAGES[locale];
+  const messagesRef = useRef(messages);
   const [settings, setSettings] = useState<ProviderSettings>(() => {
     if (typeof window === "undefined") return DEFAULT_SETTINGS;
     const stored = localStorage.getItem("verso-settings");
@@ -861,7 +868,8 @@ export default function Home() {
 
   useEffect(() => {
     document.documentElement.lang = locale;
-  }, [locale]);
+    messagesRef.current = messages;
+  }, [locale, messages]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -892,20 +900,21 @@ export default function Home() {
   }, []);
 
   const refreshBooks = useCallback(async () => {
+    const currentMessages = messagesRef.current;
     setCloudBooksLoading(true);
     try {
       const response = await fetch("/api/books", { cache: "no-store" });
       const result = await response.json() as { books?: CloudBook[]; error?: string };
-      if (!response.ok) throw new Error(result.error || messages.libraryReadFailed);
+      if (!response.ok) throw new Error(result.error || currentMessages.libraryReadFailed);
       const books = result.books || [];
       setCloudBooks(books);
       if (books[0]) void warmCloudBook(books[0]).catch(() => undefined);
     } catch (error) {
-      setCloudMessage(error instanceof Error ? error.message : messages.libraryReadFailed);
+      setCloudMessage(error instanceof Error ? error.message : currentMessages.libraryReadFailed);
     } finally {
       setCloudBooksLoading(false);
     }
-  }, [messages, warmCloudBook]);
+  }, [warmCloudBook]);
 
   useEffect(() => {
     void loadPdfRuntime().catch(() => undefined);
@@ -1063,6 +1072,7 @@ export default function Home() {
 
   const requestTranslation = useCallback(async (page: number, force = false) => {
     if (isDemo) return;
+    const currentMessages = messagesRef.current;
     const flightKey = `${documentId}:${page}`;
     if (inFlight.current.has(flightKey)) return;
     const documentSequence = documentLoadSequence.current;
@@ -1075,20 +1085,20 @@ export default function Home() {
     setErrors((existing) => ({ ...existing, [page]: "" }));
     try {
       if (!force) {
-        const cached = await readCloudCache(key, messages.cloudTranslationReadFailed);
+        const cached = await readCloudCache(key, currentMessages.cloudTranslationReadFailed);
         if (cached) {
-          if (previousKey) previousTranslation = await readCloudCache(previousKey, messages.cloudTranslationReadFailed).catch(() => undefined);
+          if (previousKey) previousTranslation = await readCloudCache(previousKey, currentMessages.cloudTranslationReadFailed).catch(() => undefined);
           const reconciled = reconcilePageBoundary(previousTranslation, cached);
           if (documentSequence !== documentLoadSequence.current) return;
           setTranslations((existing) => ({ ...existing, [page]: reconciled }));
           if (reconciled !== cached) {
-            void writeCloudCache(key, documentId, page, reconciled, messages.cloudTranslationWriteFailed).catch(() => undefined);
+            void writeCloudCache(key, documentId, page, reconciled, currentMessages.cloudTranslationWriteFailed).catch(() => undefined);
           }
           return;
         }
       }
-      if (!settings.apiKey) throw new Error(messages.apiKeyRequired);
-      if (previousKey) previousTranslation = await readCloudCache(previousKey, messages.cloudTranslationReadFailed).catch(() => undefined);
+      if (!settings.apiKey) throw new Error(currentMessages.apiKeyRequired);
+      if (previousKey) previousTranslation = await readCloudCache(previousKey, currentMessages.cloudTranslationReadFailed).catch(() => undefined);
 
       const payload = await translationLimiter.run(settings.translationConcurrency, async () => {
         if (documentSequence !== documentLoadSequence.current) throw new Error("Translation request was superseded.");
@@ -1106,8 +1116,8 @@ export default function Home() {
           }),
         });
         const result = await response.json() as TranslationResponse & { error?: string };
-        if (!response.ok) throw new Error(result.error || messages.translationRequestFailed);
-        if (!Array.isArray(result.blocks)) throw new Error(messages.invalidTranslation);
+        if (!response.ok) throw new Error(result.error || currentMessages.translationRequestFailed);
+        if (!Array.isArray(result.blocks)) throw new Error(currentMessages.invalidTranslation);
         return result;
       });
       const revision: Translation | undefined = payload.previousPageRevision?.page === page - 1
@@ -1137,12 +1147,12 @@ export default function Home() {
         [page]: translated,
       }));
       await Promise.all([
-        writeCloudCache(key, documentId, page, translated, messages.cloudTranslationWriteFailed),
-        ...(revision ? [writeCloudCache(previousKey, documentId, page - 1, revision, messages.cloudTranslationWriteFailed)] : []),
+        writeCloudCache(key, documentId, page, translated, currentMessages.cloudTranslationWriteFailed),
+        ...(revision ? [writeCloudCache(previousKey, documentId, page - 1, revision, currentMessages.cloudTranslationWriteFailed)] : []),
       ]);
     } catch (error) {
       if (documentSequence !== documentLoadSequence.current) return;
-      const message = error instanceof Error ? error.message : messages.translationFailed;
+      const message = error instanceof Error ? error.message : currentMessages.translationFailed;
       setErrors((existing) => ({ ...existing, [page]: message }));
     } finally {
       inFlight.current.delete(flightKey);
@@ -1154,7 +1164,7 @@ export default function Home() {
         });
       }
     }
-  }, [documentId, isDemo, messages, renderPage, settings, totalPages]);
+  }, [documentId, isDemo, renderPage, settings, totalPages]);
 
   const handleFile = useCallback(async (file?: File) => {
     if (!file) return;
