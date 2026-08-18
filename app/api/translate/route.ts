@@ -40,6 +40,7 @@ const schema = {
   properties: {
     page: { type: "integer" },
     blocks: { type: "array", items: blockSchema },
+    sourceText: { type: "string" },
     sourceSummary: { type: "string" },
     previousPageRevision: {
       anyOf: [
@@ -56,7 +57,7 @@ const schema = {
       ],
     },
   },
-  required: ["page", "blocks", "sourceSummary", "previousPageRevision"],
+  required: ["page", "blocks", "sourceText", "sourceSummary", "previousPageRevision"],
 };
 
 function normalizeTranslationResponse(value: unknown, requestedPage: number) {
@@ -69,6 +70,7 @@ function normalizeTranslationResponse(value: unknown, requestedPage: number) {
     page: typeof result.page === "number" ? result.page : requestedPage,
     blocks,
     isBlank: !blocks.some((block) => block.kind !== "spacer" && block.text.trim()),
+    sourceText: typeof result.sourceText === "string" ? result.sourceText : "",
     sourceSummary: typeof result.sourceSummary === "string" ? result.sourceSummary : "",
     previousPageRevision: revision
       ? {
@@ -90,6 +92,7 @@ ${previousTranslation}
 
 Instructions:
 - Read both the text and the page design visually. Reconstruct the requested page as ordered layout blocks.
+- Transcribe all readable source text printed on requested page ${body.page} into sourceText, preserving reading order with newlines. Do not translate sourceText.
 - Translate only requested page ${body.page}; adjacent pages are context, not additional output.
 - Resolve sentences and paragraphs that cross page boundaries using adjacent images.
 - Page ownership follows the source scan exactly. Every translated fragment in blocks must correspond to source text visibly printed on page ${body.page}.

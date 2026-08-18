@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createConcurrencyLimiter } from "../lib/concurrency-limiter.ts";
 import { deduplicatePageBoundary, normalizeTranslationPayload } from "../lib/translation-layout.ts";
+import { searchTranslationPayload } from "../lib/translation-search.ts";
 
 async function render(path = "/") {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
@@ -45,6 +46,38 @@ test("rejects incomplete translation requests", async () => {
   );
   assert.equal(response.status, 400);
   assert.deepEqual(await response.json(), { error: "Missing API key, model, or page images." });
+});
+
+test("rejects incomplete search requests", async () => {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}-search-api`);
+  const { default: worker } = await import(workerUrl.href);
+  const response = await worker.fetch(
+    new Request("http://localhost/api/search", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ documentId: "book", query: "" }),
+    }),
+    { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
+    { waitUntil() {}, passThroughOnException() {} },
+  );
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: "Invalid search request." });
+});
+
+test("searches source transcription and translated blocks independently", () => {
+  const matches = searchTranslationPayload({
+    sourceText: "A patient reader gives an argument time to arrive.",
+    blocks: [{ kind: "paragraph", text: "耐心的读者愿意等待论证逐渐展开。" }],
+  }, 7, "patient");
+  const translatedMatches = searchTranslationPayload({
+    sourceText: "A patient reader gives an argument time to arrive.",
+    blocks: [{ kind: "paragraph", text: "耐心的读者愿意等待论证逐渐展开。" }],
+  }, 7, "耐心");
+
+  assert.deepEqual(matches.map(({ page, kind }) => ({ page, kind })), [{ page: 7, kind: "source" }]);
+  assert.deepEqual(translatedMatches.map(({ page, kind }) => ({ page, kind })), [{ page: 7, kind: "translation" }]);
+  assert.match(matches[0].snippet, /patient reader/i);
 });
 
 test("preserves list markers and trailing page references from compatible providers", () => {
