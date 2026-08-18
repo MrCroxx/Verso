@@ -1,25 +1,57 @@
 # Verso
 
-Verso is a web reader for scanned PDF books. It renders the source scan and an
-AI-generated, layout-aware translation side by side while keeping large books
-responsive through lazy page rendering and bounded translation concurrency.
+Verso is an AI-powered web reader for scanned PDF books. It keeps the original
+page visible beside a layout-aware translation, so you can read across
+languages without losing the typography, illustrations, or structure of the
+source.
+
+![Verso reader showing a scanned page and its translation side by side](./docs/images/reader-light.png)
 
 ## Features
 
-- Vision translation through the OpenAI Responses API or compatible providers.
-- Configurable provider endpoint, model, reasoning effort, target language,
-  prefetch range, and translation concurrency.
-- Layout-aware translation blocks for headings, paragraphs, lists, captions,
-  whitespace, and page numbers.
-- Bounded cross-page context with previous-page revision and deterministic
-  boundary deduplication.
-- Cloud-backed PDF, page index, blank-page, and translation caches.
-- Automatic table-of-contents extraction with cloud-backed page mapping and
-  manual or automatic PDF page-offset calibration.
-- On-demand rendering and translation suitable for scanned books with hundreds
-  of pages.
-- Simplified Chinese and English interface locales.
-- Light and dark interface themes without altering the scanned source image.
+- **Side-by-side reading:** compare the source scan and translation while
+  navigating pages from a persistent sidebar with reading progress.
+- **Layout-aware vision translation:** preserve headings, paragraphs, lists,
+  captions, whitespace, and page numbers instead of flattening each page into
+  plain text.
+- **Cross-page context:** translate with a bounded window of consecutive pages,
+  revise unfinished paragraphs, and deterministically remove duplicated text at
+  page boundaries.
+- **Flexible AI providers:** use the OpenAI Responses API or an
+  OpenAI-compatible endpoint, with configurable model, reasoning effort, target
+  language, prefetch range, and translation concurrency.
+- **Cloud library and caching:** keep uploaded PDFs, page indexes, blank-page
+  results, and translations in cloud-backed storage so books remain available
+  across reading sessions.
+- **Automatic contents navigation:** detect translated contents pages, preserve
+  printed page references, and calibrate PDF page offsets automatically or
+  manually.
+- **Translation search:** search cloud-cached translations, jump directly to a
+  result, and highlight matches without scanning or retranslating the book.
+- **Large-book performance:** lazily render pages and bound background
+  translation work to keep scanned books with hundreds of pages responsive.
+- **Reader preferences:** switch the interface between English and Simplified
+  Chinese independently of the translation target, choose a light or dark
+  theme, and configure animated page navigation without altering the source
+  scan.
+
+## Screenshots
+
+### Translation configuration
+
+Open Settings to configure a hosted OpenAI model or any compatible endpoint,
+then tune the context window, prefetch behavior, and parallelism for the
+provider's limits. API credentials are persisted only in the browser and are
+never written to the application server's storage.
+
+![Verso settings with provider, model, language, prefetch, and concurrency controls](./docs/images/ai-settings.png)
+
+### Dark theme
+
+The reader chrome and translated page adapt to dark mode while the scanned page
+retains its original appearance.
+
+![Verso reader in dark mode](./docs/images/reader-dark.png)
 
 ## Technology
 
