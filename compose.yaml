@@ -1,0 +1,11 @@
+services:
+  verso:
+    image: ghcr.io/mrcroxx/verso:latest
+    ports:
+      - "3000:3000"
+    volumes:
+      - verso-data:/data
+    restart: unless-stopped
+
+volumes:
+  verso-data:
