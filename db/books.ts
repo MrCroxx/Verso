@@ -50,6 +50,23 @@ export async function ensureStorageSchema(db: D1Database) {
         updated_at INTEGER NOT NULL
       )`),
       db.prepare("CREATE INDEX IF NOT EXISTS translations_document_page_idx ON translations (document_id, page)"),
+      db.prepare(`CREATE TABLE IF NOT EXISTS navigation_pages (
+        document_id TEXT NOT NULL,
+        pdf_page INTEGER NOT NULL,
+        is_table_of_contents INTEGER NOT NULL,
+        toc_entries TEXT NOT NULL,
+        page_label TEXT,
+        page_value INTEGER,
+        numbering TEXT,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (document_id, pdf_page)
+      )`),
+      db.prepare("CREATE INDEX IF NOT EXISTS navigation_pages_document_idx ON navigation_pages (document_id, pdf_page)"),
+      db.prepare(`CREATE TABLE IF NOT EXISTS navigation_settings (
+        document_id TEXT PRIMARY KEY NOT NULL,
+        manual_offset INTEGER,
+        updated_at INTEGER NOT NULL
+      )`),
     ]);
   })();
   return schemaReady;

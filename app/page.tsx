@@ -12,24 +12,44 @@ import {
   FileText,
   Globe2,
   Languages,
+  ListTree,
   LoaderCircle,
   Menu,
+  Minus,
   MoreHorizontal,
   Moon,
   PanelLeftClose,
+  Plus,
   RefreshCw,
-  Search,
+  RotateCcw,
   Settings2,
   Sparkles,
   Sun,
   Upload,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { CLOUD_PDF_RANGE_CHUNK_SIZE, createCloudPdfRangeTransport } from "../lib/cloud-pdf-range-transport";
 import { createConcurrencyLimiter } from "../lib/concurrency-limiter";
+import {
+  calculatePageOffset,
+  collectPageAnchors,
+  collectTocEntries,
+  extractNavigationObservation,
+  mergeNavigationObservation,
+  normalizeNavigationObservation,
+  resolveTocEntryPage,
+  type DocumentNavigation,
+  type NavigationObservation,
+  type TocEntry,
+} from "../lib/document-navigation";
+import { createLatestTaskRegistry } from "../lib/latest-task-registry";
 import { deduplicatePageBoundary, normalizeTranslationPayload } from "../lib/translation-layout";
+import { isPageWorkEnabled } from "../lib/viewport-work";
 
 type PdfDocument = import("pdfjs-dist").PDFDocumentProxy;
+type PdfLoadingTask = import("pdfjs-dist").PDFDocumentLoadingTask;
+type PdfRenderTask = import("pdfjs-dist").RenderTask;
 type PdfWorker = import("pdfjs-dist").PDFWorker;
 
 let pdfJsPromise: Promise<typeof import("pdfjs-dist/legacy/build/pdf.mjs")> | undefined;
@@ -65,6 +85,10 @@ type ProviderSettings = {
   targetLanguage: string;
   nearbyPages: number;
   translationConcurrency: number;
+};
+
+type AppSettings = ProviderSettings & {
+  smoothScrolling: boolean;
 };
 
 type CloudBook = {
@@ -125,12 +149,12 @@ const UI_MESSAGES = {
     retryRender: "重试渲染",
     renderingScan: "正在渲染扫描页",
     retranslate: "重新翻译本页",
+    restartTranslation: "停止当前任务并重新翻译本页",
     readingContext: (page: number) => `正在读取第 ${page} 页及相邻上下文`,
     retry: "重试",
-    onDemand: "滚动到此页时按需生成译文",
-    settingsDialog: "AI 翻译设置",
-    aiSettings: "AI 设置",
-    configureVision: "配置视觉翻译模型",
+    settingsDialog: "设置",
+    settings: "设置",
+    settingsSubtitle: "阅读体验与视觉翻译设置",
     closeSettings: "关闭设置",
     apiKeyHelp: "仅保存在当前浏览器，本应用不会写入服务端。",
     provider: "服务商",
@@ -144,6 +168,8 @@ const UI_MESSAGES = {
     concurrencyHelp: "默认 4；如果 Provider 返回限流错误，可以适当调低。",
     crossPageEnabled: "跨页上下文已启用",
     crossPageHelp: "每次最多向模型发送连续 3 页；后页可修订上一页未闭合的段落。",
+    smoothScrolling: "平滑滚动",
+    smoothScrollingHelp: "目录跳转和翻页时播放滚动动画",
     saveSettings: "保存设置",
     libraryDialog: "云端书库",
     cloudLibrary: "云端书库",
@@ -163,7 +189,22 @@ const UI_MESSAGES = {
     openPdf: "打开 PDF",
     toggleSidebar: "切换侧栏",
     pages: "页码",
-    searchPages: "搜索页码",
+    contents: "目录",
+    contentsCount: (count: number) => `${count} 项`,
+    contentsEmpty: "尚未检测到目录",
+    contentsEmptyHelp: "阅读到目录页并生成译文后，目录会自动出现在这里。",
+    pageOffset: "PDF 页码偏移",
+    automaticOffset: (offset: string) => `自动 ${offset}`,
+    manualOffset: (offset: string) => `手动 ${offset}`,
+    offsetUncalibrated: "尚未校准",
+    offsetHelp: "书内页码 + 偏移 = PDF 页码；读取带页码的正文后会自动计算。",
+    offsetInput: "PDF 页码偏移量",
+    decreaseOffset: "减小页码偏移",
+    increaseOffset: "增大页码偏移",
+    resetAutomaticOffset: "恢复自动计算",
+    tocTarget: (page: number) => `跳转到 PDF 第 ${page} 页`,
+    tocIndexConfirmed: "索引已校准",
+    tocIndexPending: "索引待校准",
     scannedEdition: (pages: number) => `${pages} 页 · 扫描版`,
     readingProgress: "阅读进度",
     page: (page: number) => `第 ${page} 页`,
@@ -173,7 +214,7 @@ const UI_MESSAGES = {
     moreOptions: "更多选项",
     closeError: "关闭错误提示",
     pdfReady: "PDF 已加载。填写 API key 后才会开始生成译文。",
-    openAiSettings: "打开 AI 设置",
+    openSettings: "打开设置",
     cloudIndex: (pages: number) => `已载入云端页码索引 · ${pages} 页`,
     readingIndex: "正在读取 PDF 页码索引",
     connectingRenderer: (name: string) => `已切换到《${name}》，正在连接页面渲染器`,
@@ -192,11 +233,13 @@ const UI_MESSAGES = {
     uploadCompleteFailed: "无法完成云端缓存",
     cachedCloud: "已缓存到云端",
     uploadFailed: "云端缓存失败",
-    apiKeyRequired: "请先在 AI 设置中填写 API key。",
+    apiKeyRequired: "请先在设置中填写 API key。",
     invalidTranslation: "模型返回了无效的译文结构。",
     translationFailed: "无法生成译文",
     cloudTranslationReadFailed: "无法读取云端译文缓存",
     cloudTranslationWriteFailed: "无法写入云端译文缓存",
+    navigationReadFailed: "无法读取云端目录",
+    navigationWriteFailed: "无法写入云端目录",
     translationRequestFailed: "翻译请求失败",
     openPdfFailed: (detail: string) => `无法打开这个 PDF：${detail}`,
     openedFromCloud: "已从云端书库打开",
@@ -218,12 +261,12 @@ const UI_MESSAGES = {
     retryRender: "Retry rendering",
     renderingScan: "Rendering scanned page",
     retranslate: "Translate this page again",
+    restartTranslation: "Stop the current task and translate this page again",
     readingContext: (page: number) => `Reading page ${page} and adjacent context`,
     retry: "Retry",
-    onDemand: "Translation is generated on demand as you scroll",
-    settingsDialog: "AI translation settings",
-    aiSettings: "AI Settings",
-    configureVision: "Configure the vision translation model",
+    settingsDialog: "Settings",
+    settings: "Settings",
+    settingsSubtitle: "Reading and vision translation preferences",
     closeSettings: "Close settings",
     apiKeyHelp: "Stored only in this browser and never written to the server.",
     provider: "Provider",
@@ -237,6 +280,8 @@ const UI_MESSAGES = {
     concurrencyHelp: "Default: 4. Lower this if your provider returns rate-limit errors.",
     crossPageEnabled: "Cross-page context enabled",
     crossPageHelp: "Each request includes at most 3 consecutive pages; a later page may revise an unfinished paragraph.",
+    smoothScrolling: "Smooth scrolling",
+    smoothScrollingHelp: "Animate page and contents navigation",
     saveSettings: "Save settings",
     libraryDialog: "Cloud library",
     cloudLibrary: "Cloud Library",
@@ -256,7 +301,22 @@ const UI_MESSAGES = {
     openPdf: "Open PDF",
     toggleSidebar: "Toggle sidebar",
     pages: "Pages",
-    searchPages: "Search pages",
+    contents: "Contents",
+    contentsCount: (count: number) => `${count} item${count === 1 ? "" : "s"}`,
+    contentsEmpty: "No contents detected yet",
+    contentsEmptyHelp: "Contents appear here automatically after a contents page is translated.",
+    pageOffset: "PDF page offset",
+    automaticOffset: (offset: string) => `Auto ${offset}`,
+    manualOffset: (offset: string) => `Manual ${offset}`,
+    offsetUncalibrated: "Not calibrated",
+    offsetHelp: "Printed page + offset = PDF page. Reading numbered body pages calibrates it automatically.",
+    offsetInput: "PDF page offset",
+    decreaseOffset: "Decrease page offset",
+    increaseOffset: "Increase page offset",
+    resetAutomaticOffset: "Restore automatic calculation",
+    tocTarget: (page: number) => `Go to PDF page ${page}`,
+    tocIndexConfirmed: "Index calibrated",
+    tocIndexPending: "Index pending",
     scannedEdition: (pages: number) => `${pages} pages · Scanned edition`,
     readingProgress: "Reading progress",
     page: (page: number) => `Page ${page}`,
@@ -266,7 +326,7 @@ const UI_MESSAGES = {
     moreOptions: "More options",
     closeError: "Dismiss error",
     pdfReady: "PDF loaded. Add an API key to start generating translations.",
-    openAiSettings: "Open AI settings",
+    openSettings: "Open settings",
     cloudIndex: (pages: number) => `Cloud page index loaded · ${pages} pages`,
     readingIndex: "Reading PDF page index",
     connectingRenderer: (name: string) => `Switched to “${name}”; connecting the page renderer`,
@@ -285,11 +345,13 @@ const UI_MESSAGES = {
     uploadCompleteFailed: "Unable to complete cloud caching",
     cachedCloud: "Cached in cloud",
     uploadFailed: "Cloud caching failed",
-    apiKeyRequired: "Add an API key in AI Settings first.",
+    apiKeyRequired: "Add an API key in Settings first.",
     invalidTranslation: "The model returned an invalid translation structure.",
     translationFailed: "Unable to generate translation",
     cloudTranslationReadFailed: "Unable to read the cloud translation cache",
     cloudTranslationWriteFailed: "Unable to write the cloud translation cache",
+    navigationReadFailed: "Unable to read cloud contents",
+    navigationWriteFailed: "Unable to write cloud contents",
     translationRequestFailed: "Translation request failed",
     openPdfFailed: (detail: string) => `Unable to open this PDF: ${detail}`,
     openedFromCloud: "Opened from cloud library",
@@ -321,7 +383,7 @@ function targetLanguageLabel(value: string, locale: UiLocale) {
   return labels[locale][value] || value;
 }
 
-const DEFAULT_SETTINGS: ProviderSettings = {
+const DEFAULT_SETTINGS: AppSettings = {
   provider: "openai",
   endpoint: "https://api.openai.com/v1/responses",
   apiKey: "",
@@ -330,10 +392,24 @@ const DEFAULT_SETTINGS: ProviderSettings = {
   targetLanguage: "Simplified Chinese",
   nearbyPages: 2,
   translationConcurrency: 4,
+  smoothScrolling: true,
 };
 
 const translationLimiter = createConcurrencyLimiter();
 let latestTranslationVersion = Date.now() * 1000;
+const EMPTY_NAVIGATION: DocumentNavigation = { observations: [], manualOffset: null };
+const BOOK_QUERY_PARAMETER = "book";
+
+function bookIdFromUrl() {
+  return new URL(window.location.href).searchParams.get(BOOK_QUERY_PARAMETER)?.trim() || null;
+}
+
+function replaceBookInUrl(bookId: string | null) {
+  const url = new URL(window.location.href);
+  if (bookId) url.searchParams.set(BOOK_QUERY_PARAMETER, bookId);
+  else url.searchParams.delete(BOOK_QUERY_PARAMETER);
+  window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+}
 
 function nextTranslationVersion() {
   latestTranslationVersion = Math.max(latestTranslationVersion + 1, Date.now() * 1000);
@@ -382,15 +458,27 @@ function cn(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(" ");
 }
 
+function isWorkCancellation(error: unknown) {
+  return error instanceof Error
+    && ["AbortError", "RenderingCancelledException"].includes(error.name);
+}
+
 function cacheKey(documentId: string, page: number, settings: ProviderSettings) {
   return ["layout-v3", documentId, page, settings.provider, settings.endpoint, settings.model, settings.reasoningEffort, settings.targetLanguage].join("::");
 }
 
-async function readCloudCache(key: string, fallbackMessage: string): Promise<Translation | undefined> {
-  const response = await fetch(`/api/translations?key=${encodeURIComponent(key)}`, { cache: "no-store" });
+async function readCloudCache(key: string, fallbackMessage: string, signal?: AbortSignal): Promise<Translation | undefined> {
+  const response = await fetch(`/api/translations?key=${encodeURIComponent(key)}`, { cache: "no-store", signal });
   const result = await response.json() as { translation?: Translation | null; error?: string };
   if (!response.ok) throw new Error(result.error || fallbackMessage);
   return result.translation ? normalizeTranslationPayload(result.translation) as Translation : undefined;
+}
+
+async function readCloudBook(id: string, fallbackMessage: string): Promise<CloudBook> {
+  const response = await fetch(`/api/books/${encodeURIComponent(id)}`, { cache: "no-store" });
+  const result = await response.json() as { book?: CloudBook; error?: string };
+  if (!response.ok || !result.book) throw new Error(result.error || fallbackMessage);
+  return result.book;
 }
 
 async function writeCloudCache(key: string, documentId: string, page: number, translation: Translation, fallbackMessage: string) {
@@ -401,6 +489,47 @@ async function writeCloudCache(key: string, documentId: string, page: number, tr
   });
   const result = await response.json() as { error?: string };
   if (!response.ok) throw new Error(result.error || fallbackMessage);
+}
+
+async function readCloudNavigation(documentId: string, fallbackMessage: string): Promise<DocumentNavigation> {
+  const response = await fetch(`/api/navigation?documentId=${encodeURIComponent(documentId)}`, { cache: "no-store" });
+  const result = await response.json() as { navigation?: DocumentNavigation; error?: string };
+  if (!response.ok) throw new Error(result.error || fallbackMessage);
+  const observations = Array.isArray(result.navigation?.observations)
+    ? result.navigation.observations.map(normalizeNavigationObservation).filter((observation) => observation.pdfPage > 0)
+    : [];
+  return {
+    observations,
+    manualOffset: Number.isSafeInteger(result.navigation?.manualOffset) ? Number(result.navigation?.manualOffset) : null,
+  };
+}
+
+async function writeCloudNavigationObservation(
+  documentId: string,
+  observation: NavigationObservation,
+  fallbackMessage: string,
+) {
+  const response = await fetch("/api/navigation", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ documentId, observation }),
+  });
+  const result = await response.json() as { error?: string };
+  if (!response.ok) throw new Error(result.error || fallbackMessage);
+}
+
+async function writeCloudManualOffset(documentId: string, manualOffset: number | null, fallbackMessage: string) {
+  const response = await fetch("/api/navigation", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ documentId, manualOffset }),
+  });
+  const result = await response.json() as { error?: string };
+  if (!response.ok) throw new Error(result.error || fallbackMessage);
+}
+
+function signedOffset(value: number) {
+  return value > 0 ? `+${value}` : String(value);
 }
 
 function translationMarkdown(blocks: TranslationBlock[]) {
@@ -550,16 +679,28 @@ function TranslationText({ value, messages }: { value: Translation; messages: Ui
   );
 }
 
+function TranslationSkeleton({ page, messages }: { page: number; messages: UiMessages }) {
+  return (
+    <div className="translation-skeleton">
+      <div className="ai-working"><Sparkles size={15} /> {messages.readingContext(page)}</div>
+      <i /><i /><i /><i className="short" />
+    </div>
+  );
+}
+
 type PageSpreadProps = {
   page: number;
   totalPages: number;
   nearbyPages: number;
+  workEnabled: boolean;
+  workDistance: number;
   isDemo: boolean;
   translation?: Translation;
   loading: boolean;
   error?: string;
   renderPage: (page: number) => Promise<string>;
   requestTranslation: (page: number, force?: boolean) => void;
+  cancelTranslation: (page: number) => void;
   setCurrentPage: (page: number) => void;
   messages: UiMessages;
 };
@@ -568,12 +709,15 @@ function PageSpread({
   page,
   totalPages,
   nearbyPages,
+  workEnabled,
+  workDistance,
   isDemo,
   translation,
   loading,
   error,
   renderPage,
   requestTranslation,
+  cancelTranslation,
   setCurrentPage,
   messages,
 }: PageSpreadProps) {
@@ -582,8 +726,13 @@ function PageSpread({
   const [renderError, setRenderError] = useState("");
 
   useEffect(() => {
-    if (near) requestTranslation(page);
-  }, [near, page, requestTranslation]);
+    if (!near || !workEnabled) return;
+    const timer = window.setTimeout(() => requestTranslation(page), 250 + workDistance * 250);
+    return () => {
+      window.clearTimeout(timer);
+      cancelTranslation(page);
+    };
+  }, [cancelTranslation, near, page, requestTranslation, workDistance, workEnabled]);
 
   useEffect(() => {
     if (isDemo) return;
@@ -591,18 +740,25 @@ function PageSpread({
       const releaseImage = window.setTimeout(() => setImage(undefined), 500);
       return () => window.clearTimeout(releaseImage);
     }
+    if (!workEnabled) return;
 
     let active = true;
-    renderPage(page)
-      .then((result) => active && setImage(result))
-      .catch((error) => {
-        if (!active) return;
-        setRenderError(error instanceof Error ? error.message : "Unknown page rendering error");
-      });
+    const startRender = () => {
+      renderPage(page)
+        .then((result) => active && setImage(result))
+        .catch((error) => {
+          if (!active || isWorkCancellation(error)) return;
+          setRenderError(error instanceof Error ? error.message : "Unknown page rendering error");
+        });
+    };
+    let timer: number | undefined;
+    if (workDistance === 0) startRender();
+    else timer = window.setTimeout(startRender, workDistance * 180);
     return () => {
       active = false;
+      if (timer) window.clearTimeout(timer);
     };
-  }, [isDemo, near, page, renderPage]);
+  }, [isDemo, near, page, renderPage, workDistance, workEnabled]);
 
   useEffect(() => {
     const node = ref.current;
@@ -641,29 +797,28 @@ function PageSpread({
       <div className="translated-page page-surface">
         <div className="translation-heading">
           <div className="page-label">{messages.translatedPage(page)}</div>
-          {translation && (
-            <button className="icon-button subtle" aria-label={messages.retranslate} onClick={() => requestTranslation(page, true)}>
-              <RefreshCw size={15} />
+          {(translation || loading) && (
+            <button
+              className="icon-button subtle"
+              aria-label={loading ? messages.restartTranslation : messages.retranslate}
+              title={loading ? messages.restartTranslation : messages.retranslate}
+              onClick={() => requestTranslation(page, true)}
+            >
+              <RefreshCw className={cn(loading && "spin")} size={15} />
             </button>
           )}
         </div>
         {translation ? (
           <TranslationText value={translation} messages={messages} />
         ) : loading ? (
-          <div className="translation-skeleton">
-            <div className="ai-working"><Sparkles size={15} /> {messages.readingContext(page)}</div>
-            <i /><i /><i /><i className="short" />
-          </div>
+          <TranslationSkeleton page={page} messages={messages} />
         ) : error ? (
           <div className="translation-error">
             <p>{error}</p>
             <button className="secondary-button" onClick={() => requestTranslation(page, true)}>{messages.retry}</button>
           </div>
         ) : (
-          <div className="empty-translation">
-            <Languages size={26} />
-            <p>{messages.onDemand}</p>
-          </div>
+          <TranslationSkeleton page={page} messages={messages} />
         )}
       </div>
       {page < totalPages && <div className="spread-divider"><span>{messages.pageDivider(page + 1)}</span></div>}
@@ -678,13 +833,13 @@ function SettingsPanel({
   onChange,
   onClose,
 }: {
-  settings: ProviderSettings;
+  settings: AppSettings;
   locale: UiLocale;
   messages: UiMessages;
-  onChange: (next: ProviderSettings) => void;
+  onChange: (next: AppSettings) => void;
   onClose: () => void;
 }) {
-  function update<K extends keyof ProviderSettings>(key: K, value: ProviderSettings[K]) {
+  function update<K extends keyof AppSettings>(key: K, value: AppSettings[K]) {
     onChange({ ...settings, [key]: value });
   }
 
@@ -692,7 +847,7 @@ function SettingsPanel({
     <div className="settings-backdrop" role="presentation" onMouseDown={onClose}>
       <aside className="settings-panel" role="dialog" aria-modal="true" aria-label={messages.settingsDialog} onMouseDown={(event) => event.stopPropagation()}>
         <div className="settings-title">
-          <div><span>{messages.aiSettings}</span><p>{messages.configureVision}</p></div>
+          <div><span>{messages.settings}</span><p>{messages.settingsSubtitle}</p></div>
           <button className="icon-button" onClick={onClose} aria-label={messages.closeSettings}><X size={18} /></button>
         </div>
 
@@ -716,7 +871,7 @@ function SettingsPanel({
           </div>
           <div>
             <label className="field-label" htmlFor="reasoning">{messages.reasoning}</label>
-            <select id="reasoning" value={settings.reasoningEffort} onChange={(event) => update("reasoningEffort", event.target.value as ProviderSettings["reasoningEffort"])}>
+            <select id="reasoning" value={settings.reasoningEffort} onChange={(event) => update("reasoningEffort", event.target.value as AppSettings["reasoningEffort"])}>
               <option value="none">None</option>
               <option value="low">Low</option>
               <option value="medium">Medium</option>
@@ -745,6 +900,17 @@ function SettingsPanel({
         <input id="concurrency" className="range" type="range" min="1" max="6" value={settings.translationConcurrency} onChange={(event) => update("translationConcurrency", Number(event.target.value))} />
         <p className="field-help">{messages.concurrencyHelp}</p>
 
+        <button
+          type="button"
+          className={cn("setting-switch", settings.smoothScrolling && "active")}
+          role="switch"
+          aria-checked={settings.smoothScrolling}
+          onClick={() => update("smoothScrolling", !settings.smoothScrolling)}
+        >
+          <span><strong>{messages.smoothScrolling}</strong><small>{messages.smoothScrollingHelp}</small></span>
+          <i aria-hidden="true"><span /></i>
+        </button>
+
         <div className="context-note">
           <Sparkles size={16} />
           <div><strong>{messages.crossPageEnabled}</strong><p>{messages.crossPageHelp}</p></div>
@@ -767,7 +933,6 @@ function BookLibrary({
   currentDocumentId,
   loading,
   onSelect,
-  onWarm,
   onUpload,
   onClose,
 }: {
@@ -777,7 +942,6 @@ function BookLibrary({
   currentDocumentId: string;
   loading: boolean;
   onSelect: (book: CloudBook) => void;
-  onWarm: (book: CloudBook) => void;
   onUpload: () => void;
   onClose: () => void;
 }) {
@@ -802,8 +966,6 @@ function BookLibrary({
                 key={book.id}
                 className={cn("cloud-book", currentDocumentId === book.fingerprint && "active")}
                 onClick={() => onSelect(book)}
-                onPointerEnter={() => onWarm(book)}
-                onFocus={() => onWarm(book)}
               >
                 <span className="cloud-book-cover"><BookOpen size={18} /></span>
                 <span className="cloud-book-copy">
@@ -822,29 +984,177 @@ function BookLibrary({
   );
 }
 
+function ContentsNavigation({
+  entries,
+  anchors,
+  manualOffset,
+  totalPages,
+  currentPage,
+  loading,
+  error,
+  messages,
+  onNavigate,
+  onManualOffsetChange,
+}: {
+  entries: TocEntry[];
+  anchors: ReturnType<typeof collectPageAnchors>;
+  manualOffset: number | null;
+  totalPages: number;
+  currentPage: number;
+  loading: boolean;
+  error: string;
+  messages: UiMessages;
+  onNavigate: (page: number) => void;
+  onManualOffsetChange: (offset: number | null) => void;
+}) {
+  const primaryNumbering = entries.some((entry) => entry.numbering === "arabic")
+    ? "arabic"
+    : entries[0]?.numbering || "arabic";
+  const automaticOffset = calculatePageOffset(anchors, primaryNumbering);
+  const effectiveOffset = manualOffset ?? automaticOffset ?? 0;
+  const offsetStatus = manualOffset != null
+    ? messages.manualOffset(signedOffset(manualOffset))
+    : automaticOffset != null
+      ? messages.automaticOffset(signedOffset(automaticOffset))
+      : messages.offsetUncalibrated;
+
+  function applyInput(target: HTMLInputElement) {
+    const value = Number(target.value);
+    if (Number.isSafeInteger(value) && Math.abs(value) <= 10000) {
+      onManualOffsetChange(value);
+      return;
+    }
+    target.value = String(effectiveOffset);
+  }
+
+  return (
+    <div className="toc-panel">
+      {entries.length > 0 && <div className="toc-calibration">
+        <div className="toc-calibration-title">
+          <span>{messages.pageOffset}</span>
+          <strong>{offsetStatus}</strong>
+        </div>
+        <div className="offset-controls">
+          <button className="icon-button" aria-label={messages.decreaseOffset} onClick={() => onManualOffsetChange(effectiveOffset - 1)}><Minus size={14} /></button>
+          <input
+            key={`${manualOffset ?? "auto"}-${automaticOffset ?? "none"}`}
+            type="number"
+            defaultValue={effectiveOffset}
+            aria-label={messages.offsetInput}
+            onBlur={(event) => applyInput(event.currentTarget)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") event.currentTarget.blur();
+              if (event.key === "Escape") {
+                event.currentTarget.value = String(effectiveOffset);
+                event.currentTarget.blur();
+              }
+            }}
+          />
+          <button className="icon-button" aria-label={messages.increaseOffset} onClick={() => onManualOffsetChange(effectiveOffset + 1)}><Plus size={14} /></button>
+          <button className="icon-button" disabled={manualOffset == null} aria-label={messages.resetAutomaticOffset} onClick={() => onManualOffsetChange(null)}><RotateCcw size={14} /></button>
+        </div>
+        <p>{messages.offsetHelp}</p>
+        <div className="toc-status-legend">
+          <span className="calibrated"><i />{messages.tocIndexConfirmed}</span>
+          <span className="uncalibrated"><i />{messages.tocIndexPending}</span>
+        </div>
+        {error && <p className="toc-error">{error}</p>}
+      </div>}
+
+      {entries.length ? (
+        <nav className="toc-list" aria-label={messages.contents}>
+          {entries.map((entry) => {
+            const target = resolveTocEntryPage(entry, anchors, manualOffset, totalPages);
+            const calibrated = Boolean(target?.calibrated);
+            const status = calibrated ? messages.tocIndexConfirmed : messages.tocIndexPending;
+            return (
+              <button
+                key={`${entry.sourcePage}-${entry.ordinal}-${entry.title}`}
+                className={cn(target?.page === currentPage && "active", calibrated ? "calibrated" : "uncalibrated")}
+                title={target ? `${messages.tocTarget(target.page)} · ${status}` : status}
+                onClick={() => target && onNavigate(target.page)}
+              >
+                <span className="toc-entry-title" style={{ paddingInlineStart: `${entry.level * 11}px` }}>{entry.title}</span>
+                <span className="toc-entry-page">{entry.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+      ) : loading ? (
+        <div className="toc-empty"><LoaderCircle className="spin" size={22} /></div>
+      ) : (
+        <div className="toc-empty">
+          <ListTree size={24} />
+          <strong>{messages.contentsEmpty}</strong>
+          <p className={cn(error && "toc-error")}>{error || messages.contentsEmptyHelp}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+type SidebarView = "pages" | "contents";
+
 export default function Home() {
   const fileInput = useRef<HTMLInputElement>(null);
   const pdfRef = useRef<PdfDocument>();
-  const imageCache = useRef(new Map<number, Promise<string>>());
-  const inFlight = useRef(new Set<string>());
-  const cloudBookWarmups = useRef(new Map<string, Promise<void>>());
+  const pdfLoadingTaskRef = useRef<PdfLoadingTask>();
+  const imageCache = useRef(new Map<number, string>());
+  const renderJobs = useRef(new Map<number, Promise<string>>());
+  const renderTasks = useRef(new Map<number, PdfRenderTask>());
+  const renderEpoch = useRef(0);
+  const translationRuns = useRef(createLatestTaskRegistry<string>());
+  const translationRequests = useRef(new Map<string, AbortController>());
+  const navigationWrites = useRef(new Set<string>());
+  const manualOffsetTouched = useRef(false);
+  const pageNavigationCleanup = useRef<() => void>(() => undefined);
+  const viewportSettleTimer = useRef<number>();
+  const viewportWorkEnabledRef = useRef(true);
+  const programmaticScroll = useRef(false);
+  const userScrollIntentUntil = useRef(0);
+  const navigationTarget = useRef<number | null>(null);
   const documentLoadSequence = useRef(0);
+  const documentIdRef = useRef("verso-demo");
+  const currentPageRef = useRef(1);
+  const sourceScrollAnchor = useRef<{ page: number; top: number } | null>(null);
+  const sourceAnchorReleaseFrame = useRef<number>();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarView, setSidebarView] = useState<SidebarView>("pages");
   const [locale, setLocale] = useState<UiLocale>("zh-CN");
   const [theme, setTheme] = useState<ThemeMode>("light");
   const messages = UI_MESSAGES[locale];
   const messagesRef = useRef(messages);
-  const [settings, setSettings] = useState<ProviderSettings>(() => {
+  const [settings, setSettings] = useState<AppSettings>(() => {
     if (typeof window === "undefined") return DEFAULT_SETTINGS;
     const stored = localStorage.getItem("verso-settings");
     return stored ? { ...DEFAULT_SETTINGS, ...JSON.parse(stored) } : DEFAULT_SETTINGS;
   });
+  const translationSettings = useMemo<ProviderSettings>(() => ({
+    provider: settings.provider,
+    endpoint: settings.endpoint,
+    apiKey: settings.apiKey,
+    model: settings.model,
+    reasoningEffort: settings.reasoningEffort,
+    targetLanguage: settings.targetLanguage,
+    nearbyPages: settings.nearbyPages,
+    translationConcurrency: settings.translationConcurrency,
+  }), [
+    settings.apiKey,
+    settings.endpoint,
+    settings.model,
+    settings.nearbyPages,
+    settings.provider,
+    settings.reasoningEffort,
+    settings.targetLanguage,
+    settings.translationConcurrency,
+  ]);
   const [documentId, setDocumentId] = useState("verso-demo");
   const [fileName, setFileName] = useState("The Shape of Attention.pdf");
   const [totalPages, setTotalPages] = useState(2);
   const [currentPage, setCurrentPage] = useState(1);
+  const [viewportWorkEnabled, setViewportWorkEnabled] = useState(true);
   const [loadingDocument, setLoadingDocument] = useState(false);
   const [documentReady, setDocumentReady] = useState(true);
   const [cloudIndexLoaded, setCloudIndexLoaded] = useState(false);
@@ -857,6 +1167,105 @@ export default function Home() {
   const [cloudBooksLoading, setCloudBooksLoading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [cloudMessage, setCloudMessage] = useState("");
+  const [navigation, setNavigation] = useState<DocumentNavigation>(EMPTY_NAVIGATION);
+  const [navigationLoading, setNavigationLoading] = useState(false);
+  const [navigationError, setNavigationError] = useState("");
+
+  useLayoutEffect(() => {
+    currentPageRef.current = currentPage;
+  }, [currentPage]);
+
+  const captureSourceScrollAnchor = useCallback(() => {
+    if (sourceScrollAnchor.current) return;
+    const spreads = document.querySelector<HTMLElement>(".spreads");
+    if (!spreads) return;
+    const preferred = spreads.querySelector<HTMLElement>(`[data-page="${currentPageRef.current}"]`);
+    const pageSpreads = Array.from(spreads.querySelectorAll<HTMLElement>("[data-page]"));
+    const isVisible = (node: HTMLElement) => {
+      const rect = node.getBoundingClientRect();
+      return rect.bottom > 113 && rect.top < window.innerHeight;
+    };
+    const anchorPage = preferred && isVisible(preferred)
+      ? preferred
+      : pageSpreads.find(isVisible);
+    const source = anchorPage?.querySelector<HTMLElement>(".source-page");
+    const page = Number(anchorPage?.dataset.page);
+    if (!source || !Number.isSafeInteger(page)) return;
+    sourceScrollAnchor.current = { page, top: source.getBoundingClientRect().top };
+  }, []);
+
+  const updateTranslations = useCallback((
+    update: (existing: Record<number, Translation>) => Record<number, Translation>,
+  ) => {
+    captureSourceScrollAnchor();
+    setTranslations(update);
+  }, [captureSourceScrollAnchor]);
+
+  useLayoutEffect(() => {
+    const anchor = sourceScrollAnchor.current;
+    sourceScrollAnchor.current = null;
+    if (!anchor) return;
+    const source = document.querySelector<HTMLElement>(`[data-page="${anchor.page}"] .source-page`);
+    if (!source) return;
+    const correction = source.getBoundingClientRect().top - anchor.top;
+    if (Math.abs(correction) < 0.5) return;
+    programmaticScroll.current = true;
+    window.scrollBy({ top: correction, behavior: "instant" });
+    if (sourceAnchorReleaseFrame.current) window.cancelAnimationFrame(sourceAnchorReleaseFrame.current);
+    sourceAnchorReleaseFrame.current = window.requestAnimationFrame(() => {
+      sourceAnchorReleaseFrame.current = undefined;
+      if (navigationTarget.current == null) programmaticScroll.current = false;
+    });
+  }, [translations]);
+
+  const cancelPageRenders = useCallback(() => {
+    renderEpoch.current += 1;
+    for (const task of renderTasks.current.values()) {
+      try {
+        task.cancel();
+      } catch {
+        // The task may have completed between iteration and cancellation.
+      }
+    }
+    renderTasks.current.clear();
+    renderJobs.current.clear();
+  }, []);
+
+  const cancelViewportWork = useCallback(() => {
+    cancelPageRenders();
+    translationRuns.current.cancelAll();
+    for (const controller of translationRequests.current.values()) controller.abort();
+    translationRequests.current.clear();
+    setLoadingPages(new Set());
+  }, [cancelPageRenders]);
+
+  const suspendViewportWork = useCallback(() => {
+    if (!viewportWorkEnabledRef.current) return;
+    viewportWorkEnabledRef.current = false;
+    setViewportWorkEnabled(false);
+    cancelViewportWork();
+  }, [cancelViewportWork]);
+
+  const scheduleViewportResume = useCallback((delay = 180) => {
+    if (viewportSettleTimer.current) window.clearTimeout(viewportSettleTimer.current);
+    viewportSettleTimer.current = window.setTimeout(() => {
+      viewportSettleTimer.current = undefined;
+      const target = navigationTarget.current;
+      navigationTarget.current = null;
+      if (target != null) setCurrentPage(target);
+      viewportWorkEnabledRef.current = true;
+      setViewportWorkEnabled(true);
+    }, delay);
+  }, []);
+
+  const scrollProgrammatically = useCallback((target: HTMLElement, behavior: ScrollBehavior) => {
+    programmaticScroll.current = true;
+    target.scrollIntoView({ behavior, block: "start" });
+  }, []);
+
+  const observeCurrentPage = useCallback((page: number) => {
+    if (navigationTarget.current == null) setCurrentPage(page);
+  }, []);
 
   useEffect(() => {
     const detectPreferences = window.setTimeout(() => {
@@ -875,30 +1284,6 @@ export default function Home() {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
 
-  const warmCloudBook = useCallback((book: CloudBook) => {
-    const existing = cloudBookWarmups.current.get(book.id);
-    if (existing) return existing;
-
-    const url = `/api/books/${encodeURIComponent(book.id)}/file`;
-    const readByte = async (offset: number) => {
-      const response = await fetch(url, {
-        headers: { Range: `bytes=${offset}-${offset}` },
-        cache: "no-store",
-      });
-      if (response.status !== 206) throw new Error(`Unable to warm PDF range: ${response.status}`);
-      await response.arrayBuffer();
-    };
-    const warmup = Promise.all([
-      readByte(0),
-      readByte(Math.max(0, book.size - 1)),
-    ]).then(() => undefined).catch((error) => {
-      cloudBookWarmups.current.delete(book.id);
-      throw error;
-    });
-    cloudBookWarmups.current.set(book.id, warmup);
-    return warmup;
-  }, []);
-
   const refreshBooks = useCallback(async () => {
     const currentMessages = messagesRef.current;
     setCloudBooksLoading(true);
@@ -906,15 +1291,13 @@ export default function Home() {
       const response = await fetch("/api/books", { cache: "no-store" });
       const result = await response.json() as { books?: CloudBook[]; error?: string };
       if (!response.ok) throw new Error(result.error || currentMessages.libraryReadFailed);
-      const books = result.books || [];
-      setCloudBooks(books);
-      if (books[0]) void warmCloudBook(books[0]).catch(() => undefined);
+      setCloudBooks(result.books || []);
     } catch (error) {
       setCloudMessage(error instanceof Error ? error.message : currentMessages.libraryReadFailed);
     } finally {
       setCloudBooksLoading(false);
     }
-  }, [warmCloudBook]);
+  }, []);
 
   useEffect(() => {
     void loadPdfRuntime().catch(() => undefined);
@@ -927,20 +1310,96 @@ export default function Home() {
   }, [settings]);
 
   useEffect(() => {
+    document.documentElement.dataset.smoothScroll = settings.smoothScrolling ? "true" : "false";
+  }, [settings.smoothScrolling]);
+
+  useEffect(() => {
     indexedDB.deleteDatabase("verso-translation-cache");
   }, []);
+
+  useEffect(() => {
+    const beginUserScroll = () => {
+      userScrollIntentUntil.current = performance.now() + 800;
+      navigationTarget.current = null;
+      suspendViewportWork();
+      scheduleViewportResume();
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) {
+        beginUserScroll();
+      }
+    };
+    const handleScroll = () => {
+      if (programmaticScroll.current) return;
+      if (performance.now() > userScrollIntentUntil.current) return;
+      userScrollIntentUntil.current = performance.now() + 240;
+      scheduleViewportResume();
+    };
+    window.addEventListener("wheel", beginUserScroll, { passive: true });
+    window.addEventListener("touchstart", beginUserScroll, { passive: true });
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => {
+      window.removeEventListener("wheel", beginUserScroll);
+      window.removeEventListener("touchstart", beginUserScroll);
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("scroll", handleScroll);
+    };
+  }, [scheduleViewportResume, suspendViewportWork]);
+
+  useEffect(() => () => {
+    pageNavigationCleanup.current();
+    if (viewportSettleTimer.current) window.clearTimeout(viewportSettleTimer.current);
+    if (sourceAnchorReleaseFrame.current) window.cancelAnimationFrame(sourceAnchorReleaseFrame.current);
+    cancelViewportWork();
+    void pdfLoadingTaskRef.current?.destroy();
+  }, [cancelViewportWork]);
 
   const openLibrary = useCallback(() => {
     setLibraryOpen(true);
     void refreshBooks();
   }, [refreshBooks]);
 
+  const loadNavigation = useCallback(async (id: string, sequence: number) => {
+    setNavigationLoading(true);
+    setNavigationError("");
+    try {
+      const remote = await readCloudNavigation(id, messagesRef.current.navigationReadFailed);
+      if (sequence !== documentLoadSequence.current) return;
+      for (const observation of remote.observations) {
+        navigationWrites.current.add(`${id}:${observation.pdfPage}:${JSON.stringify(observation)}`);
+      }
+      setNavigation((existing) => ({
+        manualOffset: manualOffsetTouched.current ? existing.manualOffset : remote.manualOffset,
+        observations: existing.observations.reduce(
+          (observations, observation) => mergeNavigationObservation(observations, observation),
+          remote.observations,
+        ),
+      }));
+    } catch (error) {
+      if (sequence !== documentLoadSequence.current) return;
+      setNavigationError(error instanceof Error ? error.message : messagesRef.current.navigationReadFailed);
+    } finally {
+      if (sequence === documentLoadSequence.current) setNavigationLoading(false);
+    }
+  }, []);
+
   const beginDocumentLoad = useCallback((id: string, name: string, pageCount: number, hasCloudIndex: boolean) => {
     const sequence = ++documentLoadSequence.current;
+    const previousLoadingTask = pdfLoadingTaskRef.current;
     const previousPdf = pdfRef.current;
+    pdfLoadingTaskRef.current = undefined;
     pdfRef.current = undefined;
-    if (previousPdf) void previousPdf.destroy();
+    if (previousLoadingTask) void previousLoadingTask.destroy();
+    else if (previousPdf) void previousPdf.destroy();
+    pageNavigationCleanup.current();
+    navigationTarget.current = null;
+    suspendViewportWork();
+    cancelViewportWork();
     imageCache.current.clear();
+    navigationWrites.current.clear();
+    manualOffsetTouched.current = false;
+    documentIdRef.current = id;
     setDocumentId(id);
     setFileName(name);
     setTotalPages(Math.max(1, pageCount));
@@ -948,14 +1407,18 @@ export default function Home() {
     setTranslations({});
     setLoadingPages(new Set());
     setErrors({});
+    setSidebarView("pages");
+    setNavigation({ observations: [], manualOffset: null });
+    setNavigationLoading(false);
+    setNavigationError("");
     setIsDemo(false);
     setCloudIndexLoaded(hasCloudIndex);
     setDocumentReady(false);
     setLoadingDocument(true);
     setDocumentError("");
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    window.scrollTo({ top: 0, behavior: "instant" });
     return sequence;
-  }, []);
+  }, [cancelViewportWork, suspendViewportWork]);
 
   const finishDocumentLoad = useCallback((sequence: number, pdf: PdfDocument) => {
     if (sequence !== documentLoadSequence.current) {
@@ -966,8 +1429,43 @@ export default function Home() {
     setTotalPages(pdf.numPages);
     setDocumentReady(true);
     setLoadingDocument(false);
+    viewportWorkEnabledRef.current = true;
+    setViewportWorkEnabled(true);
     return true;
   }, []);
+
+  const recordNavigation = useCallback((page: number, translation: Translation) => {
+    const observation = extractNavigationObservation(page, translation.blocks || []);
+    const signature = `${documentId}:${page}:${JSON.stringify(observation)}`;
+    if (navigationWrites.current.has(signature)) return;
+    navigationWrites.current.add(signature);
+    setNavigation((existing) => ({
+      ...existing,
+      observations: mergeNavigationObservation(existing.observations, observation),
+    }));
+    setNavigationError("");
+    const sequence = documentLoadSequence.current;
+    void writeCloudNavigationObservation(documentId, observation, messagesRef.current.navigationWriteFailed)
+      .catch((error) => {
+        navigationWrites.current.delete(signature);
+        if (sequence !== documentLoadSequence.current) return;
+        setNavigationError(error instanceof Error ? error.message : messagesRef.current.navigationWriteFailed);
+      });
+  }, [documentId]);
+
+  const updateManualOffset = useCallback((manualOffset: number | null) => {
+    if (isDemo) return;
+    if (manualOffset != null && (!Number.isSafeInteger(manualOffset) || Math.abs(manualOffset) > 10000)) return;
+    manualOffsetTouched.current = true;
+    setNavigation((existing) => ({ ...existing, manualOffset }));
+    setNavigationError("");
+    const sequence = documentLoadSequence.current;
+    void writeCloudManualOffset(documentId, manualOffset, messagesRef.current.navigationWriteFailed)
+      .catch((error) => {
+        if (sequence !== documentLoadSequence.current) return;
+        setNavigationError(error instanceof Error ? error.message : messagesRef.current.navigationWriteFailed);
+      });
+  }, [documentId, isDemo]);
 
   const uploadToCloud = useCallback(async (file: File, fileFingerprint: string, pageCount: number) => {
     setUploadProgress(0);
@@ -987,6 +1485,7 @@ export default function Home() {
       });
       const initialized = await initialize.json() as {
         exists?: boolean;
+        book?: CloudBook;
         uploadId?: string;
         objectKey?: string;
         error?: string;
@@ -995,6 +1494,9 @@ export default function Home() {
       if (initialized.exists) {
         setUploadProgress(100);
         setCloudMessage(messages.cloudBookReused);
+        if (initialized.book && documentIdRef.current === fileFingerprint) {
+          replaceBookInUrl(initialized.book.fingerprint);
+        }
         await refreshBooks();
         return;
       }
@@ -1034,6 +1536,7 @@ export default function Home() {
       if (!complete.ok || !completed.book) throw new Error(completed.error || messages.uploadCompleteFailed);
       setUploadProgress(100);
       setCloudMessage(messages.cachedCloud);
+      if (documentIdRef.current === fileFingerprint) replaceBookInUrl(completed.book.fingerprint);
       await refreshBooks();
     } catch (error) {
       setUploadProgress(null);
@@ -1043,11 +1546,24 @@ export default function Home() {
 
   const renderPage = useCallback(async (pageNumber: number) => {
     const cached = imageCache.current.get(pageNumber);
-    if (cached) return cached;
-    const task = (async () => {
+    if (cached) {
+      imageCache.current.delete(pageNumber);
+      imageCache.current.set(pageNumber, cached);
+      return cached;
+    }
+    if (!viewportWorkEnabledRef.current) {
+      throw new DOMException("Page rendering is paused while the viewport is moving.", "AbortError");
+    }
+    const existing = renderJobs.current.get(pageNumber);
+    if (existing) return existing;
+
+    const epoch = renderEpoch.current;
+    let activeRenderTask: PdfRenderTask | undefined;
+    const job: Promise<string> = (async () => {
       const pdf = pdfRef.current;
       if (!pdf) throw new Error("PDF is not ready");
       const page = await pdf.getPage(pageNumber);
+      if (epoch !== renderEpoch.current) throw new DOMException("Page rendering was cancelled.", "AbortError");
       const base = page.getViewport({ scale: 1 });
       const scale = Math.min(2, 1280 / base.width);
       const viewport = page.getViewport({ scale });
@@ -1056,70 +1572,108 @@ export default function Home() {
       canvas.height = Math.round(viewport.height);
       const context = canvas.getContext("2d", { alpha: false });
       if (!context) throw new Error("Canvas is unavailable");
-      await page.render({ canvas, canvasContext: context, viewport }).promise;
-      return canvas.toDataURL("image/jpeg", 0.82);
-    })().catch((error) => {
-      imageCache.current.delete(pageNumber);
-      throw error;
+      const renderTask = page.render({ canvas, canvasContext: context, viewport });
+      activeRenderTask = renderTask;
+      renderTasks.current.set(pageNumber, renderTask);
+      await renderTask.promise;
+      if (epoch !== renderEpoch.current) throw new DOMException("Page rendering was cancelled.", "AbortError");
+      const image = canvas.toDataURL("image/jpeg", 0.82);
+      if (epoch !== renderEpoch.current) throw new DOMException("Page rendering was cancelled.", "AbortError");
+      imageCache.current.set(pageNumber, image);
+      while (imageCache.current.size > 12) {
+        const oldest = imageCache.current.keys().next().value as number | undefined;
+        if (oldest === undefined) break;
+        imageCache.current.delete(oldest);
+      }
+      return image;
+    })().finally(() => {
+      if (renderJobs.current.get(pageNumber) === job) renderJobs.current.delete(pageNumber);
+      if (activeRenderTask && renderTasks.current.get(pageNumber) === activeRenderTask) {
+        renderTasks.current.delete(pageNumber);
+      }
     });
-    imageCache.current.set(pageNumber, task);
-    if (imageCache.current.size > 12) {
-      const oldest = imageCache.current.keys().next().value as number | undefined;
-      if (oldest !== undefined && oldest !== pageNumber) imageCache.current.delete(oldest);
-    }
-    return task;
+    renderJobs.current.set(pageNumber, job);
+    return job;
   }, []);
 
   const requestTranslation = useCallback(async (page: number, force = false) => {
-    if (isDemo) return;
-    const currentMessages = messagesRef.current;
+    if (isDemo || (!force && !viewportWorkEnabledRef.current)) return;
     const flightKey = `${documentId}:${page}`;
-    if (inFlight.current.has(flightKey)) return;
+    if (force) {
+      translationRuns.current.cancel(flightKey);
+      translationRequests.current.get(flightKey)?.abort();
+      translationRequests.current.delete(flightKey);
+    }
+    const runToken = translationRuns.current.start(flightKey);
+    if (!runToken) return;
+    const controller = new AbortController();
+    translationRequests.current.set(flightKey, controller);
+    const currentMessages = messagesRef.current;
     const documentSequence = documentLoadSequence.current;
-    const key = cacheKey(documentId, page, settings);
-    const previousKey = page > 1 ? cacheKey(documentId, page - 1, settings) : "";
+    const key = cacheKey(documentId, page, translationSettings);
+    const previousKey = page > 1 ? cacheKey(documentId, page - 1, translationSettings) : "";
     const requestVersion = nextTranslationVersion();
     let previousTranslation: Translation | undefined;
-    inFlight.current.add(flightKey);
+    const isCurrentRun = () => (
+      documentSequence === documentLoadSequence.current
+      && translationRuns.current.isCurrent(flightKey, runToken)
+    );
+    const requireCurrentRun = () => {
+      if (!isCurrentRun()) throw new DOMException("Translation task was cancelled.", "AbortError");
+    };
+    const readPreviousTranslation = async () => {
+      if (!previousKey) return undefined;
+      try {
+        return await readCloudCache(previousKey, currentMessages.cloudTranslationReadFailed, controller.signal);
+      } catch (error) {
+        if (controller.signal.aborted || isWorkCancellation(error)) throw error;
+        return undefined;
+      }
+    };
     setLoadingPages((existing) => new Set(existing).add(page));
     setErrors((existing) => ({ ...existing, [page]: "" }));
     try {
       if (!force) {
-        const cached = await readCloudCache(key, currentMessages.cloudTranslationReadFailed);
+        const cached = await readCloudCache(key, currentMessages.cloudTranslationReadFailed, controller.signal);
         if (cached) {
-          if (previousKey) previousTranslation = await readCloudCache(previousKey, currentMessages.cloudTranslationReadFailed).catch(() => undefined);
+          previousTranslation = await readPreviousTranslation();
+          requireCurrentRun();
           const reconciled = reconcilePageBoundary(previousTranslation, cached);
-          if (documentSequence !== documentLoadSequence.current) return;
-          setTranslations((existing) => ({ ...existing, [page]: reconciled }));
+          updateTranslations((existing) => ({ ...existing, [page]: reconciled }));
+          recordNavigation(page, reconciled);
           if (reconciled !== cached) {
             void writeCloudCache(key, documentId, page, reconciled, currentMessages.cloudTranslationWriteFailed).catch(() => undefined);
           }
           return;
         }
       }
-      if (!settings.apiKey) throw new Error(currentMessages.apiKeyRequired);
-      if (previousKey) previousTranslation = await readCloudCache(previousKey, currentMessages.cloudTranslationReadFailed).catch(() => undefined);
+      if (!translationSettings.apiKey) throw new Error(currentMessages.apiKeyRequired);
+      previousTranslation = await readPreviousTranslation();
+      requireCurrentRun();
 
-      const payload = await translationLimiter.run(settings.translationConcurrency, async () => {
-        if (documentSequence !== documentLoadSequence.current) throw new Error("Translation request was superseded.");
+      const payload = await translationLimiter.run(translationSettings.translationConcurrency, async () => {
+        requireCurrentRun();
         const contextPages = [page - 1, page, page + 1].filter((value) => value >= 1 && value <= totalPages);
         const images = await Promise.all(contextPages.map(async (number) => ({ page: number, dataUrl: await renderPage(number) })));
+        requireCurrentRun();
         const response = await fetch("/api/translate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            settings,
+            settings: translationSettings,
             page,
             totalPages,
             images,
             previousTranslationTail: boundaryTail(previousTranslation),
           }),
+          signal: controller.signal,
         });
         const result = await response.json() as TranslationResponse & { error?: string };
         if (!response.ok) throw new Error(result.error || currentMessages.translationRequestFailed);
         if (!Array.isArray(result.blocks)) throw new Error(currentMessages.invalidTranslation);
         return result;
-      });
+      }, controller.signal);
+      requireCurrentRun();
       const revision: Translation | undefined = payload.previousPageRevision?.page === page - 1
         && payload.previousPageRevision.blocks.length
         ? {
@@ -1140,23 +1694,27 @@ export default function Home() {
         cacheVersion: requestVersion,
         cachedAt: Date.now(),
       });
-      if (documentSequence !== documentLoadSequence.current) return;
-      setTranslations((existing) => ({
+      requireCurrentRun();
+      updateTranslations((existing) => ({
         ...existing,
         ...(revision ? { [page - 1]: revision } : {}),
         [page]: translated,
       }));
+      recordNavigation(page, translated);
+      if (revision) recordNavigation(page - 1, revision);
       await Promise.all([
         writeCloudCache(key, documentId, page, translated, currentMessages.cloudTranslationWriteFailed),
         ...(revision ? [writeCloudCache(previousKey, documentId, page - 1, revision, currentMessages.cloudTranslationWriteFailed)] : []),
       ]);
     } catch (error) {
-      if (documentSequence !== documentLoadSequence.current) return;
+      if (!isCurrentRun() || isWorkCancellation(error)) return;
       const message = error instanceof Error ? error.message : currentMessages.translationFailed;
       setErrors((existing) => ({ ...existing, [page]: message }));
     } finally {
-      inFlight.current.delete(flightKey);
-      if (documentSequence === documentLoadSequence.current) {
+      if (translationRequests.current.get(flightKey) === controller) {
+        translationRequests.current.delete(flightKey);
+      }
+      if (translationRuns.current.finish(flightKey, runToken) && documentSequence === documentLoadSequence.current) {
         setLoadingPages((existing) => {
           const next = new Set(existing);
           next.delete(page);
@@ -1164,16 +1722,31 @@ export default function Home() {
         });
       }
     }
-  }, [documentId, isDemo, renderPage, settings, totalPages]);
+  }, [documentId, isDemo, recordNavigation, renderPage, totalPages, translationSettings, updateTranslations]);
+
+  const cancelTranslation = useCallback((page: number) => {
+    const flightKey = `${documentId}:${page}`;
+    translationRuns.current.cancel(flightKey);
+    translationRequests.current.get(flightKey)?.abort();
+    translationRequests.current.delete(flightKey);
+    setLoadingPages((existing) => {
+      if (!existing.has(page)) return existing;
+      const next = new Set(existing);
+      next.delete(page);
+      return next;
+    });
+  }, [documentId]);
 
   const handleFile = useCallback(async (file?: File) => {
     if (!file) return;
+    replaceBookInUrl(null);
     const fileFingerprint = await fingerprint(file);
     const sequence = beginDocumentLoad(fileFingerprint, file.name, 1, false);
+    void loadNavigation(fileFingerprint, sequence);
     try {
       const { pdfjs, worker } = await loadPdfRuntime();
       const data = new Uint8Array(await file.arrayBuffer());
-      const pdf = await pdfjs.getDocument({
+      const loadingTask = pdfjs.getDocument({
         data,
         worker,
         cMapUrl: "/pdfjs/cmaps/",
@@ -1181,7 +1754,13 @@ export default function Home() {
         standardFontDataUrl: "/pdfjs/standard_fonts/",
         wasmUrl: "/pdfjs/wasm/",
         iccUrl: "/pdfjs/iccs/",
-      }).promise;
+      });
+      if (sequence !== documentLoadSequence.current) {
+        void loadingTask.destroy();
+        return;
+      }
+      pdfLoadingTaskRef.current = loadingTask;
+      const pdf = await loadingTask.promise;
       if (finishDocumentLoad(sequence, pdf)) {
         void uploadToCloud(file, fileFingerprint, pdf.numPages);
       }
@@ -1191,39 +1770,73 @@ export default function Home() {
       setDocumentError(messages.openPdfFailed(detail));
       setLoadingDocument(false);
     }
-  }, [beginDocumentLoad, finishDocumentLoad, messages, uploadToCloud]);
+  }, [beginDocumentLoad, finishDocumentLoad, loadNavigation, messages, uploadToCloud]);
 
-  const loadCloudBook = useCallback(async (book: CloudBook) => {
+  const loadCloudBook = useCallback(async (book: CloudBook, updateUrl = true) => {
     setLibraryOpen(false);
+    if (updateUrl) replaceBookInUrl(book.fingerprint);
     const sequence = beginDocumentLoad(book.fingerprint, book.name, book.pageCount, true);
+    void loadNavigation(book.fingerprint, sequence);
+    const currentMessages = messagesRef.current;
     try {
-      const [{ pdfjs, worker }] = await Promise.all([
-        loadPdfRuntime(),
-        warmCloudBook(book).catch(() => undefined),
-      ]);
-      const pdf = await pdfjs.getDocument({
+      const { pdfjs, worker } = await loadPdfRuntime();
+      const { transport, failure } = createCloudPdfRangeTransport({
+        Transport: pdfjs.PDFDataRangeTransport,
         url: `/api/books/${encodeURIComponent(book.id)}/file`,
+        length: book.size,
+        filename: book.name,
+      });
+      const loadingTask = pdfjs.getDocument({
+        range: transport,
         worker,
         cMapUrl: "/pdfjs/cmaps/",
         cMapPacked: true,
         standardFontDataUrl: "/pdfjs/standard_fonts/",
         wasmUrl: "/pdfjs/wasm/",
         iccUrl: "/pdfjs/iccs/",
-        rangeChunkSize: 1024 * 1024,
+        rangeChunkSize: CLOUD_PDF_RANGE_CHUNK_SIZE,
         disableStream: true,
         disableAutoFetch: true,
-      }).promise;
+      });
+      if (sequence !== documentLoadSequence.current) {
+        void loadingTask.destroy();
+        return;
+      }
+      pdfLoadingTaskRef.current = loadingTask;
+      void failure.catch((error) => {
+        if (sequence !== documentLoadSequence.current) return;
+        pdfRef.current = undefined;
+        setDocumentReady(false);
+        setLoadingDocument(false);
+        setDocumentError(messagesRef.current.openCloudFailed(error.message));
+        void loadingTask.destroy();
+      });
+      const pdf = await Promise.race([loadingTask.promise, failure]);
       if (finishDocumentLoad(sequence, pdf)) {
         setUploadProgress(100);
-        setCloudMessage(messages.openedFromCloud);
+        setCloudMessage(currentMessages.openedFromCloud);
       }
     } catch (error) {
       if (sequence !== documentLoadSequence.current) return;
       const detail = error instanceof Error ? error.message : "Unknown PDF error";
-      setDocumentError(messages.openCloudFailed(detail));
+      setDocumentError(currentMessages.openCloudFailed(detail));
       setLoadingDocument(false);
     }
-  }, [beginDocumentLoad, finishDocumentLoad, messages, warmCloudBook]);
+  }, [beginDocumentLoad, finishDocumentLoad, loadNavigation]);
+
+  useEffect(() => {
+    const requestedBookId = bookIdFromUrl();
+    if (!requestedBookId) return;
+    const restoreTimer = window.setTimeout(() => {
+      void readCloudBook(requestedBookId, messagesRef.current.libraryReadFailed)
+        .then((book) => loadCloudBook(book, false))
+        .catch((error) => {
+          const detail = error instanceof Error ? error.message : messagesRef.current.libraryReadFailed;
+          setDocumentError(messagesRef.current.openCloudFailed(detail));
+        });
+    }, 0);
+    return () => window.clearTimeout(restoreTimer);
+  }, [loadCloudBook]);
 
   const pageNumbers = useMemo(() => Array.from({ length: totalPages }, (_, index) => index + 1), [totalPages]);
   const displayedTranslations = useMemo(() => {
@@ -1235,12 +1848,82 @@ export default function Home() {
     }
     return reconciled;
   }, [translations]);
+  const tocEntries = useMemo(() => collectTocEntries(navigation.observations), [navigation.observations]);
+  const pageAnchors = useMemo(() => collectPageAnchors(navigation.observations), [navigation.observations]);
   const progress = Math.round((currentPage / totalPages) * 100);
 
-  function goToPage(page: number) {
+  const goToPage = useCallback((page: number, mode: "direct" | "adjacent" = "direct") => {
     const safePage = Math.min(totalPages, Math.max(1, page));
-    document.querySelector(`[data-page="${safePage}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }
+    const target = document.querySelector<HTMLElement>(`[data-page="${safePage}"]`);
+    if (!target) return;
+    pageNavigationCleanup.current();
+    navigationTarget.current = safePage;
+    suspendViewportWork();
+    setCurrentPage(safePage);
+
+    let active = true;
+    let frame = 0;
+    let timeout = 0;
+    let settleTimeout = 0;
+    let hardTimeout = 0;
+    const smoothNavigation = settings.smoothScrolling;
+    const scrollContainer = target.closest<HTMLElement>(".spreads");
+    const observer = !smoothNavigation && typeof ResizeObserver !== "undefined"
+      ? new ResizeObserver(() => scheduleAlignment())
+      : null;
+    const interruptEvents = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
+
+    const align = () => {
+      frame = 0;
+      if (!active || !target.isConnected) return;
+      scrollProgrammatically(target, smoothNavigation ? "smooth" : "instant");
+      if (smoothNavigation) {
+        if (settleTimeout) window.clearTimeout(settleTimeout);
+        settleTimeout = window.setTimeout(finish, 180);
+      }
+    };
+    const cleanup = () => {
+      active = false;
+      programmaticScroll.current = false;
+      observer?.disconnect();
+      if (frame) window.cancelAnimationFrame(frame);
+      if (timeout) window.clearTimeout(timeout);
+      if (settleTimeout) window.clearTimeout(settleTimeout);
+      if (hardTimeout) window.clearTimeout(hardTimeout);
+      window.removeEventListener("scroll", handleProgrammaticScroll);
+      for (const event of interruptEvents) window.removeEventListener(event, interrupt);
+      if (pageNavigationCleanup.current === cleanup) pageNavigationCleanup.current = () => undefined;
+    };
+    const finish = () => {
+      cleanup();
+      scheduleViewportResume(40);
+    };
+    const interrupt = () => {
+      navigationTarget.current = null;
+      cleanup();
+      scheduleViewportResume(40);
+    };
+    const handleProgrammaticScroll = () => {
+      if (!active || !smoothNavigation) return;
+      if (settleTimeout) window.clearTimeout(settleTimeout);
+      settleTimeout = window.setTimeout(finish, 140);
+    };
+    function scheduleAlignment() {
+      if (!active) return;
+      if (frame) window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(align);
+    }
+
+    pageNavigationCleanup.current = cleanup;
+    if (scrollContainer) observer?.observe(scrollContainer);
+    if (smoothNavigation) {
+      window.addEventListener("scroll", handleProgrammaticScroll, { passive: true });
+      hardTimeout = window.setTimeout(finish, 2000);
+    }
+    for (const event of interruptEvents) window.addEventListener(event, interrupt, { once: true, passive: true });
+    if (!smoothNavigation) timeout = window.setTimeout(finish, mode === "adjacent" ? 80 : 140);
+    scheduleAlignment();
+  }, [scheduleViewportResume, scrollProgrammatically, settings.smoothScrolling, suspendViewportWork, totalPages]);
 
   return (
     <main className="app-shell">
@@ -1255,7 +1938,7 @@ export default function Home() {
           <button className="icon-button locale-button" title={messages.switchLanguage} aria-label={messages.switchLanguage} onClick={() => setLocale((value) => value === "zh-CN" ? "en-US" : "zh-CN")}><Globe2 size={16} /><span>{locale === "zh-CN" ? "EN" : "中"}</span></button>
           <button className="icon-button" title={messages.switchTheme} aria-label={messages.switchTheme} aria-pressed={theme === "dark"} onClick={() => setTheme((value) => value === "light" ? "dark" : "light")}>{theme === "light" ? <Moon size={17} /> : <Sun size={17} />}</button>
           <button className="secondary-button library-button" onClick={openLibrary}><BookOpen size={16} /> {messages.cloudLibrary}</button>
-          <button className="secondary-button" onClick={() => setSettingsOpen(true)}><Settings2 size={16} /> {messages.aiSettings}</button>
+          <button className="secondary-button" onClick={() => setSettingsOpen(true)}><Settings2 size={16} /> {messages.settings}</button>
           <button className="primary-button" onClick={() => fileInput.current?.click()}><Upload size={16} /> {messages.openPdf}</button>
           <input ref={fileInput} type="file" accept="application/pdf" hidden onChange={(event) => {
             const file = event.currentTarget.files?.[0];
@@ -1269,7 +1952,32 @@ export default function Home() {
         <aside className={cn("sidebar", !sidebarOpen && "collapsed")}>
           <div className="sidebar-head">
             <button className="icon-button" aria-label={messages.toggleSidebar} onClick={() => setSidebarOpen((open) => !open)}>{sidebarOpen ? <PanelLeftClose size={18} /> : <Menu size={18} />}</button>
-            {sidebarOpen && <><span>{messages.pages}</span><button className="icon-button" aria-label={messages.searchPages}><Search size={17} /></button></>}
+            {sidebarOpen && (
+              <div className="sidebar-tabs" role="tablist">
+                <button
+                  role="tab"
+                  aria-selected={sidebarView === "pages"}
+                  aria-controls="sidebar-pages"
+                  className={cn(sidebarView === "pages" && "active")}
+                  onClick={() => setSidebarView("pages")}
+                >
+                  <FileText size={14} />
+                  <span>{messages.pages}</span>
+                </button>
+                <button
+                  role="tab"
+                  aria-selected={sidebarView === "contents"}
+                  aria-controls="sidebar-contents"
+                  className={cn(sidebarView === "contents" && "active")}
+                  title={messages.contentsCount(tocEntries.length)}
+                  onClick={() => setSidebarView("contents")}
+                >
+                  <ListTree size={14} />
+                  <span>{messages.contents}</span>
+                  {tocEntries.length > 0 && <strong>{tocEntries.length}</strong>}
+                </button>
+              </div>
+            )}
           </div>
           {sidebarOpen && (
             <>
@@ -1281,15 +1989,32 @@ export default function Home() {
                 <div><span>{messages.readingProgress}</span><strong>{progress}%</strong></div>
                 <div className="progress-track"><i style={{ width: `${progress}%` }} /></div>
               </div>
-              <nav className="page-nav" aria-label={messages.pages}>
-                {pageNumbers.map((page) => (
-                  <button key={page} className={cn(page === currentPage && "active")} onClick={() => goToPage(page)}>
-                    <span className="page-thumbnail">{page <= 2 && isDemo ? <SampleScan page={page} messages={messages} /> : page}</span>
-                    <span>{messages.page(page)}</span>
-                    {translations[page] && <CircleCheck size={14} />}
-                  </button>
-                ))}
-              </nav>
+              {sidebarView === "pages" ? (
+                <nav id="sidebar-pages" className="page-nav" aria-label={messages.pages}>
+                  {pageNumbers.map((page) => (
+                    <button key={page} className={cn(page === currentPage && "active")} onClick={() => goToPage(page)}>
+                      <span className="page-thumbnail">{page <= 2 && isDemo ? <SampleScan page={page} messages={messages} /> : page}</span>
+                      <span>{messages.page(page)}</span>
+                      {translations[page] && <CircleCheck size={14} />}
+                    </button>
+                  ))}
+                </nav>
+              ) : (
+                <div id="sidebar-contents" className="sidebar-contents">
+                  <ContentsNavigation
+                    entries={tocEntries}
+                    anchors={pageAnchors}
+                    manualOffset={navigation.manualOffset}
+                    totalPages={totalPages}
+                    currentPage={currentPage}
+                    loading={navigationLoading}
+                    error={navigationError}
+                    messages={messages}
+                    onNavigate={goToPage}
+                    onManualOffsetChange={updateManualOffset}
+                  />
+                </div>
+              )}
             </>
           )}
         </aside>
@@ -1297,9 +2022,9 @@ export default function Home() {
         <section className="reader">
           <div className="reader-toolbar">
             <div className="page-stepper">
-              <button className="icon-button" onClick={() => goToPage(currentPage - 1)} aria-label={messages.previousPage}><ChevronLeft size={17} /></button>
+              <button className="icon-button" onClick={() => goToPage(currentPage - 1, "adjacent")} aria-label={messages.previousPage}><ChevronLeft size={17} /></button>
               <span><strong>{currentPage}</strong> / {totalPages}</span>
-              <button className="icon-button" onClick={() => goToPage(currentPage + 1)} aria-label={messages.nextPage}><ChevronRight size={17} /></button>
+              <button className="icon-button" onClick={() => goToPage(currentPage + 1, "adjacent")} aria-label={messages.nextPage}><ChevronRight size={17} /></button>
             </div>
             <div className="column-labels"><span>{messages.sourceScan}</span><i /><span><Languages size={15} /> {targetLanguageLabel(settings.targetLanguage, locale)}</span></div>
             <button className="icon-button" aria-label={messages.moreOptions}><MoreHorizontal size={19} /></button>
@@ -1314,7 +2039,7 @@ export default function Home() {
           {!isDemo && !loadingDocument && !settings.apiKey && !documentError && (
             <div className="reader-notice setup-notice">
               <span><Sparkles size={15} /> {messages.pdfReady}</span>
-              <button className="secondary-button" onClick={() => setSettingsOpen(true)}>{messages.openAiSettings}</button>
+              <button className="secondary-button" onClick={() => setSettingsOpen(true)}>{messages.openSettings}</button>
             </div>
           )}
 
@@ -1337,13 +2062,16 @@ export default function Home() {
                   page={page}
                   totalPages={totalPages}
                   nearbyPages={settings.nearbyPages}
+                  workEnabled={isPageWorkEnabled(page, currentPage, settings.nearbyPages, viewportWorkEnabled)}
+                  workDistance={Math.abs(page - currentPage)}
                   isDemo={isDemo}
                   translation={displayedTranslations[page]}
                   loading={loadingPages.has(page)}
                   error={errors[page]}
                   renderPage={renderPage}
                   requestTranslation={requestTranslation}
-                  setCurrentPage={setCurrentPage}
+                  cancelTranslation={cancelTranslation}
+                  setCurrentPage={observeCurrentPage}
                   messages={messages}
                 />
               ))}
@@ -1362,7 +2090,6 @@ export default function Home() {
           currentDocumentId={documentId}
           loading={cloudBooksLoading}
           onSelect={(book) => void loadCloudBook(book)}
-          onWarm={(book) => void warmCloudBook(book).catch(() => undefined)}
           onUpload={() => {
             setLibraryOpen(false);
             fileInput.current?.click();

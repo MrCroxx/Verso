@@ -14,6 +14,8 @@ responsive through lazy page rendering and bounded translation concurrency.
 - Bounded cross-page context with previous-page revision and deterministic
   boundary deduplication.
 - Cloud-backed PDF, page index, blank-page, and translation caches.
+- Automatic table-of-contents extraction with cloud-backed page mapping and
+  manual or automatic PDF page-offset calibration.
 - On-demand rendering and translation suitable for scanned books with hundreds
   of pages.
 - Simplified Chinese and English interface locales.

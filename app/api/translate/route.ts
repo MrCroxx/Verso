@@ -96,6 +96,7 @@ Instructions:
 - If page ${body.page} begins mid-sentence or mid-phrase, output only its continuation. Never repeat translated words already owned by the previous page merely to make this page read independently.
 - Never invent text hidden or absent from the scan. Mark genuinely illegible fragments as [illegible].
 - Preserve every source list item as one list_item block. Put its number or bullet in marker, translated content in text, and a right-aligned page number or reference in trailing. Never merge adjacent list items.
+- On a table of contents, list of illustrations, or similar navigation page, encode every navigable row as a list_item. Preserve its printed page reference in trailing and represent hierarchy with indent.
 - Use heading, paragraph, caption, and page_number blocks according to their visual role. Preserve order, alignment, indentation, and relative typography with align, indent, and size.
 - Preserve meaningful vertical whitespace with spacer blocks. Use size xl for a large illustration/table region, lg for a large section gap, and smaller sizes for ordinary spacing. Do not describe or translate an image inside a spacer.
 - Use spaceBefore to approximate smaller gaps before text blocks. Avoid encoding layout with spaces, tabs, or repeated newlines inside text.
@@ -158,7 +159,12 @@ export async function POST(request: NextRequest) {
           response_format: { type: "json_object" },
         };
 
-    const response = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify(payload) });
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+      signal: request.signal,
+    });
     const result = await response.json() as Record<string, unknown>;
     if (!response.ok) {
       const providerError = (result.error as { message?: string } | undefined)?.message;

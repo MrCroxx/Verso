@@ -1,4 +1,4 @@
-import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 export const books = sqliteTable("books", {
   id: text("id").primaryKey(),
@@ -22,3 +22,27 @@ export const translations = sqliteTable(
   },
   (table) => [index("translations_document_page_idx").on(table.documentId, table.page)],
 );
+
+export const navigationPages = sqliteTable(
+  "navigation_pages",
+  {
+    documentId: text("document_id").notNull(),
+    pdfPage: integer("pdf_page").notNull(),
+    isTableOfContents: integer("is_table_of_contents", { mode: "boolean" }).notNull(),
+    tocEntries: text("toc_entries").notNull(),
+    pageLabel: text("page_label"),
+    pageValue: integer("page_value"),
+    numbering: text("numbering"),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.documentId, table.pdfPage] }),
+    index("navigation_pages_document_idx").on(table.documentId, table.pdfPage),
+  ],
+);
+
+export const navigationSettings = sqliteTable("navigation_settings", {
+  documentId: text("document_id").primaryKey(),
+  manualOffset: integer("manual_offset"),
+  updatedAt: integer("updated_at").notNull(),
+});
