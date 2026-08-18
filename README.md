@@ -23,22 +23,28 @@ source.
 - **Cloud library and caching:** keep uploaded PDFs, page indexes, blank-page
   results, and translations in cloud-backed storage so books remain available
   across reading sessions.
+- **Automatic contents navigation:** detect translated contents pages, preserve
+  printed page references, and calibrate PDF page offsets automatically or
+  manually.
+- **Translation search:** search cloud-cached translations, jump directly to a
+  result, and highlight matches without scanning or retranslating the book.
 - **Large-book performance:** lazily render pages and bound background
   translation work to keep scanned books with hundreds of pages responsive.
 - **Reader preferences:** switch the interface between English and Simplified
-  Chinese independently of the translation target, and choose a light or dark
-  theme without altering the source scan.
+  Chinese independently of the translation target, choose a light or dark
+  theme, and configure animated page navigation without altering the source
+  scan.
 
 ## Screenshots
 
-### AI configuration
+### Translation configuration
 
-Configure a hosted OpenAI model or any compatible endpoint, then tune the
-context window, prefetch behavior, and parallelism for the provider's limits.
-API credentials are persisted only in the browser and are never written to the
-application server's storage.
+Open Settings to configure a hosted OpenAI model or any compatible endpoint,
+then tune the context window, prefetch behavior, and parallelism for the
+provider's limits. API credentials are persisted only in the browser and are
+never written to the application server's storage.
 
-![Verso AI settings with provider, model, language, prefetch, and concurrency controls](./docs/images/ai-settings.png)
+![Verso settings with provider, model, language, prefetch, and concurrency controls](./docs/images/ai-settings.png)
 
 ### Dark theme
 

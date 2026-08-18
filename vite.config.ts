@@ -46,6 +46,7 @@ export default defineConfig(async () => {
   return {
     server: {
       allowedHosts: true,
+      hmr: { overlay: false },
       ...(isCodexSeatbeltSandbox
         ? { watch: { useFsEvents: false, usePolling: true } }
         : {}),
