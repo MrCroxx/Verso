@@ -12,6 +12,7 @@ import {
 } from "../lib/document-navigation.ts";
 import { deduplicatePageBoundary, normalizeTranslationPayload } from "../lib/translation-layout.ts";
 import { searchTranslationPayload } from "../lib/translation-search.ts";
+import { typewriterDuration, typewriterProgress } from "../lib/translation-typewriter.ts";
 import { isPageWorkEnabled } from "../lib/viewport-work.ts";
 
 async function render(path = "/") {
@@ -75,6 +76,19 @@ test("rejects incomplete search requests", async () => {
   assert.deepEqual(await response.json(), { error: "Invalid search request." });
 });
 
+test("rejects incomplete translation cache index requests", async () => {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}-translation-index-api`);
+  const { default: worker } = await import(workerUrl.href);
+  const response = await worker.fetch(
+    new Request("http://localhost/api/translations?documentId=book"),
+    { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
+    { waitUntil() {}, passThroughOnException() {} },
+  );
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: "Invalid translation cache index request." });
+});
+
 test("searches translated blocks without matching source text", () => {
   const payload = {
     sourceText: "A patient reader gives an argument time to arrive.",
@@ -93,6 +107,17 @@ test("recognizes browser find shortcuts without hijacking modified keys", () => 
   assert.equal(isDocumentSearchShortcut({ key: "F", ctrlKey: false, metaKey: true, altKey: false }), true);
   assert.equal(isDocumentSearchShortcut({ key: "f", ctrlKey: true, metaKey: false, altKey: true }), false);
   assert.equal(isDocumentSearchShortcut({ key: "g", ctrlKey: true, metaKey: false, altKey: false }), false);
+});
+
+test("reveals translations at a stable characters-per-second rate", () => {
+  assert.equal(typewriterDuration(80), 1000);
+  assert.equal(typewriterDuration(50, 50), 1000);
+  assert.equal(typewriterDuration(500, 50), 10_000);
+  assert.equal(typewriterProgress(0, 100, 50), 0);
+  assert.equal(typewriterProgress(500, 100, 50), 25);
+  assert.equal(typewriterProgress(1000, 100, 50), 50);
+  assert.equal(typewriterProgress(2000, 100, 50), 100);
+  assert.equal(typewriterProgress(10_000, 100, 50), 100);
 });
 
 test("rejects navigation requests without a document ID", async () => {
