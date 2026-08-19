@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -65,6 +65,20 @@ after(async () => {
 async function render(path = "/") {
   return fetch(`${baseUrl}${path}`, { headers: { accept: "text/html" } });
 }
+
+test("does not open local storage while server modules load", async () => {
+  const importDataDirectory = path.join(testDataDirectory, "module-import-only");
+  await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--input-type=module", "--eval", "await import('./db/books.ts')"], {
+      cwd: process.cwd(),
+      env: { ...process.env, VERSO_DATA_DIR: importDataDirectory },
+      stdio: "ignore",
+    });
+    child.once("error", reject);
+    child.once("exit", (code) => code === 0 ? resolve() : reject(new Error(`Module import exited with ${code}.`)));
+  });
+  await assert.rejects(access(importDataDirectory), { code: "ENOENT" });
+});
 
 test("server-renders the Verso reader shell", async () => {
   const response = await render();

@@ -16,8 +16,11 @@ type SqlValue = string | number | bigint | Uint8Array | null;
 
 export class LocalStatement {
   private values: SqlValue[] = [];
+  private readonly statement: StatementSync;
 
-  constructor(private readonly statement: StatementSync) {}
+  constructor(statement: StatementSync) {
+    this.statement = statement;
+  }
 
   bind(...values: SqlValue[]) {
     this.values = values;
@@ -38,7 +41,11 @@ export class LocalStatement {
 }
 
 export class LocalDatabase {
-  constructor(private readonly database: DatabaseSync) {}
+  private readonly database: DatabaseSync;
+
+  constructor(database: DatabaseSync) {
+    this.database = database;
+  }
 
   prepare(query: string) {
     return new LocalStatement(this.database.prepare(query));
@@ -56,28 +63,32 @@ export class LocalDatabase {
       throw error;
     }
   }
+
+  optimize() {
+    this.database.exec("PRAGMA optimize");
+  }
 }
 
 const dataDirectory = process.env.VERSO_DATA_DIR || ".data";
 const booksDirectory = `${dataDirectory}/books`;
 const uploadsDirectory = `${dataDirectory}/uploads`;
 
-mkdirSync(booksDirectory, { recursive: true });
-mkdirSync(uploadsDirectory, { recursive: true });
-
-const sqlite = new DatabaseSync(`${dataDirectory}/verso.sqlite`);
-sqlite.exec("PRAGMA journal_mode = WAL");
-sqlite.exec("PRAGMA foreign_keys = ON");
-sqlite.exec("PRAGMA busy_timeout = 5000");
-const database = new LocalDatabase(sqlite);
-
+let storage: { db: LocalDatabase; booksDirectory: string; uploadsDirectory: string } | undefined;
 let schemaReady: Promise<void> | undefined;
 
 export function getStorage() {
-  return { db: database, booksDirectory, uploadsDirectory };
+  if (storage) return storage;
+  mkdirSync(booksDirectory, { recursive: true });
+  mkdirSync(uploadsDirectory, { recursive: true });
+  const sqlite = new DatabaseSync(`${dataDirectory}/verso.sqlite`);
+  sqlite.exec("PRAGMA busy_timeout = 5000");
+  sqlite.exec("PRAGMA journal_mode = WAL");
+  sqlite.exec("PRAGMA foreign_keys = ON");
+  storage = { db: new LocalDatabase(sqlite), booksDirectory, uploadsDirectory };
+  return storage;
 }
 
-export async function ensureStorageSchema(db: LocalDatabase = database) {
+export async function ensureStorageSchema(db: LocalDatabase = getStorage().db) {
   schemaReady ??= (async () => {
     const statements = [
       `CREATE TABLE IF NOT EXISTS books (
@@ -118,7 +129,7 @@ export async function ensureStorageSchema(db: LocalDatabase = database) {
       )`,
     ];
     for (const statement of statements) await db.prepare(statement).run();
-    sqlite.exec("PRAGMA optimize");
+    db.optimize();
   })();
   return schemaReady;
 }
