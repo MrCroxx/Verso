@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { ensureStorageSchema, getStorage } from "../../../db/books";
 import { normalizeNavigationObservation } from "../../../lib/document-navigation";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 
 type NavigationRow = {
   pdf_page: number;
@@ -86,7 +86,7 @@ export async function PUT(request: NextRequest) {
       await db.prepare(`INSERT INTO navigation_settings (document_id, manual_offset, updated_at)
         VALUES (?1, ?2, ?3)
         ON CONFLICT(document_id) DO UPDATE SET manual_offset = excluded.manual_offset, updated_at = excluded.updated_at`)
-        .bind(input.documentId, manualOffset, Date.now())
+        .bind(input.documentId, manualOffset === null ? null : Number(manualOffset), Date.now())
         .run();
       return NextResponse.json({ cached: true });
     }

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { ensureStorageSchema, getStorage } from "../../../db/books";
 import { normalizeTranslationPayload } from "../../../lib/translation-layout";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 
 type TranslationCacheInput = {
   key: string;
