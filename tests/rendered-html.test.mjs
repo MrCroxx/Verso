@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
-import test from "node:test";
-import { createCloudPdfRangeTransport } from "../lib/cloud-pdf-range-transport.ts";
+import { spawn } from "node:child_process";
+import { access, mkdtemp, rm } from "node:fs/promises";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import test, { after, before } from "node:test";
+import { createLocalPdfRangeTransport } from "../lib/local-pdf-range-transport.ts";
 import { createConcurrencyLimiter } from "../lib/concurrency-limiter.ts";
 import { isDocumentSearchShortcut } from "../lib/keyboard-shortcuts.ts";
 import { createLatestTaskRegistry } from "../lib/latest-task-registry.ts";
@@ -15,16 +20,65 @@ import { searchTranslationPayload } from "../lib/translation-search.ts";
 import { typewriterDuration, typewriterProgress } from "../lib/translation-typewriter.ts";
 import { isPageWorkEnabled } from "../lib/viewport-work.ts";
 
+let baseUrl;
+let serverProcess;
+let testDataDirectory;
+
+before(async () => {
+  testDataDirectory = await mkdtemp(path.join(tmpdir(), "verso-test-"));
+  const port = await new Promise((resolve, reject) => {
+    const probe = createServer();
+    probe.once("error", reject);
+    probe.listen(0, "127.0.0.1", () => {
+      const address = probe.address();
+      probe.close(() => resolve(address.port));
+    });
+  });
+  baseUrl = `http://127.0.0.1:${port}`;
+  serverProcess = spawn(process.execPath, [".next/standalone/server.js"], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      HOSTNAME: "127.0.0.1",
+      PORT: String(port),
+      VERSO_DATA_DIR: testDataDirectory,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      const response = await fetch(`${baseUrl}/api/books`);
+      if (response.ok) return;
+    } catch {
+      // The server is still starting.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error("Test server did not start.");
+});
+
+after(async () => {
+  serverProcess?.kill("SIGTERM");
+  await rm(testDataDirectory, { recursive: true, force: true });
+});
+
 async function render(path = "/") {
-  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
-  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
-  const { default: worker } = await import(workerUrl.href);
-  return worker.fetch(
-    new Request(`http://localhost${path}`, { headers: { accept: "text/html" } }),
-    { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
-    { waitUntil() {}, passThroughOnException() {} },
-  );
+  return fetch(`${baseUrl}${path}`, { headers: { accept: "text/html" } });
 }
+
+test("does not open local storage while server modules load", async () => {
+  const importDataDirectory = path.join(testDataDirectory, "module-import-only");
+  await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--input-type=module", "--eval", "await import('./db/books.ts')"], {
+      cwd: process.cwd(),
+      env: { ...process.env, VERSO_DATA_DIR: importDataDirectory },
+      stdio: "ignore",
+    });
+    child.once("error", reject);
+    child.once("exit", (code) => code === 0 ? resolve() : reject(new Error(`Module import exited with ${code}.`)));
+  });
+  await assert.rejects(access(importDataDirectory), { code: "ENOENT" });
+});
 
 test("server-renders the Verso reader shell", async () => {
   const response = await render();
@@ -36,55 +90,34 @@ test("server-renders the Verso reader shell", async () => {
   assert.match(html, /Verso/);
   assert.match(html, /AI Reader/);
   assert.match(html, /打开 PDF/);
-  assert.match(html, /云端书库/);
+  assert.match(html, /本地书库/);
   assert.match(html, /Switch interface to English/);
   assert.match(html, /切换明暗模式/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
 });
 
 test("rejects incomplete translation requests", async () => {
-  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
-  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}-api`);
-  const { default: worker } = await import(workerUrl.href);
-  const response = await worker.fetch(
-    new Request("http://localhost/api/translate", {
+  const response = await fetch(`${baseUrl}/api/translate`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({}),
-    }),
-    { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
-    { waitUntil() {}, passThroughOnException() {} },
-  );
+  });
   assert.equal(response.status, 400);
   assert.deepEqual(await response.json(), { error: "Missing API key, model, or page images." });
 });
 
 test("rejects incomplete search requests", async () => {
-  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
-  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}-search-api`);
-  const { default: worker } = await import(workerUrl.href);
-  const response = await worker.fetch(
-    new Request("http://localhost/api/search", {
+  const response = await fetch(`${baseUrl}/api/search`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ documentId: "book", query: "" }),
-    }),
-    { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
-    { waitUntil() {}, passThroughOnException() {} },
-  );
+  });
   assert.equal(response.status, 400);
   assert.deepEqual(await response.json(), { error: "Invalid search request." });
 });
 
 test("rejects incomplete translation cache index requests", async () => {
-  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
-  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}-translation-index-api`);
-  const { default: worker } = await import(workerUrl.href);
-  const response = await worker.fetch(
-    new Request("http://localhost/api/translations?documentId=book"),
-    { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
-    { waitUntil() {}, passThroughOnException() {} },
-  );
+  const response = await fetch(`${baseUrl}/api/translations?documentId=book`);
   assert.equal(response.status, 400);
   assert.deepEqual(await response.json(), { error: "Invalid translation cache index request." });
 });
@@ -121,137 +154,60 @@ test("reveals translations at a stable characters-per-second rate", () => {
 });
 
 test("rejects navigation requests without a document ID", async () => {
-  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
-  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}-navigation-api`);
-  const { default: worker } = await import(workerUrl.href);
-  const response = await worker.fetch(
-    new Request("http://localhost/api/navigation"),
-    { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
-    { waitUntil() {}, passThroughOnException() {} },
-  );
+  const response = await fetch(`${baseUrl}/api/navigation`);
   assert.equal(response.status, 400);
   assert.deepEqual(await response.json(), { error: "Invalid document ID." });
 });
 
-test("retries an interrupted cloud PDF range before returning it", async () => {
-  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
-  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}-pdf-range`);
-  const { default: worker } = await import(workerUrl.href);
-  const book = {
-    id: "book-1",
-    fingerprint: "fingerprint-1",
+test("stores a multipart PDF locally and serves bounded byte ranges", async () => {
+  const fingerprint = "a".repeat(64);
+  const bytes = new Uint8Array(2 * 1024 * 1024 + 1);
+  bytes.set(new TextEncoder().encode("%PDF-local-test"));
+  const metadata = {
+    fingerprint,
     name: "book.pdf",
-    object_key: "books/book-1.pdf",
-    size: 4,
-    page_count: 1,
-    content_type: "application/pdf",
-    uploaded_at: 1,
+    size: bytes.byteLength,
+    pageCount: 1,
+    contentType: "application/pdf",
   };
-  const database = {
-    prepare(query) {
-      const statement = {
-        bind() {
-          return statement;
-        },
-        async first() {
-          return query.startsWith("SELECT * FROM books") ? book : null;
-        },
-      };
-      return statement;
-    },
-    async batch() {
-      return [];
-    },
-  };
-  const bytes = new TextEncoder().encode("%PDF");
-  let attempts = 0;
-  const bucket = {
-    async get() {
-      attempts += 1;
-      return {
-        httpEtag: '"test-etag"',
-        async arrayBuffer() {
-          if (attempts === 1) throw new TypeError("terminated");
-          return bytes.buffer;
-        },
-      };
-    },
-  };
-  const response = await worker.fetch(
-    new Request("http://localhost/api/books/book-1/file", { headers: { range: "bytes=0-3" } }),
-    {
-      ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
-      DB: database,
-      BOOKS: bucket,
-    },
-    { waitUntil() {}, passThroughOnException() {} },
-  );
+  const initialize = await fetch(`${baseUrl}/api/books/uploads`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(metadata),
+  });
+  const session = await initialize.json();
+  assert.equal(initialize.status, 200);
+  assert.equal(session.exists, false);
 
-  assert.equal(response.status, 206);
-  assert.equal(response.headers.get("content-range"), "bytes 0-3/4");
-  assert.equal(await response.text(), "%PDF");
-  assert.equal(attempts, 2);
-});
+  const partResponse = await fetch(`${baseUrl}/api/books/uploads/${session.uploadId}/parts/1`, {
+    method: "PUT",
+    headers: { "content-type": "application/octet-stream", "x-object-key": session.objectKey },
+    body: bytes,
+  });
+  const part = await partResponse.json();
+  assert.equal(partResponse.status, 200);
 
-test("rejects unbounded cloud PDF reads before opening an R2 stream", async () => {
-  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
-  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}-bounded-pdf-range`);
-  const { default: worker } = await import(workerUrl.href);
-  const book = {
-    id: "book-1",
-    fingerprint: "fingerprint-1",
-    name: "book.pdf",
-    object_key: "books/book-1.pdf",
-    size: 4 * 1024 * 1024,
-    page_count: 100,
-    content_type: "application/pdf",
-    uploaded_at: 1,
-  };
-  const database = {
-    prepare() {
-      const statement = {
-        bind() {
-          return statement;
-        },
-        async first() {
-          return book;
-        },
-      };
-      return statement;
-    },
-    async batch() {
-      return [];
-    },
-  };
-  let reads = 0;
-  const environment = {
-    ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
-    DB: database,
-    BOOKS: {
-      async get() {
-        reads += 1;
-        throw new Error("R2 must not be opened for an unbounded request.");
-      },
-    },
-  };
-  const context = { waitUntil() {}, passThroughOnException() {} };
+  const complete = await fetch(`${baseUrl}/api/books/uploads/${session.uploadId}/complete`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ...metadata, objectKey: session.objectKey, parts: [part] }),
+  });
+  assert.equal(complete.status, 200);
 
-  const fullResponse = await worker.fetch(
-    new Request("http://localhost/api/books/book-1/file"),
-    environment,
-    context,
-  );
-  const oversizedResponse = await worker.fetch(
-    new Request("http://localhost/api/books/book-1/file", {
-      headers: { range: `bytes=0-${2 * 1024 * 1024}` },
-    }),
-    environment,
-    context,
-  );
-
+  const fullResponse = await fetch(`${baseUrl}/api/books/${fingerprint}/file`);
   assert.equal(fullResponse.status, 400);
+
+  const rangeResponse = await fetch(`${baseUrl}/api/books/${fingerprint}/file`, {
+    headers: { range: "bytes=0-3" },
+  });
+  assert.equal(rangeResponse.status, 206);
+  assert.equal(rangeResponse.headers.get("content-range"), `bytes 0-3/${bytes.byteLength}`);
+  assert.equal(await rangeResponse.text(), "%PDF");
+
+  const oversizedResponse = await fetch(`${baseUrl}/api/books/${fingerprint}/file`, {
+    headers: { range: `bytes=0-${2 * 1024 * 1024}` },
+  });
   assert.equal(oversizedResponse.status, 416);
-  assert.equal(reads, 0);
 });
 
 test("preserves list markers and trailing page references from compatible providers", () => {
@@ -394,7 +350,7 @@ test("keeps a restarted translation current when the cancelled run finishes", ()
   assert.equal(registry.finish("book:12", restarted), true);
 });
 
-test("loads cloud PDFs only through bounded explicit range requests", async () => {
+test("loads local PDFs only through bounded explicit range requests", async () => {
   class TestRangeTransport {
     constructor(length, initialData, progressiveDone, filename) {
       this.length = length;
@@ -412,7 +368,7 @@ test("loads cloud PDFs only through bounded explicit range requests", async () =
   let maximumActive = 0;
   const fetcher = async (_url, init) => {
     const range = new Headers(init?.headers).get("range");
-    assert.ok(range, "Every cloud PDF request must include a Range header.");
+    assert.ok(range, "Every local PDF request must include a Range header.");
     requestedRanges.push(range);
     const match = /^bytes=(\d+)-(\d+)$/.exec(range);
     assert.ok(match);
@@ -427,7 +383,7 @@ test("loads cloud PDFs only through bounded explicit range requests", async () =
       headers: { "Content-Range": `bytes ${begin}-${end}/${data.byteLength}` },
     });
   };
-  const { transport, failure } = createCloudPdfRangeTransport({
+  const { transport, failure } = createLocalPdfRangeTransport({
     Transport: TestRangeTransport,
     url: "/api/books/book-1/file",
     length: data.byteLength,

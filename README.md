@@ -20,13 +20,13 @@ source.
 - **Flexible AI providers:** use the OpenAI Responses API or an
   OpenAI-compatible endpoint, with configurable model, reasoning effort, target
   language, prefetch range, and translation concurrency.
-- **Cloud library and caching:** keep uploaded PDFs, page indexes, blank-page
-  results, and translations in cloud-backed storage so books remain available
-  across reading sessions.
+- **Local library and caching:** keep uploaded PDFs, page indexes, blank-page
+  results, and translations in the Docker data volume so books remain available
+  across reading sessions without a cloud storage service.
 - **Automatic contents navigation:** detect translated contents pages, preserve
   printed page references, and calibrate PDF page offsets automatically or
   manually.
-- **Translation search:** search cloud-cached translations, jump directly to a
+- **Translation search:** search locally cached translations, jump directly to a
   result, and highlight matches without scanning or retranslating the book.
 - **Large-book performance:** lazily render pages and bound background
   translation work to keep scanned books with hundreds of pages responsive.
@@ -55,10 +55,10 @@ retains its original appearance.
 
 ## Technology
 
-- React 19 and the Next.js App Router API through vinext.
+- React 19 and the Next.js App Router.
 - PDF.js for browser-side scanned page rendering.
-- Cloudflare D1 for metadata and translation records.
-- Cloudflare R2 for uploaded PDF objects.
+- SQLite for metadata, navigation indexes, and translation records.
+- The local filesystem for uploaded PDF objects.
 - TypeScript, Tailwind CSS, and Lucide icons.
 
 ## Requirements
@@ -89,8 +89,9 @@ to `ghcr.io/mrcroxx/verso`. Start the latest image with Docker Compose:
 docker compose up -d
 ```
 
-Then open `http://localhost:3000`. The named `verso-data` volume stores the D1
-database and R2 objects used for uploaded books, page indexes, and translations.
+Then open `http://localhost:3000`. The named `verso-data` volume stores
+`verso.sqlite` and the `books/` directory used for uploaded books, page indexes,
+and translations. No external database or object-storage service is required.
 Back up this volume before replacing or moving the deployment.
 
 The equivalent Docker command is:

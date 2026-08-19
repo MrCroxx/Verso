@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { findBook, getStorage } from "../../../../db/books";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -16,7 +16,7 @@ export async function GET(_request: Request, context: RouteContext) {
     if (!book) return NextResponse.json({ error: "Book not found." }, { status: 404 });
     return NextResponse.json({ book });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to read the cloud book.";
+    const message = error instanceof Error ? error.message : "Unable to read the local book.";
     return NextResponse.json({ error: message }, { status: 503 });
   }
 }

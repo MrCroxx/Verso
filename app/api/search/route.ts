@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { ensureStorageSchema, getStorage } from "../../../db/books";
 import { searchTranslationPayload } from "../../../lib/translation-search";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 
 type SearchInput = {
   documentId?: unknown;

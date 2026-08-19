@@ -1,7 +1,7 @@
 import type { PDFDataRangeTransport } from "pdfjs-dist";
 import { createConcurrencyLimiter } from "./concurrency-limiter.ts";
 
-export const CLOUD_PDF_RANGE_CHUNK_SIZE = 1024 * 1024;
+export const LOCAL_PDF_RANGE_CHUNK_SIZE = 1024 * 1024;
 
 const DEFAULT_MAX_CONCURRENCY = 1;
 const DEFAULT_MAX_ATTEMPTS = 5;
@@ -16,7 +16,7 @@ type PDFDataRangeTransportConstructor = new (
 
 type RangeFetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
-type CloudPdfRangeTransportOptions = {
+type LocalPdfRangeTransportOptions = {
   Transport: PDFDataRangeTransportConstructor;
   url: string;
   length: number;
@@ -27,7 +27,7 @@ type CloudPdfRangeTransportOptions = {
   maxAttempts?: number;
 };
 
-type CloudPdfRangeTransportResult = {
+type LocalPdfRangeTransportResult = {
   transport: PDFDataRangeTransport;
   failure: Promise<never>;
 };
@@ -43,22 +43,22 @@ function validateRangeResponse(response: Response, begin: number, end: number, l
 
   const match = /^bytes (\d+)-(\d+)\/(\d+)$/i.exec(response.headers.get("content-range") || "");
   if (!match || Number(match[1]) !== begin || Number(match[2]) !== end - 1 || Number(match[3]) !== length) {
-    throw new Error("Cloud PDF returned an invalid Content-Range header.");
+    throw new Error("Local PDF returned an invalid Content-Range header.");
   }
 }
 
-export function createCloudPdfRangeTransport({
+export function createLocalPdfRangeTransport({
   Transport,
   url,
   length,
   filename,
   fetcher = fetch,
-  chunkSize = CLOUD_PDF_RANGE_CHUNK_SIZE,
+  chunkSize = LOCAL_PDF_RANGE_CHUNK_SIZE,
   maxConcurrency = DEFAULT_MAX_CONCURRENCY,
   maxAttempts = DEFAULT_MAX_ATTEMPTS,
-}: CloudPdfRangeTransportOptions): CloudPdfRangeTransportResult {
+}: LocalPdfRangeTransportOptions): LocalPdfRangeTransportResult {
   if (!Number.isSafeInteger(length) || length <= 0) {
-    throw new Error("Cloud PDF has an invalid file size.");
+    throw new Error("Local PDF has an invalid file size.");
   }
 
   const normalizedChunkSize = Math.max(64 * 1024, Math.floor(chunkSize));
@@ -77,7 +77,7 @@ export function createCloudPdfRangeTransport({
   async function fetchChunk(begin: number, end: number) {
     let lastError: unknown;
     for (let attempt = 0; attempt < normalizedAttempts; attempt += 1) {
-      if (aborted) throw new DOMException("Cloud PDF request was aborted.", "AbortError");
+      if (aborted) throw new DOMException("Local PDF request was aborted.", "AbortError");
       const controller = new AbortController();
       controllers.add(controller);
       try {
@@ -88,7 +88,7 @@ export function createCloudPdfRangeTransport({
         validateRangeResponse(response, begin, end, length);
         const bytes = new Uint8Array(await response.arrayBuffer());
         if (bytes.byteLength !== end - begin) {
-          throw new Error(`Cloud PDF returned ${bytes.byteLength} bytes for a ${end - begin}-byte range.`);
+          throw new Error(`Local PDF returned ${bytes.byteLength} bytes for a ${end - begin}-byte range.`);
         }
         return bytes;
       } catch (error) {
@@ -124,7 +124,7 @@ export function createCloudPdfRangeTransport({
     return result;
   }
 
-  class CloudPdfRangeTransport extends Transport {
+  class LocalPdfRangeTransport extends Transport {
     requestDataRange(begin: number, end: number) {
       if (aborted) return;
       if (!Number.isSafeInteger(begin) || !Number.isSafeInteger(end) || begin < 0 || end <= begin || end > length) {
@@ -164,7 +164,7 @@ export function createCloudPdfRangeTransport({
   }
 
   return {
-    transport: new CloudPdfRangeTransport(length, null, false, filename),
+    transport: new LocalPdfRangeTransport(length, null, false, filename),
     failure,
   };
 }

@@ -1,15 +1,13 @@
+import { open, stat } from "node:fs/promises";
 import { NextRequest, NextResponse } from "next/server";
-import { findBook, getStorage } from "../../../../../db/books";
-import { createConcurrencyLimiter } from "../../../../../lib/concurrency-limiter.ts";
+import { findBook, getStorage, resolveBookPath } from "../../../../../db/books";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 
 type RouteContext = { params: Promise<{ id: string }> };
 type ByteRange = { offset: number; length: number };
 
 const MAX_RANGE_LENGTH = 2 * 1024 * 1024;
-const RANGE_READ_ATTEMPTS = 3;
-const rangeReadLimiter = createConcurrencyLimiter();
 
 function parseRange(header: string | null, size: number): ByteRange | undefined {
   const match = /^bytes=(\d*)-(\d*)$/.exec(header || "");
@@ -25,40 +23,50 @@ function parseRange(header: string | null, size: number): ByteRange | undefined 
   return { offset, length: Math.max(0, end - offset + 1) };
 }
 
-async function readBufferedRange(
-  bucket: R2Bucket,
-  objectKey: string,
-  range: ByteRange,
-  signal: AbortSignal,
-) {
-  return rangeReadLimiter.run(1, async () => {
-    if (signal.aborted) throw new DOMException("Cloud PDF request was aborted.", "AbortError");
-    let lastError: unknown;
-    for (let attempt = 0; attempt < RANGE_READ_ATTEMPTS; attempt += 1) {
-      try {
-        const object = await bucket.get(objectKey, { range });
-        if (!object) return null;
-        return { object, body: await object.arrayBuffer() };
-      } catch (error) {
-        lastError = error;
-        if (signal.aborted) break;
-      }
+async function readRange(filePath: string, range: ByteRange) {
+  const file = await open(filePath, "r");
+  try {
+    const body = Buffer.allocUnsafe(range.length);
+    let bytesRead = 0;
+    while (bytesRead < body.byteLength) {
+      const result = await file.read(body, bytesRead, body.byteLength - bytesRead, range.offset + bytesRead);
+      if (result.bytesRead === 0) break;
+      bytesRead += result.bytesRead;
     }
-    throw lastError instanceof Error ? lastError : new Error("Unable to read the requested PDF range.");
-  });
+    if (bytesRead !== range.length) {
+      throw new Error(`Local PDF returned ${bytesRead} bytes for a ${range.length}-byte range.`);
+    }
+    return body;
+  } finally {
+    await file.close();
+  }
 }
 
 export async function GET(request: NextRequest, context: RouteContext) {
   try {
     const { id } = await context.params;
-    const { db, bucket } = getStorage();
+    const { db } = getStorage();
     const book = await findBook(db, id);
     if (!book) return NextResponse.json({ error: "Book not found." }, { status: 404 });
+
+    const filePath = resolveBookPath(book.objectKey);
+    let file;
+    try {
+      file = await stat(filePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return NextResponse.json({ error: "Book file not found." }, { status: 404 });
+      }
+      throw error;
+    }
+    if (!file.isFile() || file.size !== book.size) {
+      throw new Error(`Local PDF size mismatch: found ${file.size} bytes; expected ${book.size}.`);
+    }
 
     const rangeHeader = request.headers.get("range");
     if (!rangeHeader) {
       return NextResponse.json(
-        { error: "A bounded Range header is required for cloud PDF reads." },
+        { error: "A bounded Range header is required for local PDF reads." },
         { status: 400, headers: { "Accept-Ranges": "bytes" } },
       );
     }
@@ -75,24 +83,23 @@ export async function GET(request: NextRequest, context: RouteContext) {
         },
       );
     }
-    const buffered = await readBufferedRange(bucket, book.objectKey, range, request.signal);
-    if (!buffered) return NextResponse.json({ error: "Book file not found." }, { status: 404 });
-    const { object, body } = buffered;
 
-    const headers = new Headers({
-      "Accept-Ranges": "bytes",
-      "Cache-Control": "private, max-age=3600",
-      "Content-Type": book.contentType,
-      "Content-Disposition": `inline; filename*=UTF-8''${encodeURIComponent(book.name)}`,
-      ETag: object.httpEtag,
-    });
+    const body = await readRange(filePath, range);
     const end = range.offset + range.length - 1;
-    headers.set("Content-Range", `bytes ${range.offset}-${end}/${book.size}`);
-    headers.set("Content-Length", String(range.length));
-    return new Response(body, { status: 206, headers });
+    return new Response(body, {
+      status: 206,
+      headers: {
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "private, max-age=3600",
+        "Content-Type": book.contentType,
+        "Content-Disposition": `inline; filename*=UTF-8''${encodeURIComponent(book.name)}`,
+        "Content-Range": `bytes ${range.offset}-${end}/${book.size}`,
+        "Content-Length": String(range.length),
+        ETag: `W/\"${file.size}-${Math.trunc(file.mtimeMs)}\"`,
+      },
+    });
   } catch (error) {
-    if (request.signal.aborted) return new Response(null, { status: 499 });
-    const message = error instanceof Error ? error.message : "Unable to read cloud book.";
+    const message = error instanceof Error ? error.message : "Unable to read local book.";
     return NextResponse.json({ error: message }, { status: 503 });
   }
 }
