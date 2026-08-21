@@ -13,7 +13,7 @@ import {
 import { deduplicatePageBoundary, normalizeTranslationPayload } from "../lib/translation-layout.ts";
 import { searchTranslationPayload } from "../lib/translation-search.ts";
 import { typewriterDuration, typewriterProgress } from "../lib/translation-typewriter.ts";
-import { isPageWorkEnabled } from "../lib/viewport-work.ts";
+import { isPageWorkEnabled, pageWorkWindow, shouldStartTranslationRequest } from "../lib/viewport-work.ts";
 
 async function render(path = "/") {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
@@ -465,6 +465,24 @@ test("enables page work only after navigation settles and inside the active wind
   assert.equal(isPageWorkEnabled(202, 200, 2, true), true);
   assert.equal(isPageWorkEnabled(197, 200, 2, true), false);
   assert.equal(isPageWorkEnabled(203, 200, 2, true), false);
+});
+
+test("anchors the prefetch window to the currently visible page", () => {
+  assert.deepEqual(pageWorkWindow(200, 410, 2), [198, 199, 200, 201, 202]);
+  assert.deepEqual(pageWorkWindow(1, 410, 2), [1, 2, 3]);
+  assert.deepEqual(pageWorkWindow(410, 410, 2), [408, 409, 410]);
+});
+
+test("does not replace an in-memory API translation with its cloud cache copy", () => {
+  assert.equal(shouldStartTranslationRequest(false, true, false, false, true), false);
+  assert.equal(shouldStartTranslationRequest(false, true, false, true, true), false);
+  assert.equal(shouldStartTranslationRequest(false, true, true, false, true), true);
+});
+
+test("allows bounded cache and API prefetch after the viewport settles", () => {
+  assert.equal(shouldStartTranslationRequest(false, false, false, true, true), true);
+  assert.equal(shouldStartTranslationRequest(false, false, false, false, true), true);
+  assert.equal(shouldStartTranslationRequest(false, false, false, false, false), false);
 });
 
 test("detects a translated table of contents and preserves page references", () => {
