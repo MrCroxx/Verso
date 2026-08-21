@@ -252,22 +252,22 @@ button { color: inherit; }
 .library-upload { width: 100%; min-height: 66px; display: flex; align-items: center; gap: 13px; padding: 12px 14px; border: 1px dashed #9ebcab; border-radius: 11px; background: #edf5f1; color: var(--green-dark); text-align: left; cursor: pointer; }
 .library-upload:hover { border-color: var(--green); background: #e5f1eb; }
 .library-upload > svg { flex: 0 0 auto; }
-.library-upload span, .cloud-book-copy { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.library-upload span, .local-book-copy { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .library-upload strong { font-size: 12px; }
-.library-upload small, .cloud-book small { color: #7c8982; font-size: 9px; font-weight: 500; }
+.library-upload small, .local-book small { color: #7c8982; font-size: 9px; font-weight: 500; }
 .library-section-title { display: flex; justify-content: space-between; margin: 25px 2px 9px; color: #7b8680; font-size: 10px; }
 .library-section-title span { font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .book-list { display: flex; flex-direction: column; gap: 7px; }
-.cloud-book { width: 100%; display: grid; grid-template-columns: 38px minmax(0, 1fr) 18px; align-items: center; gap: 11px; padding: 10px; border: 1px solid #e0e5e0; border-radius: 10px; background: white; text-align: left; cursor: pointer; }
-.cloud-book:hover { border-color: #b9cbc1; background: #f8faf8; }
-.cloud-book.active { border-color: #8db49f; background: #edf5f1; color: var(--green-dark); }
-.cloud-book-cover { width: 36px; height: 45px; display: grid; place-items: center; border-radius: 4px; background: #244c3f; color: #e0ede5; box-shadow: 2px 2px 0 #cad4cd; }
-.cloud-book-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: Georgia, "Songti SC", serif; font-size: 12px; }
+.local-book { width: 100%; display: grid; grid-template-columns: 38px minmax(0, 1fr) 18px; align-items: center; gap: 11px; padding: 10px; border: 1px solid #e0e5e0; border-radius: 10px; background: white; text-align: left; cursor: pointer; }
+.local-book:hover { border-color: #b9cbc1; background: #f8faf8; }
+.local-book.active { border-color: #8db49f; background: #edf5f1; color: var(--green-dark); }
+.local-book-cover { width: 36px; height: 45px; display: grid; place-items: center; border-radius: 4px; background: #244c3f; color: #e0ede5; box-shadow: 2px 2px 0 #cad4cd; }
+.local-book-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: Georgia, "Songti SC", serif; font-size: 12px; }
 .library-empty { min-height: 220px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; color: #8a958f; text-align: center; font-size: 11px; }
 .library-empty strong { color: #536159; }
 .library-empty p { margin: 0; }
 
-body, .topbar, .sidebar, .reader-toolbar, .page-spread, .page-surface, .settings-panel, .secondary-button, .icon-button, .book-card, .cloud-book, .settings-panel input, .settings-panel select, .sidebar-tabs, .sidebar-tabs button, .toc-calibration, .toc-list button, .offset-controls input { transition: color .18s ease, background-color .18s ease, border-color .18s ease; }
+body, .topbar, .sidebar, .reader-toolbar, .page-spread, .page-surface, .settings-panel, .secondary-button, .icon-button, .book-card, .local-book, .settings-panel input, .settings-panel select, .sidebar-tabs, .sidebar-tabs button, .toc-calibration, .toc-list button, .offset-controls input { transition: color .18s ease, background-color .18s ease, border-color .18s ease; }
 
 :root[data-theme="dark"] .topbar { background: rgba(18,23,20,.94); }
 :root[data-theme="dark"] .brand em,
@@ -348,7 +348,7 @@ body, .topbar, .sidebar, .reader-toolbar, .page-spread, .page-surface, .settings
 :root[data-theme="dark"] .field-help,
 :root[data-theme="dark"] .library-section-title,
 :root[data-theme="dark"] .library-upload small,
-:root[data-theme="dark"] .cloud-book small,
+:root[data-theme="dark"] .local-book small,
 :root[data-theme="dark"] .library-empty { color: #8f9b94; }
 :root[data-theme="dark"] .field-label { color: #b3beb7; }
 :root[data-theme="dark"] .settings-panel input:not(.range),
@@ -362,9 +362,9 @@ body, .topbar, .sidebar, .reader-toolbar, .page-spread, .page-surface, .settings
 :root[data-theme="dark"] .library-upload { border-color: #315542; background: #1a3026; color: #8ed0ae; }
 :root[data-theme="dark"] .context-note p { color: #91aa9d; }
 :root[data-theme="dark"] .library-upload:hover { border-color: var(--green); background: #203a2e; }
-:root[data-theme="dark"] .cloud-book { background: #1d241f; border-color: #354039; }
-:root[data-theme="dark"] .cloud-book:hover { background: #252e28; border-color: #4c6054; }
-:root[data-theme="dark"] .cloud-book.active { background: #1c352a; border-color: #4f8a6e; color: #9bd7ba; }
+:root[data-theme="dark"] .local-book { background: #1d241f; border-color: #354039; }
+:root[data-theme="dark"] .local-book:hover { background: #252e28; border-color: #4c6054; }
+:root[data-theme="dark"] .local-book.active { background: #1c352a; border-color: #4f8a6e; color: #9bd7ba; }
 :root[data-theme="dark"] .library-empty strong { color: #c0cbc4; }
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }

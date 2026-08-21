@@ -7,8 +7,8 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleCheck,
-  Cloud,
-  CloudUpload,
+  HardDrive,
+  HardDriveUpload,
   FileText,
   Globe2,
   Languages,
@@ -30,7 +30,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { CLOUD_PDF_RANGE_CHUNK_SIZE, createCloudPdfRangeTransport } from "../lib/cloud-pdf-range-transport";
+import { LOCAL_PDF_RANGE_CHUNK_SIZE, createLocalPdfRangeTransport } from "../lib/local-pdf-range-transport";
 import { createConcurrencyLimiter } from "../lib/concurrency-limiter";
 import {
   calculatePageOffset,
@@ -70,7 +70,7 @@ function loadPdfJs() {
 async function loadPdfRuntime() {
   const pdfjs = await loadPdfJs();
   if (!pdfWorkerPromise) {
-    const worker = new pdfjs.PDFWorker({ name: "verso-reader" });
+    const worker = new pdfjs.PDFWorker();
     pdfWorkerPromise = worker.promise.then(() => worker).catch((error) => {
       worker.destroy();
       pdfWorkerPromise = undefined;
@@ -98,7 +98,7 @@ type AppSettings = ProviderSettings & {
   translationAnimationSpeed: number;
 };
 
-type CloudBook = {
+type LocalBook = {
   id: string;
   fingerprint: string;
   name: string;
@@ -149,11 +149,11 @@ type SearchMatch = {
 const UI_MESSAGES = {
   "zh-CN": {
     blankPage: "此页没有可翻译文本",
-    blankCached: "空白页已缓存到云端",
-    boundaryFixed: "跨页重复已校正 · 已同步云端",
-    revised: "已结合下一页修订 · 已同步云端",
-    cachedLayout: "译文已缓存到云端 · 保留原页布局",
-    cached: "译文已缓存到云端",
+    blankCached: "空白页已保存到本机",
+    boundaryFixed: "跨页重复已校正 · 已保存到本机",
+    revised: "已结合下一页修订 · 已保存到本机",
+    cachedLayout: "译文已保存到本机 · 保留原页布局",
+    cached: "译文已保存到本机",
     sourcePage: (page: number) => `原文 · ${page}`,
     translatedPage: (page: number) => `译文 · ${page}`,
     scannedSourceAlt: (page: number) => `扫描原文第 ${page} 页`,
@@ -189,21 +189,21 @@ const UI_MESSAGES = {
     translationAnimationHelp: "仅在 API 生成新译文时播放；缓存译文直接显示。",
     translationAnimationSpeed: (speed: number) => `动画速度 · ${speed} 字/秒`,
     saveSettings: "保存设置",
-    libraryDialog: "云端书库",
-    cloudLibrary: "云端书库",
+    libraryDialog: "本地书库",
+    localLibrary: "本地书库",
     librarySubtitle: "选择已上传的扫描书，无需重复上传",
     closeLibrary: "关闭书库",
     uploadPdf: "上传新 PDF",
-    uploadHelp: "自动按文件指纹去重并保存到云端",
+    uploadHelp: "自动按文件指纹去重并保存到 Docker 数据卷",
     uploaded: "已上传",
     bookCount: (count: number) => `${count} 本`,
     loadingLibrary: "正在读取书库",
     bookMeta: (pages: number, size: string, date: string) => `${pages} 页 · ${size} · ${date}`,
-    noBooks: "还没有云端书籍",
+    noBooks: "还没有本地书籍",
     noBooksHelp: "上传 PDF 后会自动出现在这里。",
-    openLibrary: "打开云端书库",
-    cloudProgress: (progress: number) => `云端缓存 ${progress}%`,
-    cloudCached: "云端已缓存",
+    openLibrary: "打开本地书库",
+    localProgress: (progress: number) => `本地保存 ${progress}%`,
+    localCached: "已保存到本机",
     openPdf: "打开 PDF",
     toggleSidebar: "切换侧栏",
     pages: "页码",
@@ -239,46 +239,46 @@ const UI_MESSAGES = {
     closeError: "关闭错误提示",
     pdfReady: "PDF 已加载。填写 API key 后才会开始生成译文。",
     openSettings: "打开设置",
-    cloudIndex: (pages: number) => `已载入云端页码索引 · ${pages} 页`,
+    localIndex: (pages: number) => `已载入本地页码索引 · ${pages} 页`,
     readingIndex: "正在读取 PDF 页码索引",
     connectingRenderer: (name: string) => `已切换到《${name}》，正在连接页面渲染器`,
     rendererFailed: "页面渲染器连接失败",
-    rendererFailedHelp: "请从云端书库重新选择，或重新打开本地 PDF。",
+    rendererFailedHelp: "请从本地书库重新选择，或重新打开 PDF。",
     contextWindow: "上下文窗口",
     pageRange: (start: number, end: number) => `第 ${start}–${end} 页`,
     switchLanguage: "Switch interface to English",
     switchTheme: "切换明暗模式",
-    libraryReadFailed: "无法读取云端书库",
-    preparingCloud: "正在准备云端缓存",
-    cloudBookReused: "云端已有此书，已直接复用",
-    uploadSessionMissing: "云端未返回上传会话",
+    libraryReadFailed: "无法读取本地书库",
+    preparingLocal: "正在准备本地存储",
+    localBookReused: "本机已有此书，已直接复用",
+    uploadSessionMissing: "无法创建本地上传会话",
     partFailed: (part: number) => `分片 ${part} 上传失败`,
-    cachingParts: (completed: number, total: number) => `正在缓存到云端 · ${completed}/${total}`,
-    uploadCompleteFailed: "无法完成云端缓存",
-    cachedCloud: "已缓存到云端",
-    uploadFailed: "云端缓存失败",
+    cachingParts: (completed: number, total: number) => `正在保存到本机 · ${completed}/${total}`,
+    uploadCompleteFailed: "无法完成本地保存",
+    cachedLocal: "已保存到本机",
+    uploadFailed: "本地保存失败",
     apiKeyRequired: "请先在设置中填写 API key。",
     invalidTranslation: "模型返回了无效的译文结构。",
     translationFailed: "无法生成译文",
-    cloudTranslationReadFailed: "无法读取云端译文缓存",
-    cloudTranslationWriteFailed: "无法写入云端译文缓存",
-    navigationReadFailed: "无法读取云端目录",
-    navigationWriteFailed: "无法写入云端目录",
+    localTranslationReadFailed: "无法读取本地译文缓存",
+    localTranslationWriteFailed: "无法写入本地译文缓存",
+    navigationReadFailed: "无法读取本地目录",
+    navigationWriteFailed: "无法写入本地目录",
     translationRequestFailed: "翻译请求失败",
-    translationCacheHit: "已从云端译文缓存载入",
+    translationCacheHit: "已从本地译文缓存载入",
     translationApiSucceeded: "API 翻译成功",
     translationInProgress: "正在读取或生成译文",
     openPdfFailed: (detail: string) => `无法打开这个 PDF：${detail}`,
-    openedFromCloud: "已从云端书库打开",
-    openCloudFailed: (detail: string) => `无法打开云端 PDF：${detail}`,
+    openedFromLocal: "已从本地书库打开",
+    openLocalFailed: (detail: string) => `无法打开本地 PDF：${detail}`,
   },
   "en-US": {
     blankPage: "No translatable text on this page",
-    blankCached: "Blank page cached in the cloud",
-    boundaryFixed: "Cross-page overlap fixed · Synced to cloud",
-    revised: "Revised with the next page · Synced to cloud",
-    cachedLayout: "Translation cached in the cloud · Source layout preserved",
-    cached: "Translation cached in the cloud",
+    blankCached: "Blank page saved locally",
+    boundaryFixed: "Cross-page overlap fixed · Saved locally",
+    revised: "Revised with the next page · Saved locally",
+    cachedLayout: "Translation saved locally · Source layout preserved",
+    cached: "Translation saved locally",
     sourcePage: (page: number) => `Source · ${page}`,
     translatedPage: (page: number) => `Translation · ${page}`,
     scannedSourceAlt: (page: number) => `Scanned source page ${page}`,
@@ -314,21 +314,21 @@ const UI_MESSAGES = {
     translationAnimationHelp: "Play only for new API translations; show cached translations immediately.",
     translationAnimationSpeed: (speed: number) => `Animation speed · ${speed} chars/s`,
     saveSettings: "Save settings",
-    libraryDialog: "Cloud library",
-    cloudLibrary: "Cloud Library",
+    libraryDialog: "Local library",
+    localLibrary: "Local Library",
     librarySubtitle: "Open an uploaded scanned book without uploading it again",
     closeLibrary: "Close library",
     uploadPdf: "Upload a new PDF",
-    uploadHelp: "Deduplicated by fingerprint and stored in the cloud",
+    uploadHelp: "Deduplicated by fingerprint and stored in the Docker data volume",
     uploaded: "Uploaded",
     bookCount: (count: number) => `${count} book${count === 1 ? "" : "s"}`,
     loadingLibrary: "Loading library",
     bookMeta: (pages: number, size: string, date: string) => `${pages} pages · ${size} · ${date}`,
-    noBooks: "No cloud books yet",
+    noBooks: "No local books yet",
     noBooksHelp: "Uploaded PDFs will appear here.",
-    openLibrary: "Open cloud library",
-    cloudProgress: (progress: number) => `Cloud cache ${progress}%`,
-    cloudCached: "Cached in cloud",
+    openLibrary: "Open local library",
+    localProgress: (progress: number) => `Local save ${progress}%`,
+    localCached: "Saved locally",
     openPdf: "Open PDF",
     toggleSidebar: "Toggle sidebar",
     pages: "Pages",
@@ -364,38 +364,38 @@ const UI_MESSAGES = {
     closeError: "Dismiss error",
     pdfReady: "PDF loaded. Add an API key to start generating translations.",
     openSettings: "Open settings",
-    cloudIndex: (pages: number) => `Cloud page index loaded · ${pages} pages`,
+    localIndex: (pages: number) => `Local page index loaded · ${pages} pages`,
     readingIndex: "Reading PDF page index",
     connectingRenderer: (name: string) => `Switched to “${name}”; connecting the page renderer`,
     rendererFailed: "Page renderer connection failed",
-    rendererFailedHelp: "Select the book again from the cloud library or reopen the local PDF.",
+    rendererFailedHelp: "Select the book again from the local library or reopen the PDF.",
     contextWindow: "Context window",
     pageRange: (start: number, end: number) => `Pages ${start}–${end}`,
     switchLanguage: "切换界面为简体中文",
     switchTheme: "Toggle light or dark mode",
-    libraryReadFailed: "Unable to read the cloud library",
-    preparingCloud: "Preparing cloud cache",
-    cloudBookReused: "This book is already in the cloud and will be reused",
-    uploadSessionMissing: "The cloud did not return an upload session",
+    libraryReadFailed: "Unable to read the local library",
+    preparingLocal: "Preparing local storage",
+    localBookReused: "This book is already stored locally and will be reused",
+    uploadSessionMissing: "Unable to create a local upload session",
     partFailed: (part: number) => `Failed to upload part ${part}`,
-    cachingParts: (completed: number, total: number) => `Caching in cloud · ${completed}/${total}`,
-    uploadCompleteFailed: "Unable to complete cloud caching",
-    cachedCloud: "Cached in cloud",
-    uploadFailed: "Cloud caching failed",
+    cachingParts: (completed: number, total: number) => `Saving locally · ${completed}/${total}`,
+    uploadCompleteFailed: "Unable to complete local save",
+    cachedLocal: "Saved locally",
+    uploadFailed: "Local save failed",
     apiKeyRequired: "Add an API key in Settings first.",
     invalidTranslation: "The model returned an invalid translation structure.",
     translationFailed: "Unable to generate translation",
-    cloudTranslationReadFailed: "Unable to read the cloud translation cache",
-    cloudTranslationWriteFailed: "Unable to write the cloud translation cache",
-    navigationReadFailed: "Unable to read cloud contents",
-    navigationWriteFailed: "Unable to write cloud contents",
+    localTranslationReadFailed: "Unable to read the local translation cache",
+    localTranslationWriteFailed: "Unable to write the local translation cache",
+    navigationReadFailed: "Unable to read local contents",
+    navigationWriteFailed: "Unable to write local contents",
     translationRequestFailed: "Translation request failed",
-    translationCacheHit: "Loaded from the cloud translation cache",
+    translationCacheHit: "Loaded from the local translation cache",
     translationApiSucceeded: "API translation succeeded",
     translationInProgress: "Loading or generating translation",
     openPdfFailed: (detail: string) => `Unable to open this PDF: ${detail}`,
-    openedFromCloud: "Opened from cloud library",
-    openCloudFailed: (detail: string) => `Unable to open cloud PDF: ${detail}`,
+    openedFromLocal: "Opened from local library",
+    openLocalFailed: (detail: string) => `Unable to open local PDF: ${detail}`,
   },
 } as const;
 
@@ -514,14 +514,14 @@ function cacheKeySuffix(settings: ProviderSettings) {
   return [settings.provider, settings.endpoint, settings.model, settings.reasoningEffort, settings.targetLanguage].join("::");
 }
 
-async function readCloudCache(key: string, fallbackMessage: string, signal?: AbortSignal): Promise<Translation | undefined> {
+async function readLocalCache(key: string, fallbackMessage: string, signal?: AbortSignal): Promise<Translation | undefined> {
   const response = await fetch(`/api/translations?key=${encodeURIComponent(key)}`, { cache: "no-store", signal });
   const result = await response.json() as { translation?: Translation | null; error?: string };
   if (!response.ok) throw new Error(result.error || fallbackMessage);
   return result.translation ? normalizeTranslationPayload(result.translation) as Translation : undefined;
 }
 
-async function readCloudTranslationIndex(
+async function readLocalTranslationIndex(
   documentId: string,
   settings: ProviderSettings,
   fallbackMessage: string,
@@ -535,14 +535,14 @@ async function readCloudTranslationIndex(
     : [];
 }
 
-async function readCloudBook(id: string, fallbackMessage: string): Promise<CloudBook> {
+async function readLocalBook(id: string, fallbackMessage: string): Promise<LocalBook> {
   const response = await fetch(`/api/books/${encodeURIComponent(id)}`, { cache: "no-store" });
-  const result = await response.json() as { book?: CloudBook; error?: string };
+  const result = await response.json() as { book?: LocalBook; error?: string };
   if (!response.ok || !result.book) throw new Error(result.error || fallbackMessage);
   return result.book;
 }
 
-async function writeCloudCache(key: string, documentId: string, page: number, translation: Translation, fallbackMessage: string) {
+async function writeLocalCache(key: string, documentId: string, page: number, translation: Translation, fallbackMessage: string) {
   const response = await fetch("/api/translations", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -552,7 +552,7 @@ async function writeCloudCache(key: string, documentId: string, page: number, tr
   if (!response.ok) throw new Error(result.error || fallbackMessage);
 }
 
-async function readCloudNavigation(documentId: string, fallbackMessage: string): Promise<DocumentNavigation> {
+async function readLocalNavigation(documentId: string, fallbackMessage: string): Promise<DocumentNavigation> {
   const response = await fetch(`/api/navigation?documentId=${encodeURIComponent(documentId)}`, { cache: "no-store" });
   const result = await response.json() as { navigation?: DocumentNavigation; error?: string };
   if (!response.ok) throw new Error(result.error || fallbackMessage);
@@ -565,7 +565,7 @@ async function readCloudNavigation(documentId: string, fallbackMessage: string):
   };
 }
 
-async function writeCloudNavigationObservation(
+async function writeLocalNavigationObservation(
   documentId: string,
   observation: NavigationObservation,
   fallbackMessage: string,
@@ -579,7 +579,7 @@ async function writeCloudNavigationObservation(
   if (!response.ok) throw new Error(result.error || fallbackMessage);
 }
 
-async function writeCloudManualOffset(documentId: string, manualOffset: number | null, fallbackMessage: string) {
+async function writeLocalManualOffset(documentId: string, manualOffset: number | null, fallbackMessage: string) {
   const response = await fetch("/api/navigation", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -879,7 +879,7 @@ function TranslationSkeleton({ page, messages, cached }: { page: number; message
   return (
     <div className="translation-skeleton">
       <div className="ai-working">
-        {cached ? <Cloud size={15} /> : <Sparkles size={15} />}
+        {cached ? <HardDrive size={15} /> : <Sparkles size={15} />}
         {cached ? messages.loadingCachedTranslation(page) : messages.readingContext(page)}
       </div>
       <i /><i /><i /><i className="short" />
@@ -1173,12 +1173,12 @@ function BookLibrary({
   onUpload,
   onClose,
 }: {
-  books: CloudBook[];
+  books: LocalBook[];
   locale: UiLocale;
   messages: UiMessages;
   currentDocumentId: string;
   loading: boolean;
-  onSelect: (book: CloudBook) => void;
+  onSelect: (book: LocalBook) => void;
   onUpload: () => void;
   onClose: () => void;
 }) {
@@ -1186,11 +1186,11 @@ function BookLibrary({
     <div className="settings-backdrop" role="presentation" onMouseDown={onClose}>
       <aside className="settings-panel library-panel" role="dialog" aria-modal="true" aria-label={messages.libraryDialog} onMouseDown={(event) => event.stopPropagation()}>
         <div className="settings-title">
-          <div><span>{messages.cloudLibrary}</span><p>{messages.librarySubtitle}</p></div>
+          <div><span>{messages.localLibrary}</span><p>{messages.librarySubtitle}</p></div>
           <button className="icon-button" onClick={onClose} aria-label={messages.closeLibrary}><X size={18} /></button>
         </div>
         <button className="library-upload" onClick={onUpload}>
-          <CloudUpload size={19} />
+          <HardDriveUpload size={19} />
           <span><strong>{messages.uploadPdf}</strong><small>{messages.uploadHelp}</small></span>
         </button>
         <div className="library-section-title"><span>{messages.uploaded}</span><strong>{messages.bookCount(books.length)}</strong></div>
@@ -1201,11 +1201,11 @@ function BookLibrary({
             {books.map((book) => (
               <button
                 key={book.id}
-                className={cn("cloud-book", currentDocumentId === book.fingerprint && "active")}
+                className={cn("local-book", currentDocumentId === book.fingerprint && "active")}
                 onClick={() => onSelect(book)}
               >
-                <span className="cloud-book-cover"><BookOpen size={18} /></span>
-                <span className="cloud-book-copy">
+                <span className="local-book-cover"><BookOpen size={18} /></span>
+                <span className="local-book-copy">
                   <strong>{book.name.replace(/\.pdf$/i, "")}</strong>
                   <small>{messages.bookMeta(book.pageCount, formatFileSize(book.size), new Date(book.uploadedAt).toLocaleDateString(locale))}</small>
                 </span>
@@ -1214,7 +1214,7 @@ function BookLibrary({
             ))}
           </div>
         ) : (
-          <div className="library-empty"><Cloud size={25} /><strong>{messages.noBooks}</strong><p>{messages.noBooksHelp}</p></div>
+          <div className="library-empty"><HardDrive size={25} /><strong>{messages.noBooks}</strong><p>{messages.noBooksHelp}</p></div>
         )}
       </aside>
     </div>
@@ -1335,8 +1335,8 @@ type SidebarView = "pages" | "contents" | "search";
 export default function Home() {
   const fileInput = useRef<HTMLInputElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
-  const pdfRef = useRef<PdfDocument>();
-  const pdfLoadingTaskRef = useRef<PdfLoadingTask>();
+  const pdfRef = useRef<PdfDocument | undefined>(undefined);
+  const pdfLoadingTaskRef = useRef<PdfLoadingTask | undefined>(undefined);
   const imageCache = useRef(new Map<number, string>());
   const renderJobs = useRef(new Map<number, Promise<string>>());
   const renderTasks = useRef(new Map<number, PdfRenderTask>());
@@ -1346,7 +1346,7 @@ export default function Home() {
   const navigationWrites = useRef(new Set<string>());
   const manualOffsetTouched = useRef(false);
   const pageNavigationCleanup = useRef<() => void>(() => undefined);
-  const viewportSettleTimer = useRef<number>();
+  const viewportSettleTimer = useRef<number | undefined>(undefined);
   const viewportWorkEnabledRef = useRef(true);
   const programmaticScroll = useRef(false);
   const userScrollIntentUntil = useRef(0);
@@ -1356,7 +1356,7 @@ export default function Home() {
   const currentPageRef = useRef(1);
   const translationAnimationEnabledRef = useRef(DEFAULT_SETTINGS.translationAnimation);
   const sourceScrollAnchor = useRef<{ page: number; top: number } | null>(null);
-  const sourceAnchorReleaseFrame = useRef<number>();
+  const sourceAnchorReleaseFrame = useRef<number | undefined>(undefined);
   const translationsRef = useRef<Record<number, Translation>>(DEMO_TRANSLATIONS);
   const translationSourcesRef = useRef<Record<number, TranslationSource>>({});
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -1412,7 +1412,7 @@ export default function Home() {
   const [viewportWorkEnabled, setViewportWorkEnabled] = useState(true);
   const [loadingDocument, setLoadingDocument] = useState(false);
   const [documentReady, setDocumentReady] = useState(true);
-  const [cloudIndexLoaded, setCloudIndexLoaded] = useState(false);
+  const [localIndexLoaded, setLocalIndexLoaded] = useState(false);
   const [documentError, setDocumentError] = useState("");
   const [isDemo, setIsDemo] = useState(true);
   const [translations, setTranslations] = useState<Record<number, Translation>>(DEMO_TRANSLATIONS);
@@ -1420,10 +1420,10 @@ export default function Home() {
   const [translationAnimationVersions, setTranslationAnimationVersions] = useState<Record<number, number>>({});
   const [loadingPages, setLoadingPages] = useState<Set<number>>(new Set());
   const [errors, setErrors] = useState<Record<number, string>>({});
-  const [cloudBooks, setCloudBooks] = useState<CloudBook[]>([]);
-  const [cloudBooksLoading, setCloudBooksLoading] = useState(false);
+  const [localBooks, setLocalBooks] = useState<LocalBook[]>([]);
+  const [localBooksLoading, setLocalBooksLoading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
-  const [cloudMessage, setCloudMessage] = useState("");
+  const [storageMessage, setStorageMessage] = useState("");
   const [navigation, setNavigation] = useState<DocumentNavigation>(EMPTY_NAVIGATION);
   const [navigationLoading, setNavigationLoading] = useState(false);
   const [navigationError, setNavigationError] = useState("");
@@ -1570,16 +1570,16 @@ export default function Home() {
 
   const refreshBooks = useCallback(async () => {
     const currentMessages = messagesRef.current;
-    setCloudBooksLoading(true);
+    setLocalBooksLoading(true);
     try {
       const response = await fetch("/api/books", { cache: "no-store" });
-      const result = await response.json() as { books?: CloudBook[]; error?: string };
+      const result = await response.json() as { books?: LocalBook[]; error?: string };
       if (!response.ok) throw new Error(result.error || currentMessages.libraryReadFailed);
-      setCloudBooks(result.books || []);
+      setLocalBooks(result.books || []);
     } catch (error) {
-      setCloudMessage(error instanceof Error ? error.message : currentMessages.libraryReadFailed);
+      setStorageMessage(error instanceof Error ? error.message : currentMessages.libraryReadFailed);
     } finally {
-      setCloudBooksLoading(false);
+      setLocalBooksLoading(false);
     }
   }, []);
 
@@ -1714,8 +1714,8 @@ export default function Home() {
     setNavigationError("");
     try {
       const [navigationResult, translationIndexResult] = await Promise.allSettled([
-        readCloudNavigation(id, messagesRef.current.navigationReadFailed),
-        readCloudTranslationIndex(id, providerSettings, messagesRef.current.cloudTranslationReadFailed),
+        readLocalNavigation(id, messagesRef.current.navigationReadFailed),
+        readLocalTranslationIndex(id, providerSettings, messagesRef.current.localTranslationReadFailed),
       ]);
       if (sequence !== documentLoadSequence.current) return;
       if (navigationResult.status === "fulfilled") {
@@ -1753,14 +1753,14 @@ export default function Home() {
     }
   }, []);
 
-  const beginDocumentLoad = useCallback((id: string, name: string, pageCount: number, hasCloudIndex: boolean) => {
+  const beginDocumentLoad = useCallback((id: string, name: string, pageCount: number, hasLocalIndex: boolean) => {
     const sequence = ++documentLoadSequence.current;
     const previousLoadingTask = pdfLoadingTaskRef.current;
     const previousPdf = pdfRef.current;
     pdfLoadingTaskRef.current = undefined;
     pdfRef.current = undefined;
     if (previousLoadingTask) void previousLoadingTask.destroy();
-    else if (previousPdf) void previousPdf.destroy();
+    else if (previousPdf) void previousPdf.loadingTask.destroy();
     pageNavigationCleanup.current();
     navigationTarget.current = null;
     suspendViewportWork();
@@ -1788,7 +1788,7 @@ export default function Home() {
     setNavigationLoading(false);
     setNavigationError("");
     setIsDemo(false);
-    setCloudIndexLoaded(hasCloudIndex);
+    setLocalIndexLoaded(hasLocalIndex);
     setDocumentReady(false);
     setLoadingDocument(true);
     setDocumentError("");
@@ -1798,7 +1798,7 @@ export default function Home() {
 
   const finishDocumentLoad = useCallback((sequence: number, pdf: PdfDocument) => {
     if (sequence !== documentLoadSequence.current) {
-      void pdf.destroy();
+      void pdf.loadingTask.destroy();
       return false;
     }
     pdfRef.current = pdf;
@@ -1821,7 +1821,7 @@ export default function Home() {
     }));
     setNavigationError("");
     const sequence = documentLoadSequence.current;
-    void writeCloudNavigationObservation(documentId, observation, messagesRef.current.navigationWriteFailed)
+    void writeLocalNavigationObservation(documentId, observation, messagesRef.current.navigationWriteFailed)
       .catch((error) => {
         navigationWrites.current.delete(signature);
         if (sequence !== documentLoadSequence.current) return;
@@ -1836,16 +1836,16 @@ export default function Home() {
     setNavigation((existing) => ({ ...existing, manualOffset }));
     setNavigationError("");
     const sequence = documentLoadSequence.current;
-    void writeCloudManualOffset(documentId, manualOffset, messagesRef.current.navigationWriteFailed)
+    void writeLocalManualOffset(documentId, manualOffset, messagesRef.current.navigationWriteFailed)
       .catch((error) => {
         if (sequence !== documentLoadSequence.current) return;
         setNavigationError(error instanceof Error ? error.message : messagesRef.current.navigationWriteFailed);
       });
   }, [documentId, isDemo]);
 
-  const uploadToCloud = useCallback(async (file: File, fileFingerprint: string, pageCount: number) => {
+  const uploadToLocal = useCallback(async (file: File, fileFingerprint: string, pageCount: number) => {
     setUploadProgress(0);
-    setCloudMessage(messages.preparingCloud);
+    setStorageMessage(messages.preparingLocal);
     try {
       const metadata = {
         fingerprint: fileFingerprint,
@@ -1861,7 +1861,7 @@ export default function Home() {
       });
       const initialized = await initialize.json() as {
         exists?: boolean;
-        book?: CloudBook;
+        book?: LocalBook;
         uploadId?: string;
         objectKey?: string;
         error?: string;
@@ -1869,7 +1869,7 @@ export default function Home() {
       if (!initialize.ok) throw new Error(initialized.error || messages.uploadFailed);
       if (initialized.exists) {
         setUploadProgress(100);
-        setCloudMessage(messages.cloudBookReused);
+        setStorageMessage(messages.localBookReused);
         if (initialized.book && documentIdRef.current === fileFingerprint) {
           replaceBookInUrl(initialized.book.fingerprint);
         }
@@ -1898,7 +1898,7 @@ export default function Home() {
           parts[partNumber - 1] = { partNumber, etag: result.etag };
           completedParts += 1;
           setUploadProgress(Math.round((completedParts / partCount) * 96));
-          setCloudMessage(messages.cachingParts(completedParts, partCount));
+          setStorageMessage(messages.cachingParts(completedParts, partCount));
         }
       };
       await Promise.all(Array.from({ length: Math.min(3, partCount) }, () => uploadWorker()));
@@ -1908,15 +1908,15 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...metadata, objectKey: initialized.objectKey, parts }),
       });
-      const completed = await complete.json() as { book?: CloudBook; error?: string };
+      const completed = await complete.json() as { book?: LocalBook; error?: string };
       if (!complete.ok || !completed.book) throw new Error(completed.error || messages.uploadCompleteFailed);
       setUploadProgress(100);
-      setCloudMessage(messages.cachedCloud);
+      setStorageMessage(messages.cachedLocal);
       if (documentIdRef.current === fileFingerprint) replaceBookInUrl(completed.book.fingerprint);
       await refreshBooks();
     } catch (error) {
       setUploadProgress(null);
-      setCloudMessage(error instanceof Error ? error.message : messages.uploadFailed);
+      setStorageMessage(error instanceof Error ? error.message : messages.uploadFailed);
     }
   }, [messages, refreshBooks]);
 
@@ -2006,7 +2006,7 @@ export default function Home() {
     const readPreviousTranslation = async () => {
       if (!previousKey) return undefined;
       try {
-        return await readCloudCache(previousKey, currentMessages.cloudTranslationReadFailed, controller.signal);
+        return await readLocalCache(previousKey, currentMessages.localTranslationReadFailed, controller.signal);
       } catch (error) {
         if (controller.signal.aborted || isWorkCancellation(error)) throw error;
         return undefined;
@@ -2016,7 +2016,7 @@ export default function Home() {
     setErrors((existing) => ({ ...existing, [page]: "" }));
     try {
       if (!force) {
-        const cached = await readCloudCache(key, currentMessages.cloudTranslationReadFailed, controller.signal);
+        const cached = await readLocalCache(key, currentMessages.localTranslationReadFailed, controller.signal);
         if (cached) {
           previousTranslation = await readPreviousTranslation();
           requireCurrentRun();
@@ -2026,7 +2026,7 @@ export default function Home() {
           updateTranslations((existing) => ({ ...existing, [page]: reconciled }));
           recordNavigation(page, reconciled);
           if (reconciled !== cached) {
-            void writeCloudCache(key, documentId, page, reconciled, currentMessages.cloudTranslationWriteFailed).catch(() => undefined);
+            void writeLocalCache(key, documentId, page, reconciled, currentMessages.localTranslationWriteFailed).catch(() => undefined);
           }
           return;
         }
@@ -2104,8 +2104,8 @@ export default function Home() {
       recordNavigation(page, translated);
       if (revision) recordNavigation(page - 1, revision);
       await Promise.all([
-        writeCloudCache(key, documentId, page, translated, currentMessages.cloudTranslationWriteFailed),
-        ...(revision ? [writeCloudCache(previousKey, documentId, page - 1, revision, currentMessages.cloudTranslationWriteFailed)] : []),
+        writeLocalCache(key, documentId, page, translated, currentMessages.localTranslationWriteFailed),
+        ...(revision ? [writeLocalCache(previousKey, documentId, page - 1, revision, currentMessages.localTranslationWriteFailed)] : []),
       ]);
     } catch (error) {
       if (!isCurrentRun() || isWorkCancellation(error)) return;
@@ -2161,7 +2161,7 @@ export default function Home() {
       pdfLoadingTaskRef.current = loadingTask;
       const pdf = await loadingTask.promise;
       if (finishDocumentLoad(sequence, pdf)) {
-        void uploadToCloud(file, fileFingerprint, pdf.numPages);
+        void uploadToLocal(file, fileFingerprint, pdf.numPages);
       }
     } catch (error) {
       if (sequence !== documentLoadSequence.current) return;
@@ -2169,9 +2169,9 @@ export default function Home() {
       setDocumentError(messages.openPdfFailed(detail));
       setLoadingDocument(false);
     }
-  }, [beginDocumentLoad, finishDocumentLoad, loadNavigation, messages, translationSettings, uploadToCloud]);
+  }, [beginDocumentLoad, finishDocumentLoad, loadNavigation, messages, translationSettings, uploadToLocal]);
 
-  const loadCloudBook = useCallback(async (book: CloudBook, updateUrl = true) => {
+  const loadLocalBook = useCallback(async (book: LocalBook, updateUrl = true) => {
     setLibraryOpen(false);
     if (updateUrl) replaceBookInUrl(book.fingerprint);
     const sequence = beginDocumentLoad(book.fingerprint, book.name, book.pageCount, true);
@@ -2179,7 +2179,7 @@ export default function Home() {
     const currentMessages = messagesRef.current;
     try {
       const { pdfjs, worker } = await loadPdfRuntime();
-      const { transport, failure } = createCloudPdfRangeTransport({
+      const { transport, failure } = createLocalPdfRangeTransport({
         Transport: pdfjs.PDFDataRangeTransport,
         url: `/api/books/${encodeURIComponent(book.id)}/file`,
         length: book.size,
@@ -2193,7 +2193,7 @@ export default function Home() {
         standardFontDataUrl: "/pdfjs/standard_fonts/",
         wasmUrl: "/pdfjs/wasm/",
         iccUrl: "/pdfjs/iccs/",
-        rangeChunkSize: CLOUD_PDF_RANGE_CHUNK_SIZE,
+        rangeChunkSize: LOCAL_PDF_RANGE_CHUNK_SIZE,
         disableStream: true,
         disableAutoFetch: true,
       });
@@ -2207,18 +2207,18 @@ export default function Home() {
         pdfRef.current = undefined;
         setDocumentReady(false);
         setLoadingDocument(false);
-        setDocumentError(messagesRef.current.openCloudFailed(error.message));
+        setDocumentError(messagesRef.current.openLocalFailed(error.message));
         void loadingTask.destroy();
       });
       const pdf = await Promise.race([loadingTask.promise, failure]);
       if (finishDocumentLoad(sequence, pdf)) {
         setUploadProgress(100);
-        setCloudMessage(currentMessages.openedFromCloud);
+        setStorageMessage(currentMessages.openedFromLocal);
       }
     } catch (error) {
       if (sequence !== documentLoadSequence.current) return;
       const detail = error instanceof Error ? error.message : "Unknown PDF error";
-      setDocumentError(currentMessages.openCloudFailed(detail));
+      setDocumentError(currentMessages.openLocalFailed(detail));
       setLoadingDocument(false);
     }
   }, [beginDocumentLoad, finishDocumentLoad, loadNavigation, translationSettings]);
@@ -2227,15 +2227,15 @@ export default function Home() {
     const requestedBookId = bookIdFromUrl();
     if (!requestedBookId) return;
     const restoreTimer = window.setTimeout(() => {
-      void readCloudBook(requestedBookId, messagesRef.current.libraryReadFailed)
-        .then((book) => loadCloudBook(book, false))
+      void readLocalBook(requestedBookId, messagesRef.current.libraryReadFailed)
+        .then((book) => loadLocalBook(book, false))
         .catch((error) => {
           const detail = error instanceof Error ? error.message : messagesRef.current.libraryReadFailed;
-          setDocumentError(messagesRef.current.openCloudFailed(detail));
+          setDocumentError(messagesRef.current.openLocalFailed(detail));
         });
     }, 0);
     return () => window.clearTimeout(restoreTimer);
-  }, [loadCloudBook]);
+  }, [loadLocalBook]);
 
   const pageNumbers = useMemo(() => Array.from({ length: totalPages }, (_, index) => index + 1), [totalPages]);
   const displayedTranslations = useMemo(() => {
@@ -2330,9 +2330,9 @@ export default function Home() {
         <div className="brand"><div className="brand-mark">V</div><span>Verso</span><em>AI Reader</em></div>
         <button className="document-title" onClick={openLibrary} title={messages.openLibrary}><FileText size={16} /><span>{fileName}</span><ChevronDown size={14} /></button>
         <div className="top-actions">
-          <div className="cache-status" title={cloudMessage}>
-            {uploadProgress !== null && uploadProgress < 100 ? <LoaderCircle className="spin" size={14} /> : uploadProgress === 100 ? <Cloud size={14} /> : <span />}
-            {uploadProgress !== null && uploadProgress < 100 ? messages.cloudProgress(uploadProgress) : uploadProgress === 100 ? messages.cloudCached : messages.cloudLibrary}
+          <div className="cache-status" title={storageMessage}>
+            {uploadProgress !== null && uploadProgress < 100 ? <LoaderCircle className="spin" size={14} /> : uploadProgress === 100 ? <HardDrive size={14} /> : <span />}
+            {uploadProgress !== null && uploadProgress < 100 ? messages.localProgress(uploadProgress) : uploadProgress === 100 ? messages.localCached : messages.localLibrary}
           </div>
           <button className="icon-button locale-button" title={messages.switchLanguage} aria-label={messages.switchLanguage} onClick={() => setLocale((value) => value === "zh-CN" ? "en-US" : "zh-CN")}><Globe2 size={16} /><span>{locale === "zh-CN" ? "EN" : "中"}</span></button>
           <button className="icon-button top-search-button" aria-label={messages.searchPages} onClick={() => {
@@ -2344,7 +2344,7 @@ export default function Home() {
             });
           }}><Search size={17} /></button>
           <button className="icon-button" title={messages.switchTheme} aria-label={messages.switchTheme} aria-pressed={theme === "dark"} onClick={() => setTheme((value) => value === "light" ? "dark" : "light")}>{theme === "light" ? <Moon size={17} /> : <Sun size={17} />}</button>
-          <button className="secondary-button library-button" onClick={openLibrary}><BookOpen size={16} /> {messages.cloudLibrary}</button>
+          <button className="secondary-button library-button" onClick={openLibrary}><BookOpen size={16} /> {messages.localLibrary}</button>
           <button className="secondary-button" onClick={() => setSettingsOpen(true)}><Settings2 size={16} /> {messages.settings}</button>
           <button className="primary-button" onClick={() => fileInput.current?.click()}><Upload size={16} /> {messages.openPdf}</button>
           <input ref={fileInput} type="file" accept="application/pdf" hidden onChange={(event) => {
@@ -2537,7 +2537,7 @@ export default function Home() {
           {loadingDocument ? (
             <div className="document-loading">
               <LoaderCircle className="spin" size={28} />
-              <strong>{cloudIndexLoaded ? messages.cloudIndex(totalPages) : messages.readingIndex}</strong>
+              <strong>{localIndexLoaded ? messages.localIndex(totalPages) : messages.readingIndex}</strong>
               <p>{messages.connectingRenderer(fileName.replace(/\.pdf$/i, ""))}</p>
             </div>
           ) : documentError && !documentReady ? (
@@ -2581,12 +2581,12 @@ export default function Home() {
       {settingsOpen && <SettingsPanel settings={settings} locale={locale} messages={messages} onChange={updateSettings} onClose={() => setSettingsOpen(false)} />}
       {libraryOpen && (
         <BookLibrary
-          books={cloudBooks}
+          books={localBooks}
           locale={locale}
           messages={messages}
           currentDocumentId={documentId}
-          loading={cloudBooksLoading}
-          onSelect={(book) => void loadCloudBook(book)}
+          loading={localBooksLoading}
+          onSelect={(book) => void loadLocalBook(book)}
           onUpload={() => {
             setLibraryOpen(false);
             fileInput.current?.click();

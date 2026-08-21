@@ -39,5 +39,6 @@ next-env.d.ts
 /dist/
 /public/pdfjs/
 /.wrangler/
+/.data/
 /outputs/
 /work/

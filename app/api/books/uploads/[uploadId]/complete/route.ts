@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ensureStorageSchema, getStorage, mapBook } from "../../../../../../db/books";
+import { appendFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { ensureStorageSchema, getStorage, mapBook, resolveBookPath, resolveUploadDirectory } from "../../../../../../db/books";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 
 type RouteContext = { params: Promise<{ uploadId: string }> };
 
@@ -35,8 +36,27 @@ export async function POST(request: NextRequest, context: RouteContext) {
     ) {
       return NextResponse.json({ error: "Invalid multipart completion." }, { status: 400 });
     }
-    const { db, bucket } = getStorage();
-    await bucket.resumeMultipartUpload(input.objectKey, uploadId).complete(input.parts);
+    const { db, booksDirectory } = getStorage();
+    const uploadDirectory = resolveUploadDirectory(uploadId);
+    await mkdir(booksDirectory, { recursive: true });
+    const destination = resolveBookPath(input.objectKey);
+    const temporaryDestination = `${destination}.${uploadId}.tmp`;
+    await writeFile(temporaryDestination, new Uint8Array(), { flag: "wx" });
+    try {
+      for (const part of input.parts) {
+        await appendFile(temporaryDestination, await readFile(`${uploadDirectory}/${part.partNumber}.part`));
+      }
+      const assembled = await stat(temporaryDestination);
+      if (assembled.size !== input.size) {
+        throw new Error(`Uploaded PDF has ${assembled.size} bytes; expected ${input.size}.`);
+      }
+      await rename(temporaryDestination, destination);
+    } catch (error) {
+      await rm(temporaryDestination, { force: true });
+      throw error;
+    } finally {
+      await rm(uploadDirectory, { recursive: true, force: true });
+    }
     await ensureStorageSchema(db);
     const uploadedAt = Date.now();
     await db.prepare(`INSERT INTO books
@@ -53,7 +73,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
     const row = await db.prepare("SELECT * FROM books WHERE fingerprint = ?1").bind(input.fingerprint).first();
     return NextResponse.json({ book: mapBook(row!) });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to complete cloud upload.";
+    const message = error instanceof Error ? error.message : "Unable to complete local upload.";
     return NextResponse.json({ error: message }, { status: 503 });
   }
 }
