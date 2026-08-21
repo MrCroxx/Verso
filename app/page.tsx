@@ -49,7 +49,9 @@ import { isDocumentSearchShortcut } from "../lib/keyboard-shortcuts";
 import { deduplicatePageBoundary, normalizeTranslationPayload } from "../lib/translation-layout";
 import { searchTranslationPayload } from "../lib/translation-search";
 import { DEFAULT_TYPEWRITER_CHARACTERS_PER_SECOND, typewriterProgress } from "../lib/translation-typewriter";
+import type { UiLocale } from "../lib/ui-locale";
 import { pageWorkWindow, isPageWorkEnabled, shouldStartTranslationRequest } from "../lib/viewport-work";
+import { useUiLocale } from "./ui-locale";
 
 type PdfDocument = import("pdfjs-dist").PDFDocumentProxy;
 type PdfLoadingTask = import("pdfjs-dist").PDFDocumentLoadingTask;
@@ -399,7 +401,6 @@ const UI_MESSAGES = {
   },
 } as const;
 
-type UiLocale = keyof typeof UI_MESSAGES;
 type UiMessages = (typeof UI_MESSAGES)[UiLocale];
 type ThemeMode = "light" | "dark";
 
@@ -1367,7 +1368,7 @@ export default function Home() {
   const [searchMatches, setSearchMatches] = useState<SearchMatch[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState("");
-  const [locale, setLocale] = useState<UiLocale>("zh-CN");
+  const { locale, setLocale } = useUiLocale();
   const [theme, setTheme] = useState<ThemeMode>("light");
   const messages = UI_MESSAGES[locale];
   const messagesRef = useRef(messages);
@@ -1553,16 +1554,14 @@ export default function Home() {
 
   useEffect(() => {
     const detectPreferences = window.setTimeout(() => {
-      setLocale(navigator.language.toLowerCase().startsWith("zh") ? "zh-CN" : "en-US");
       setTheme(window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
     }, 0);
     return () => window.clearTimeout(detectPreferences);
   }, []);
 
   useEffect(() => {
-    document.documentElement.lang = locale;
     messagesRef.current = messages;
-  }, [locale, messages]);
+  }, [messages]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -2334,7 +2333,7 @@ export default function Home() {
             {uploadProgress !== null && uploadProgress < 100 ? <LoaderCircle className="spin" size={14} /> : uploadProgress === 100 ? <HardDrive size={14} /> : <span />}
             {uploadProgress !== null && uploadProgress < 100 ? messages.localProgress(uploadProgress) : uploadProgress === 100 ? messages.localCached : messages.localLibrary}
           </div>
-          <button className="icon-button locale-button" title={messages.switchLanguage} aria-label={messages.switchLanguage} onClick={() => setLocale((value) => value === "zh-CN" ? "en-US" : "zh-CN")}><Globe2 size={16} /><span>{locale === "zh-CN" ? "EN" : "中"}</span></button>
+          <button className="icon-button locale-button" title={messages.switchLanguage} aria-label={messages.switchLanguage} onClick={() => setLocale(locale === "zh-CN" ? "en-US" : "zh-CN")}><Globe2 size={16} /><span>{locale === "zh-CN" ? "EN" : "中"}</span></button>
           <button className="icon-button top-search-button" aria-label={messages.searchPages} onClick={() => {
             setSidebarOpen(true);
             setSidebarView("search");
