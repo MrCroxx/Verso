@@ -49,7 +49,9 @@ import { isDocumentSearchShortcut } from "../lib/keyboard-shortcuts";
 import { deduplicatePageBoundary, normalizeTranslationPayload } from "../lib/translation-layout";
 import { searchTranslationPayload } from "../lib/translation-search";
 import { DEFAULT_TYPEWRITER_CHARACTERS_PER_SECOND, typewriterProgress } from "../lib/translation-typewriter";
-import { isPageWorkEnabled } from "../lib/viewport-work";
+import type { UiLocale } from "../lib/ui-locale";
+import { pageWorkWindow, isPageWorkEnabled, shouldStartTranslationRequest } from "../lib/viewport-work";
+import { useUiLocale } from "./ui-locale";
 
 type PdfDocument = import("pdfjs-dist").PDFDocumentProxy;
 type PdfLoadingTask = import("pdfjs-dist").PDFDocumentLoadingTask;
@@ -399,7 +401,6 @@ const UI_MESSAGES = {
   },
 } as const;
 
-type UiLocale = keyof typeof UI_MESSAGES;
 type UiMessages = (typeof UI_MESSAGES)[UiLocale];
 type ThemeMode = "light" | "dark";
 
@@ -902,7 +903,6 @@ type PageSpreadProps = {
   error?: string;
   renderPage: (page: number) => Promise<string>;
   requestTranslation: (page: number, force?: boolean, cacheOnly?: boolean) => void;
-  cancelTranslation: (page: number) => void;
   onTranslationAnimationComplete: (page: number, cacheVersion?: number) => void;
   setCurrentPage: (page: number) => void;
   messages: UiMessages;
@@ -924,7 +924,6 @@ function PageSpread({
   error,
   renderPage,
   requestTranslation,
-  cancelTranslation,
   onTranslationAnimationComplete,
   setCurrentPage,
   messages,
@@ -938,23 +937,6 @@ function PageSpread({
     () => onTranslationAnimationComplete(page, translation?.cacheVersion),
     [onTranslationAnimationComplete, page, translation?.cacheVersion],
   );
-
-  useEffect(() => {
-    if (!near || !cachedTranslation) return;
-    requestTranslation(page, false, true);
-    return () => {
-      cancelTranslation(page);
-    };
-  }, [cachedTranslation, cancelTranslation, near, page, requestTranslation]);
-
-  useEffect(() => {
-    if (!near || cachedTranslation || !workEnabled) return;
-    const timer = window.setTimeout(() => requestTranslation(page), 250 + workDistance * 250);
-    return () => {
-      window.clearTimeout(timer);
-      cancelTranslation(page);
-    };
-  }, [cachedTranslation, cancelTranslation, near, page, requestTranslation, workDistance, workEnabled]);
 
   useEffect(() => {
     if (isDemo) return;
@@ -1376,6 +1358,8 @@ export default function Home() {
   const translationAnimationEnabledRef = useRef(DEFAULT_SETTINGS.translationAnimation);
   const sourceScrollAnchor = useRef<{ page: number; top: number } | null>(null);
   const sourceAnchorReleaseFrame = useRef<number | undefined>(undefined);
+  const translationsRef = useRef<Record<number, Translation>>(DEMO_TRANSLATIONS);
+  const translationSourcesRef = useRef<Record<number, TranslationSource>>({});
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -1384,7 +1368,7 @@ export default function Home() {
   const [searchMatches, setSearchMatches] = useState<SearchMatch[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState("");
-  const [locale, setLocale] = useState<UiLocale>("zh-CN");
+  const { locale, setLocale } = useUiLocale();
   const [theme, setTheme] = useState<ThemeMode>("light");
   const messages = UI_MESSAGES[locale];
   const messagesRef = useRef(messages);
@@ -1449,6 +1433,10 @@ export default function Home() {
     currentPageRef.current = currentPage;
   }, [currentPage]);
 
+  useLayoutEffect(() => {
+    translationSourcesRef.current = translationSources;
+  }, [translationSources]);
+
   useEffect(() => {
     translationAnimationEnabledRef.current = settings.translationAnimation;
   }, [settings.translationAnimation]);
@@ -1491,7 +1479,11 @@ export default function Home() {
     update: (existing: Record<number, Translation>) => Record<number, Translation>,
   ) => {
     captureSourceScrollAnchor();
-    setTranslations(update);
+    setTranslations((existing) => {
+      const next = update(existing);
+      translationsRef.current = next;
+      return next;
+    });
   }, [captureSourceScrollAnchor]);
 
   useLayoutEffect(() => {
@@ -1524,7 +1516,7 @@ export default function Home() {
     renderJobs.current.clear();
   }, []);
 
-  const cancelViewportWork = useCallback(() => {
+  const cancelDocumentWork = useCallback(() => {
     cancelPageRenders();
     translationRuns.current.cancelAll();
     for (const controller of translationRequests.current.values()) controller.abort();
@@ -1532,12 +1524,12 @@ export default function Home() {
     setLoadingPages(new Set());
   }, [cancelPageRenders]);
 
+  // Scrolling pauses new viewport work, but in-flight translation runs must finish.
   const suspendViewportWork = useCallback(() => {
     if (!viewportWorkEnabledRef.current) return;
     viewportWorkEnabledRef.current = false;
     setViewportWorkEnabled(false);
-    cancelViewportWork();
-  }, [cancelViewportWork]);
+  }, []);
 
   const scheduleViewportResume = useCallback((delay = 180) => {
     if (viewportSettleTimer.current) window.clearTimeout(viewportSettleTimer.current);
@@ -1562,16 +1554,14 @@ export default function Home() {
 
   useEffect(() => {
     const detectPreferences = window.setTimeout(() => {
-      setLocale(navigator.language.toLowerCase().startsWith("zh") ? "zh-CN" : "en-US");
       setTheme(window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
     }, 0);
     return () => window.clearTimeout(detectPreferences);
   }, []);
 
   useEffect(() => {
-    document.documentElement.lang = locale;
     messagesRef.current = messages;
-  }, [locale, messages]);
+  }, [messages]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -1709,9 +1699,9 @@ export default function Home() {
     pageNavigationCleanup.current();
     if (viewportSettleTimer.current) window.clearTimeout(viewportSettleTimer.current);
     if (sourceAnchorReleaseFrame.current) window.cancelAnimationFrame(sourceAnchorReleaseFrame.current);
-    cancelViewportWork();
+    cancelDocumentWork();
     void pdfLoadingTaskRef.current?.destroy();
-  }, [cancelViewportWork]);
+  }, [cancelDocumentWork]);
 
   const openLibrary = useCallback(() => {
     setLibraryOpen(true);
@@ -1773,7 +1763,7 @@ export default function Home() {
     pageNavigationCleanup.current();
     navigationTarget.current = null;
     suspendViewportWork();
-    cancelViewportWork();
+    cancelDocumentWork();
     imageCache.current.clear();
     navigationWrites.current.clear();
     manualOffsetTouched.current = false;
@@ -1782,6 +1772,7 @@ export default function Home() {
     setFileName(name);
     setTotalPages(Math.max(1, pageCount));
     setCurrentPage(1);
+    translationsRef.current = {};
     setTranslations({});
     setTranslationSources({});
     setTranslationAnimationVersions({});
@@ -1802,7 +1793,7 @@ export default function Home() {
     setDocumentError("");
     window.scrollTo({ top: 0, behavior: "instant" });
     return sequence;
-  }, [cancelViewportWork, suspendViewportWork]);
+  }, [cancelDocumentWork, suspendViewportWork]);
 
   const finishDocumentLoad = useCallback((sequence: number, pdf: PdfDocument) => {
     if (sequence !== documentLoadSequence.current) {
@@ -1981,7 +1972,13 @@ export default function Home() {
   }, []);
 
   const requestTranslation = useCallback(async (page: number, force = false, cacheOnly = false) => {
-    if (isDemo || (!cacheOnly && !force && !viewportWorkEnabledRef.current)) return;
+    if (!shouldStartTranslationRequest(
+      isDemo,
+      Boolean(translationsRef.current[page]),
+      force,
+      cacheOnly,
+      viewportWorkEnabledRef.current,
+    )) return;
     const flightKey = `${documentId}:${page}`;
     if (force) {
       translationRuns.current.cancel(flightKey);
@@ -2039,7 +2036,6 @@ export default function Home() {
             delete next[page];
             return next;
           });
-          return;
         }
       }
       if (!translationSettings.apiKey) throw new Error(currentMessages.apiKeyRequired);
@@ -2128,18 +2124,16 @@ export default function Home() {
     }
   }, [completeTranslationAnimation, documentId, isDemo, recordNavigation, renderPage, totalPages, translationSettings, updateTranslations]);
 
-  const cancelTranslation = useCallback((page: number) => {
-    const flightKey = `${documentId}:${page}`;
-    translationRuns.current.cancel(flightKey);
-    translationRequests.current.get(flightKey)?.abort();
-    translationRequests.current.delete(flightKey);
-    setLoadingPages((existing) => {
-      if (!existing.has(page)) return existing;
-      const next = new Set(existing);
-      next.delete(page);
-      return next;
-    });
-  }, [documentId]);
+  useEffect(() => {
+    if (isDemo || !documentReady || navigationLoading || !viewportWorkEnabled) return;
+    const timers = pageWorkWindow(currentPage, totalPages, settings.nearbyPages).map((page) => (
+      window.setTimeout(() => {
+        const cacheOnly = translationSourcesRef.current[page] === "cache";
+        void requestTranslation(page, false, cacheOnly);
+      }, 250 + Math.abs(page - currentPage) * 250)
+    ));
+    return () => timers.forEach((timer) => window.clearTimeout(timer));
+  }, [currentPage, documentReady, isDemo, navigationLoading, requestTranslation, settings.nearbyPages, totalPages, viewportWorkEnabled]);
 
   const handleFile = useCallback(async (file?: File) => {
     if (!file) return;
@@ -2339,7 +2333,7 @@ export default function Home() {
             {uploadProgress !== null && uploadProgress < 100 ? <LoaderCircle className="spin" size={14} /> : uploadProgress === 100 ? <HardDrive size={14} /> : <span />}
             {uploadProgress !== null && uploadProgress < 100 ? messages.localProgress(uploadProgress) : uploadProgress === 100 ? messages.localCached : messages.localLibrary}
           </div>
-          <button className="icon-button locale-button" title={messages.switchLanguage} aria-label={messages.switchLanguage} onClick={() => setLocale((value) => value === "zh-CN" ? "en-US" : "zh-CN")}><Globe2 size={16} /><span>{locale === "zh-CN" ? "EN" : "中"}</span></button>
+          <button className="icon-button locale-button" title={messages.switchLanguage} aria-label={messages.switchLanguage} onClick={() => setLocale(locale === "zh-CN" ? "en-US" : "zh-CN")}><Globe2 size={16} /><span>{locale === "zh-CN" ? "EN" : "中"}</span></button>
           <button className="icon-button top-search-button" aria-label={messages.searchPages} onClick={() => {
             setSidebarOpen(true);
             setSidebarView("search");
@@ -2371,6 +2365,7 @@ export default function Home() {
                   aria-selected={sidebarView === "pages"}
                   aria-controls="sidebar-pages"
                   className={cn(sidebarView === "pages" && "active")}
+                  title={messages.pages}
                   onClick={() => setSidebarView("pages")}
                 >
                   <FileText size={14} />
@@ -2393,6 +2388,7 @@ export default function Home() {
                   aria-selected={sidebarView === "search"}
                   aria-controls="sidebar-search"
                   className={cn(sidebarView === "search" && "active")}
+                  title={messages.searchPages}
                   onClick={() => {
                     setSidebarView("search");
                     window.requestAnimationFrame(() => searchInput.current?.focus());
@@ -2569,7 +2565,6 @@ export default function Home() {
                   error={errors[page]}
                   renderPage={renderPage}
                   requestTranslation={requestTranslation}
-                  cancelTranslation={cancelTranslation}
                   onTranslationAnimationComplete={completeTranslationAnimation}
                   setCurrentPage={observeCurrentPage}
                   messages={messages}

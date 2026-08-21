@@ -18,7 +18,9 @@ import {
 import { deduplicatePageBoundary, normalizeTranslationPayload } from "../lib/translation-layout.ts";
 import { searchTranslationPayload } from "../lib/translation-search.ts";
 import { typewriterDuration, typewriterProgress } from "../lib/translation-typewriter.ts";
-import { isPageWorkEnabled } from "../lib/viewport-work.ts";
+import { resolveUiLocale, UI_LOCALE_COOKIE } from "../lib/ui-locale.ts";
+import { isPageWorkEnabled, pageWorkWindow, shouldStartTranslationRequest } from "../lib/viewport-work.ts";
+import nextConfig from "../next.config.ts";
 
 let baseUrl;
 let serverProcess;
@@ -62,8 +64,8 @@ after(async () => {
   await rm(testDataDirectory, { recursive: true, force: true });
 });
 
-async function render(path = "/") {
-  return fetch(`${baseUrl}${path}`, { headers: { accept: "text/html" } });
+async function render(path = "/", headers = {}) {
+  return fetch(`${baseUrl}${path}`, { headers: { accept: "text/html", ...headers } });
 }
 
 test("does not open local storage while server modules load", async () => {
@@ -80,6 +82,10 @@ test("does not open local storage while server modules load", async () => {
   await assert.rejects(access(importDataDirectory), { code: "ENOENT" });
 });
 
+test("allows the homelab origin to hydrate against the development server", () => {
+  assert.deepEqual(nextConfig.allowedDevOrigins, ["homelab"]);
+});
+
 test("server-renders the Verso reader shell", async () => {
   const response = await render();
   assert.equal(response.status, 200);
@@ -87,13 +93,34 @@ test("server-renders the Verso reader shell", async () => {
 
   const html = await response.text();
   assert.match(html, /<title>Verso — AI Parallel Reader<\/title>/i);
+  assert.match(html, /<html lang="en-US">/i);
   assert.match(html, /Verso/);
   assert.match(html, /AI Reader/);
-  assert.match(html, /打开 PDF/);
-  assert.match(html, /本地书库/);
-  assert.match(html, /Switch interface to English/);
-  assert.match(html, /切换明暗模式/);
+  assert.match(html, /Open PDF/);
+  assert.match(html, /Local Library/);
+  assert.match(html, /Toggle light or dark mode/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
+});
+
+test("server-renders the preferred interface locale without a hydration switch", async () => {
+  const chineseResponse = await render("/", { "accept-language": "zh-CN,zh;q=0.9,en;q=0.8" });
+  const chineseHtml = await chineseResponse.text();
+  assert.match(chineseHtml, /<html lang="zh-CN">/i);
+  assert.match(chineseHtml, /打开 PDF/);
+
+  const savedEnglishResponse = await render("/", {
+    "accept-language": "zh-CN,zh;q=0.9",
+    cookie: `${UI_LOCALE_COOKIE}=en-US`,
+  });
+  const savedEnglishHtml = await savedEnglishResponse.text();
+  assert.match(savedEnglishHtml, /<html lang="en-US">/i);
+  assert.match(savedEnglishHtml, /Open PDF/);
+});
+
+test("resolves an explicit locale before the best supported browser language", () => {
+  assert.equal(resolveUiLocale("en-US", "zh-CN,zh;q=0.9"), "en-US");
+  assert.equal(resolveUiLocale(undefined, "fr-FR,zh-CN;q=0.8,en-US;q=0.6"), "zh-CN");
+  assert.equal(resolveUiLocale(undefined, "fr-FR"), "en-US");
 });
 
 test("rejects incomplete translation requests", async () => {
@@ -421,6 +448,24 @@ test("enables page work only after navigation settles and inside the active wind
   assert.equal(isPageWorkEnabled(202, 200, 2, true), true);
   assert.equal(isPageWorkEnabled(197, 200, 2, true), false);
   assert.equal(isPageWorkEnabled(203, 200, 2, true), false);
+});
+
+test("anchors the prefetch window to the currently visible page", () => {
+  assert.deepEqual(pageWorkWindow(200, 410, 2), [198, 199, 200, 201, 202]);
+  assert.deepEqual(pageWorkWindow(1, 410, 2), [1, 2, 3]);
+  assert.deepEqual(pageWorkWindow(410, 410, 2), [408, 409, 410]);
+});
+
+test("does not replace an in-memory API translation with its cloud cache copy", () => {
+  assert.equal(shouldStartTranslationRequest(false, true, false, false, true), false);
+  assert.equal(shouldStartTranslationRequest(false, true, false, true, true), false);
+  assert.equal(shouldStartTranslationRequest(false, true, true, false, true), true);
+});
+
+test("allows bounded cache and API prefetch after the viewport settles", () => {
+  assert.equal(shouldStartTranslationRequest(false, false, false, true, true), true);
+  assert.equal(shouldStartTranslationRequest(false, false, false, false, true), true);
+  assert.equal(shouldStartTranslationRequest(false, false, false, false, false), false);
 });
 
 test("detects a translated table of contents and preserves page references", () => {

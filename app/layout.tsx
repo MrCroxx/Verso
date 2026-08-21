@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import { headers } from "next/headers";
+import { cookies, headers } from "next/headers";
+import { UI_LOCALE_COOKIE, resolveUiLocale } from "../lib/ui-locale";
 import "./globals.css";
+import { UiLocaleProvider } from "./ui-locale";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
@@ -33,10 +35,17 @@ export async function generateMetadata(): Promise<Metadata> {
   };
 }
 
-export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  const [requestCookies, requestHeaders] = await Promise.all([cookies(), headers()]);
+  const locale = resolveUiLocale(
+    requestCookies.get(UI_LOCALE_COOKIE)?.value,
+    requestHeaders.get("accept-language"),
+  );
   return (
-    <html lang="zh-CN">
-      <body className={`${geistSans.variable} ${geistMono.variable}`}>{children}</body>
+    <html lang={locale}>
+      <body className={`${geistSans.variable} ${geistMono.variable}`}>
+        <UiLocaleProvider initialLocale={locale}>{children}</UiLocaleProvider>
+      </body>
     </html>
   );
 }
