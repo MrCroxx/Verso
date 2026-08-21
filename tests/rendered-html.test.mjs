@@ -20,6 +20,7 @@ import { searchTranslationPayload } from "../lib/translation-search.ts";
 import { typewriterDuration, typewriterProgress } from "../lib/translation-typewriter.ts";
 import { resolveUiLocale, UI_LOCALE_COOKIE } from "../lib/ui-locale.ts";
 import { isPageWorkEnabled, pageWorkWindow, shouldStartTranslationRequest } from "../lib/viewport-work.ts";
+import nextConfig from "../next.config.ts";
 
 let baseUrl;
 let serverProcess;
@@ -79,6 +80,10 @@ test("does not open local storage while server modules load", async () => {
     child.once("exit", (code) => code === 0 ? resolve() : reject(new Error(`Module import exited with ${code}.`)));
   });
   await assert.rejects(access(importDataDirectory), { code: "ENOENT" });
+});
+
+test("allows the homelab origin to hydrate against the development server", () => {
+  assert.deepEqual(nextConfig.allowedDevOrigins, ["homelab"]);
 });
 
 test("server-renders the Verso reader shell", async () => {
