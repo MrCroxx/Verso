@@ -9,7 +9,6 @@ import { createLocalPdfRangeTransport } from "../lib/local-pdf-range-transport.t
 import { createConcurrencyLimiter } from "../lib/concurrency-limiter.ts";
 import { isDocumentSearchShortcut } from "../lib/keyboard-shortcuts.ts";
 import { createLatestTaskRegistry } from "../lib/latest-task-registry.ts";
-import { pdfRenderPolicy, pdfRenderScale } from "../lib/pdf-render-policy.ts";
 import {
   calculatePageOffset,
   extractNavigationObservation,
@@ -626,25 +625,6 @@ test("loads local PDFs only through bounded explicit range requests", async () =
     [3072, 1024],
     [4096, 1024],
   ]);
-});
-
-test("uses a serialized and pixel-bounded PDF rendering policy on mobile", () => {
-  const mobile = pdfRenderPolicy(390, 3, true);
-  assert.deepEqual(mobile, {
-    mobile: true,
-    concurrency: 1,
-    maxCanvasWidth: 1024,
-    maxCanvasPixels: 2_000_000,
-  });
-  const scale = pdfRenderScale(1000, 3000, mobile);
-  assert.ok(scale < 1);
-  assert.ok(1000 * scale <= mobile.maxCanvasWidth);
-  assert.ok(1000 * 3000 * scale * scale <= mobile.maxCanvasPixels + 1);
-
-  const desktop = pdfRenderPolicy(1440, 2, false);
-  assert.equal(desktop.mobile, false);
-  assert.equal(desktop.concurrency, 2);
-  assert.equal(pdfRenderScale(800, 1000, desktop), 1280 / 800);
 });
 
 test("enables page work only after navigation settles and inside the active window", () => {

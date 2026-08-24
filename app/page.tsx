@@ -40,7 +40,6 @@ import {
 } from "../lib/ai-provider-settings";
 import { LOCAL_PDF_RANGE_CHUNK_SIZE, createLocalPdfRangeTransport } from "../lib/local-pdf-range-transport";
 import { createConcurrencyLimiter } from "../lib/concurrency-limiter";
-import { pdfRenderPolicy, pdfRenderScale } from "../lib/pdf-render-policy";
 import {
   calculatePageOffset,
   collectPageAnchors,
@@ -486,27 +485,12 @@ const EMPTY_TRANSLATION_SERVICE: TranslationService = {
 };
 
 const translationLimiter = createConcurrencyLimiter();
-const pdfRenderLimiter = createConcurrencyLimiter();
 let latestTranslationVersion = Date.now() * 1000;
 const EMPTY_NAVIGATION: DocumentNavigation = { observations: [], manualOffset: null };
 const BOOK_QUERY_PARAMETER = "book";
 
 function bookIdFromUrl() {
   return new URL(window.location.href).searchParams.get(BOOK_QUERY_PARAMETER)?.trim() || null;
-}
-
-function currentPdfRenderPolicy() {
-  return pdfRenderPolicy(
-    window.innerWidth,
-    window.devicePixelRatio,
-    window.matchMedia("(pointer: coarse)").matches,
-  );
-}
-
-function mobilePdfJsCompatibilityOptions() {
-  return currentPdfRenderPolicy().mobile
-    ? { isOffscreenCanvasSupported: false, isImageDecoderSupported: false }
-    : {};
 }
 
 function replaceBookInUrl(bookId: string | null) {
@@ -2253,16 +2237,14 @@ export default function Home() {
     if (existing) return existing;
 
     const epoch = renderEpoch.current;
-    const policy = currentPdfRenderPolicy();
     let activeRenderTask: PdfRenderTask | undefined;
-    const job: Promise<string> = pdfRenderLimiter.run(policy.concurrency, async () => {
-      if (epoch !== renderEpoch.current) throw new DOMException("Page rendering was cancelled.", "AbortError");
+    const job: Promise<string> = (async () => {
       const pdf = pdfRef.current;
       if (!pdf) throw new Error("PDF is not ready");
       const page = await pdf.getPage(pageNumber);
       if (epoch !== renderEpoch.current) throw new DOMException("Page rendering was cancelled.", "AbortError");
       const base = page.getViewport({ scale: 1 });
-      const scale = pdfRenderScale(base.width, base.height, policy);
+      const scale = Math.min(2, 1280 / base.width);
       const viewport = page.getViewport({ scale });
       const canvas = document.createElement("canvas");
       canvas.width = Math.round(viewport.width);
@@ -2283,7 +2265,7 @@ export default function Home() {
         imageCache.current.delete(oldest);
       }
       return image;
-    }).finally(() => {
+    })().finally(() => {
       if (renderJobs.current.get(pageNumber) === job) renderJobs.current.delete(pageNumber);
       if (activeRenderTask && renderTasks.current.get(pageNumber) === activeRenderTask) {
         renderTasks.current.delete(pageNumber);
@@ -2502,7 +2484,6 @@ export default function Home() {
       const loadingTask = pdfjs.getDocument({
         data,
         worker,
-        ...mobilePdfJsCompatibilityOptions(),
         cMapUrl: "/pdfjs/cmaps/",
         cMapPacked: true,
         standardFontDataUrl: "/pdfjs/standard_fonts/",
@@ -2543,7 +2524,6 @@ export default function Home() {
       const loadingTask = pdfjs.getDocument({
         range: transport,
         worker,
-        ...mobilePdfJsCompatibilityOptions(),
         cMapUrl: "/pdfjs/cmaps/",
         cMapPacked: true,
         standardFontDataUrl: "/pdfjs/standard_fonts/",
