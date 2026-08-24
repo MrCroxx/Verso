@@ -89,6 +89,10 @@ test("does not maintain a deployment hostname allowlist", () => {
   assert.equal(nextConfig.allowedDevOrigins, undefined);
 });
 
+test("excludes volume-backed storage from the standalone build", () => {
+  assert.deepEqual(nextConfig.outputFileTracingExcludes, { "/*": [".data/**/*"] });
+});
+
 test("server-renders the Verso reader shell", async () => {
   const response = await render();
   assert.equal(response.status, 200);

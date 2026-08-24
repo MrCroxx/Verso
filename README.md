@@ -82,6 +82,17 @@ Start Verso, open Settings, and save the AI provider configuration. Verso does
 not read provider credentials from environment variables. Translation results,
 uploaded books, and page indexes are not stored in browser caches.
 
+For a local production deployment, build and start the standalone server:
+
+```bash
+npm run build
+npm start
+```
+
+`npm start` binds to `0.0.0.0:3000` and resolves the default `.data` directory
+before the standalone server changes its working directory. Set
+`VERSO_DATA_DIR` to use a different absolute or project-relative data path.
+
 ## Docker Deployment
 
 Images for `linux/amd64` and `linux/arm64` are published from the `main` branch
