@@ -83,6 +83,7 @@ export function createLocalPdfRangeTransport({
       try {
         const response = await fetcher(url, {
           headers: { Range: `bytes=${begin}-${end - 1}` },
+          cache: "no-store",
           signal: controller.signal,
         });
         validateRangeResponse(response, begin, end, length);

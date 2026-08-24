@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { access, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm, stat } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -9,6 +9,7 @@ import { createLocalPdfRangeTransport } from "../lib/local-pdf-range-transport.t
 import { createConcurrencyLimiter } from "../lib/concurrency-limiter.ts";
 import { isDocumentSearchShortcut } from "../lib/keyboard-shortcuts.ts";
 import { createLatestTaskRegistry } from "../lib/latest-task-registry.ts";
+import { pdfRenderPolicy, pdfRenderScale } from "../lib/pdf-render-policy.ts";
 import {
   calculatePageOffset,
   extractNavigationObservation,
@@ -44,6 +45,8 @@ before(async () => {
       HOSTNAME: "127.0.0.1",
       PORT: String(port),
       VERSO_DATA_DIR: testDataDirectory,
+      VERSO_AI_API_KEY: "ignored-environment-key",
+      OPENAI_API_KEY: "ignored-environment-fallback",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -130,7 +133,84 @@ test("rejects incomplete translation requests", async () => {
       body: JSON.stringify({}),
   });
   assert.equal(response.status, 400);
-  assert.deepEqual(await response.json(), { error: "Missing API key, model, or page images." });
+  assert.deepEqual(await response.json(), { error: "Missing target language, page metadata, or page images." });
+});
+
+test("ignores provider environment variables and reports SQLite settings without credentials", async () => {
+  const response = await fetch(`${baseUrl}/api/settings/ai-provider`, { cache: "no-store" });
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("cache-control") ?? "", /no-store/);
+  assert.deepEqual(await response.json(), {
+    provider: "openai",
+    endpoint: "https://api.openai.com/v1/responses",
+    model: "gpt-5.6-luna",
+    reasoningEffort: "medium",
+    updatedAt: 0,
+    configured: false,
+    apiKeyConfigured: false,
+    apiKeyHint: "",
+  });
+});
+
+test("does not use provider credentials from environment variables for translation", async () => {
+  const response = await fetch(`${baseUrl}/api/translate`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      targetLanguage: "English",
+      page: 1,
+      totalPages: 1,
+      images: [{ page: 1, dataUrl: "data:image/png;base64,AA==" }],
+    }),
+  });
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { error: "AI provider is not configured on the server." });
+});
+
+test("stores AI provider settings in SQLite without returning the API key", async () => {
+  const apiKey = "test-server-only-secret-1234";
+  const saveResponse = await fetch(`${baseUrl}/api/settings/ai-provider`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      provider: "compatible",
+      endpoint: "http://127.0.0.1:9/v1",
+      apiKey,
+      model: "test-model",
+      reasoningEffort: "low",
+    }),
+  });
+  assert.equal(saveResponse.status, 200);
+  const savedText = await saveResponse.text();
+  assert.doesNotMatch(savedText, new RegExp(apiKey));
+  const saved = JSON.parse(savedText);
+  assert.equal(saved.configured, true);
+  assert.equal(saved.apiKeyConfigured, true);
+  assert.equal(saved.apiKeyHint, "••••1234");
+  assert.equal("apiKey" in saved, false);
+
+  const updateResponse = await fetch(`${baseUrl}/api/settings/ai-provider`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      provider: "compatible",
+      endpoint: "http://127.0.0.1:9/v1",
+      model: "test-model-v2",
+      reasoningEffort: "medium",
+    }),
+  });
+  assert.equal(updateResponse.status, 200);
+
+  const readResponse = await fetch(`${baseUrl}/api/settings/ai-provider`, { cache: "no-store" });
+  const readText = await readResponse.text();
+  assert.doesNotMatch(readText, new RegExp(apiKey));
+  const settings = JSON.parse(readText);
+  assert.equal(settings.model, "test-model-v2");
+  assert.equal(settings.apiKeyHint, "••••1234");
+  assert.equal("apiKey" in settings, false);
+
+  const database = await stat(path.join(testDataDirectory, "verso.sqlite"));
+  assert.equal(database.mode & 0o777, 0o600);
 });
 
 test("rejects incomplete search requests", async () => {
@@ -147,6 +227,105 @@ test("rejects incomplete translation cache index requests", async () => {
   const response = await fetch(`${baseUrl}/api/translations?documentId=book`);
   assert.equal(response.status, 400);
   assert.deepEqual(await response.json(), { error: "Invalid translation cache index request." });
+});
+
+test("discards only the requested book translation cache", async () => {
+  const firstDocumentId = "discard-cache-book";
+  const secondDocumentId = "preserved-cache-book";
+  const entries = [
+    { documentId: firstDocumentId, page: 1 },
+    { documentId: firstDocumentId, page: 2 },
+    { documentId: secondDocumentId, page: 1 },
+  ];
+  for (const entry of entries) {
+    const key = `layout-v3::${entry.documentId}::${entry.page}::server-v1::English`;
+    const response = await fetch(`${baseUrl}/api/translations`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        key,
+        documentId: entry.documentId,
+        page: entry.page,
+        translation: {
+          page: entry.page,
+          markdown: `${entry.documentId} page ${entry.page}`,
+          cachedAt: 1,
+        },
+      }),
+    });
+    assert.equal(response.status, 200);
+  }
+
+  const deleteResponse = await fetch(
+    `${baseUrl}/api/translations?documentId=${encodeURIComponent(firstDocumentId)}`,
+    { method: "DELETE" },
+  );
+  assert.equal(deleteResponse.status, 200);
+  assert.deepEqual(await deleteResponse.json(), { deleted: 2 });
+
+  for (const entry of entries) {
+    const key = `layout-v3::${entry.documentId}::${entry.page}::server-v1::English`;
+    const response = await fetch(`${baseUrl}/api/translations?key=${encodeURIComponent(key)}`);
+    assert.equal(response.status, 200);
+    const result = await response.json();
+    assert.equal(Boolean(result.translation), entry.documentId === secondDocumentId);
+  }
+});
+
+test("rejects translation cache deletion without a document ID", async () => {
+  const response = await fetch(`${baseUrl}/api/translations`, { method: "DELETE" });
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: "Invalid document ID." });
+});
+
+test("keeps legacy browser-provider translations readable after server migration", async () => {
+  const documentId = "legacy-provider-book";
+  const language = "Simplified Chinese";
+  const legacyKey = `layout-v3::${documentId}::3::openai::https://api.openai.com/v1/responses::old-model::medium::${language}`;
+  const newKey = `layout-v3::${documentId}::3::server-v1::${language}`;
+  const translation = {
+    page: 3,
+    markdown: "Preserved translation",
+    blocks: [{ kind: "paragraph", text: "Preserved translation" }],
+    cachedAt: 1,
+  };
+  const putResponse = await fetch(`${baseUrl}/api/translations`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ key: legacyKey, documentId, page: 3, translation }),
+  });
+  assert.equal(putResponse.status, 200);
+
+  const fallbackQuery = new URLSearchParams({
+    key: newKey,
+    documentId,
+    page: "3",
+    fallbackCacheKeySuffix: language,
+  });
+  const readResponse = await fetch(`${baseUrl}/api/translations?${fallbackQuery}`);
+  assert.equal(readResponse.status, 200);
+  assert.equal((await readResponse.json()).translation.markdown, "Preserved translation");
+
+  const indexQuery = new URLSearchParams({
+    documentId,
+    cacheKeySuffix: `server-v1::${language}`,
+    fallbackCacheKeySuffix: language,
+  });
+  const indexResponse = await fetch(`${baseUrl}/api/translations?${indexQuery}`);
+  assert.deepEqual((await indexResponse.json()).pages, [3]);
+
+  const searchResponse = await fetch(`${baseUrl}/api/search`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      documentId,
+      query: "Preserved",
+      cacheKeySuffix: `server-v1::${language}`,
+      fallbackCacheKeySuffix: language,
+    }),
+  });
+  assert.equal(searchResponse.status, 200);
+  assert.deepEqual((await searchResponse.json()).matches.map(({ page }) => page), [3]);
 });
 
 test("searches translated blocks without matching source text", () => {
@@ -229,6 +408,8 @@ test("stores a multipart PDF locally and serves bounded byte ranges", async () =
   });
   assert.equal(rangeResponse.status, 206);
   assert.equal(rangeResponse.headers.get("content-range"), `bytes 0-3/${bytes.byteLength}`);
+  assert.match(rangeResponse.headers.get("cache-control") ?? "", /no-store/);
+  assert.match(rangeResponse.headers.get("vary") ?? "", /Range/i);
   assert.equal(await rangeResponse.text(), "%PDF");
 
   const oversizedResponse = await fetch(`${baseUrl}/api/books/${fingerprint}/file`, {
@@ -396,6 +577,7 @@ test("loads local PDFs only through bounded explicit range requests", async () =
   const fetcher = async (_url, init) => {
     const range = new Headers(init?.headers).get("range");
     assert.ok(range, "Every local PDF request must include a Range header.");
+    assert.equal(init?.cache, "no-store");
     requestedRanges.push(range);
     const match = /^bytes=(\d+)-(\d+)$/.exec(range);
     assert.ok(match);
@@ -440,6 +622,25 @@ test("loads local PDFs only through bounded explicit range requests", async () =
     [3072, 1024],
     [4096, 1024],
   ]);
+});
+
+test("uses a serialized and pixel-bounded PDF rendering policy on mobile", () => {
+  const mobile = pdfRenderPolicy(390, 3, true);
+  assert.deepEqual(mobile, {
+    mobile: true,
+    concurrency: 1,
+    maxCanvasWidth: 1024,
+    maxCanvasPixels: 2_000_000,
+  });
+  const scale = pdfRenderScale(1000, 3000, mobile);
+  assert.ok(scale < 1);
+  assert.ok(1000 * scale <= mobile.maxCanvasWidth);
+  assert.ok(1000 * 3000 * scale * scale <= mobile.maxCanvasPixels + 1);
+
+  const desktop = pdfRenderPolicy(1440, 2, false);
+  assert.equal(desktop.mobile, false);
+  assert.equal(desktop.concurrency, 2);
+  assert.equal(pdfRenderScale(800, 1000, desktop), 1280 / 800);
 });
 
 test("enables page work only after navigation settles and inside the active window", () => {

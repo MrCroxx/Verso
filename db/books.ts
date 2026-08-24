@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 
 export type StoredBook = {
@@ -72,6 +72,7 @@ export class LocalDatabase {
 const dataDirectory = process.env.VERSO_DATA_DIR || ".data";
 const booksDirectory = `${dataDirectory}/books`;
 const uploadsDirectory = `${dataDirectory}/uploads`;
+const databasePath = `${dataDirectory}/verso.sqlite`;
 
 let storage: { db: LocalDatabase; booksDirectory: string; uploadsDirectory: string } | undefined;
 let schemaReady: Promise<void> | undefined;
@@ -80,10 +81,11 @@ export function getStorage() {
   if (storage) return storage;
   mkdirSync(booksDirectory, { recursive: true });
   mkdirSync(uploadsDirectory, { recursive: true });
-  const sqlite = new DatabaseSync(`${dataDirectory}/verso.sqlite`);
+  const sqlite = new DatabaseSync(databasePath);
   sqlite.exec("PRAGMA busy_timeout = 5000");
   sqlite.exec("PRAGMA journal_mode = WAL");
   sqlite.exec("PRAGMA foreign_keys = ON");
+  hardenStoragePermissions();
   storage = { db: new LocalDatabase(sqlite), booksDirectory, uploadsDirectory };
   return storage;
 }
@@ -127,11 +129,27 @@ export async function ensureStorageSchema(db: LocalDatabase = getStorage().db) {
         manual_offset INTEGER,
         updated_at INTEGER NOT NULL
       )`,
+      `CREATE TABLE IF NOT EXISTS ai_provider_settings (
+        id INTEGER PRIMARY KEY NOT NULL CHECK (id = 1),
+        provider TEXT NOT NULL CHECK (provider IN ('openai', 'compatible')),
+        endpoint TEXT NOT NULL,
+        api_key TEXT NOT NULL,
+        model TEXT NOT NULL,
+        reasoning_effort TEXT NOT NULL CHECK (reasoning_effort IN ('none', 'low', 'medium', 'high', 'xhigh', 'max')),
+        updated_at INTEGER NOT NULL
+      )`,
     ];
     for (const statement of statements) await db.prepare(statement).run();
     db.optimize();
+    hardenStoragePermissions();
   })();
   return schemaReady;
+}
+
+export function hardenStoragePermissions() {
+  for (const path of [databasePath, `${databasePath}-wal`, `${databasePath}-shm`]) {
+    if (existsSync(path)) chmodSync(path, 0o600);
+  }
 }
 
 export function mapBook(row: Record<string, unknown>): StoredBook {

@@ -15,6 +15,10 @@ function validKey(key: unknown) {
   return typeof key === "string" && key.startsWith("layout-v3::") && key.length <= 2048;
 }
 
+function validFallbackSuffix(value: unknown) {
+  return typeof value === "string" && value.length > 0 && value.length <= 80 && !value.includes("::");
+}
+
 export async function GET(request: NextRequest) {
   try {
     const key = request.nextUrl.searchParams.get("key");
@@ -22,33 +26,81 @@ export async function GET(request: NextRequest) {
       if (!validKey(key)) return NextResponse.json({ error: "Invalid cache key." }, { status: 400 });
       const { db } = getStorage();
       await ensureStorageSchema(db);
-      const row = await db.prepare("SELECT payload FROM translations WHERE cache_key = ?1 LIMIT 1").bind(key).first<{ payload: string }>();
+      let row = await db.prepare("SELECT payload FROM translations WHERE cache_key = ?1 LIMIT 1").bind(key).first<{ payload: string }>();
+      if (!row) {
+        const documentId = request.nextUrl.searchParams.get("documentId");
+        const page = Number(request.nextUrl.searchParams.get("page"));
+        const fallbackSuffix = request.nextUrl.searchParams.get("fallbackCacheKeySuffix");
+        if (
+          documentId
+          && documentId.length <= 128
+          && Number.isSafeInteger(page)
+          && page > 0
+          && validFallbackSuffix(fallbackSuffix)
+        ) {
+          const expectedFallbackSuffix = `::${fallbackSuffix}`;
+          row = await db.prepare(`SELECT payload
+            FROM translations
+            WHERE document_id = ?1
+              AND page = ?2
+              AND substr(cache_key, -length(?3)) = ?3
+            ORDER BY updated_at DESC
+            LIMIT 1`)
+            .bind(documentId, page, expectedFallbackSuffix)
+            .first<{ payload: string }>();
+        }
+      }
       return NextResponse.json({ translation: row ? normalizeTranslationPayload(JSON.parse(row.payload)) : null });
     }
 
     const documentId = request.nextUrl.searchParams.get("documentId");
     const suffix = request.nextUrl.searchParams.get("cacheKeySuffix");
+    const fallbackSuffix = request.nextUrl.searchParams.get("fallbackCacheKeySuffix");
     if (
       !documentId
       || documentId.length > 128
       || !suffix
       || suffix.length > 1800
+      || (fallbackSuffix !== null && !validFallbackSuffix(fallbackSuffix))
     ) {
       return NextResponse.json({ error: "Invalid translation cache index request." }, { status: 400 });
     }
     const { db } = getStorage();
     await ensureStorageSchema(db);
     const expectedSuffix = `::${suffix}`;
+    const expectedFallbackSuffix = fallbackSuffix ? `::${fallbackSuffix}` : expectedSuffix;
     const result = await db.prepare(`SELECT DISTINCT page
       FROM translations
       WHERE document_id = ?1
-        AND substr(cache_key, -length(?2)) = ?2
+        AND (
+          substr(cache_key, -length(?2)) = ?2
+          OR substr(cache_key, -length(?3)) = ?3
+        )
       ORDER BY page`)
-      .bind(documentId, expectedSuffix)
+      .bind(documentId, expectedSuffix, expectedFallbackSuffix)
       .all<{ page: number }>();
     return NextResponse.json({ pages: result.results.map((row) => Number(row.page)) });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to read translation cache.";
+    return NextResponse.json({ error: message }, { status: 503 });
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  try {
+    const documentId = request.nextUrl.searchParams.get("documentId");
+    if (!documentId || documentId.length > 128) {
+      return NextResponse.json({ error: "Invalid document ID." }, { status: 400 });
+    }
+
+    const { db } = getStorage();
+    await ensureStorageSchema(db);
+    const result = await db.prepare("DELETE FROM translations WHERE document_id = ?1")
+      .bind(documentId)
+      .run();
+    return NextResponse.json({ deleted: Number(result.changes) });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unable to discard translation cache.";
     return NextResponse.json({ error: message }, { status: 503 });
   }
 }

@@ -1,22 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getAiProviderSettings } from "../../../db/ai-provider-settings";
+import type { AiProviderSettings } from "../../../lib/ai-provider-settings";
 import { normalizeLayoutBlocks } from "../../../lib/translation-layout";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 
 type RequestBody = {
-  settings: {
-    provider: "openai" | "compatible";
-    endpoint: string;
-    apiKey: string;
-    model: string;
-    reasoningEffort: "none" | "low" | "medium" | "high" | "xhigh" | "max";
-    targetLanguage: string;
-  };
+  targetLanguage: string;
   page: number;
   totalPages: number;
   images: Array<{ page: number; dataUrl: string }>;
   previousTranslationTail?: string;
 };
+
+function isConfigured(config: AiProviderSettings | null): config is AiProviderSettings {
+  return Boolean(config?.apiKey && config.model && config.endpoint);
+}
 
 const blockSchema = {
   type: "object",
@@ -84,7 +83,7 @@ function prompt(body: RequestBody) {
   const previousTranslation = body.previousTranslationTail
     ? `\nThe cached translation ends with: ${JSON.stringify(body.previousTranslationTail)}. Do not repeat this text at the start of page ${body.page}.`
     : "";
-  return `You are translating a scanned book into ${body.settings.targetLanguage}.
+  return `You are translating a scanned book into ${body.targetLanguage}.
 The requested page is ${body.page} of ${body.totalPages}. Images are supplied in ascending page order for pages: ${available}.
 ${previousTranslation}
 
@@ -107,9 +106,9 @@ Instructions:
 - Return JSON matching the supplied schema.`;
 }
 
-function endpointFor(body: RequestBody) {
-  const raw = body.settings.endpoint.trim().replace(/\/$/, "");
-  if (body.settings.provider === "openai") return raw || "https://api.openai.com/v1/responses";
+function endpointFor(config: AiProviderSettings) {
+  const raw = config.endpoint.trim().replace(/\/$/, "");
+  if (config.provider === "openai") return raw || "https://api.openai.com/v1/responses";
   if (/\/(chat\/completions|responses)$/.test(raw)) return raw;
   return `${raw}/chat/completions`;
 }
@@ -117,20 +116,34 @@ function endpointFor(body: RequestBody) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json() as RequestBody;
-    if (!body.settings?.apiKey || !body.settings?.model || !body.images?.length) {
-      return NextResponse.json({ error: "Missing API key, model, or page images." }, { status: 400 });
+    if (
+      typeof body.targetLanguage !== "string"
+      || !body.targetLanguage.trim()
+      || body.targetLanguage.length > 80
+      || !Number.isSafeInteger(body.page)
+      || body.page < 1
+      || !Number.isSafeInteger(body.totalPages)
+      || body.totalPages < body.page
+      || !Array.isArray(body.images)
+      || !body.images.length
+    ) {
+      return NextResponse.json({ error: "Missing target language, page metadata, or page images." }, { status: 400 });
     }
     if (body.images.length > 3) {
       return NextResponse.json({ error: "At most three adjacent pages are allowed." }, { status: 400 });
     }
-    const endpoint = endpointFor(body);
-    const headers = { Authorization: `Bearer ${body.settings.apiKey}`, "Content-Type": "application/json" };
+    const config = await getAiProviderSettings();
+    if (!isConfigured(config)) {
+      return NextResponse.json({ error: "AI provider is not configured on the server." }, { status: 503 });
+    }
+    const endpoint = endpointFor(config);
+    const headers = { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" };
     const instruction = prompt(body);
-    const isResponses = body.settings.provider === "openai" || endpoint.endsWith("/responses");
+    const isResponses = config.provider === "openai" || endpoint.endsWith("/responses");
     const payload = isResponses
       ? {
-          model: body.settings.model,
-          ...(body.settings.reasoningEffort !== "none" && { reasoning: { effort: body.settings.reasoningEffort } }),
+          model: config.model,
+          ...(config.reasoningEffort !== "none" && { reasoning: { effort: config.reasoningEffort } }),
           input: [{
             role: "user",
             content: [
@@ -144,8 +157,8 @@ export async function POST(request: NextRequest) {
           text: { format: { type: "json_schema", name: "page_translation", strict: true, schema } },
         }
       : {
-          model: body.settings.model,
-          ...(body.settings.reasoningEffort !== "none" && { reasoning_effort: body.settings.reasoningEffort }),
+          model: config.model,
+          ...(config.reasoningEffort !== "none" && { reasoning_effort: config.reasoningEffort }),
           messages: [{
             role: "user",
             content: [

@@ -17,9 +17,10 @@ source.
 - **Cross-page context:** translate with a bounded window of consecutive pages,
   revise unfinished paragraphs, and deterministically remove duplicated text at
   page boundaries.
-- **Flexible AI providers:** use the OpenAI Responses API or an
-  OpenAI-compatible endpoint, with configurable model, reasoning effort, target
-  language, prefetch range, and translation concurrency.
+- **Server-managed AI providers:** use the OpenAI Responses API or an
+  OpenAI-compatible endpoint without exposing provider credentials to the
+  browser. Provider settings are stored in server-side SQLite together with
+  the local library metadata.
 - **Local library and caching:** keep uploaded PDFs, page indexes, blank-page
   results, and translations in the Docker data volume so books remain available
   across reading sessions without a cloud storage service.
@@ -39,12 +40,12 @@ source.
 
 ### Translation configuration
 
-Open Settings to configure a hosted OpenAI model or any compatible endpoint,
-then tune the context window, prefetch behavior, and parallelism for the
-provider's limits. API credentials are persisted only in the browser and are
-never written to the application server's storage.
+Open Settings to configure the server provider and tune the target language,
+prefetch behavior, and parallelism for the provider's limits. Provider
+credentials, endpoints, models, and reasoning settings are stored in the
+server-side SQLite database. The API key is never returned by the settings API.
 
-![Verso settings with provider, model, language, prefetch, and concurrency controls](./docs/images/ai-settings.png)
+![Verso translation and reading settings](./docs/images/ai-settings.png)
 
 ### Dark theme
 
@@ -77,7 +78,8 @@ The development server listens on `0.0.0.0:3000`. Open
 `http://localhost:3000` locally or use the machine hostname from another device
 on the same network.
 
-Provider credentials are configured in the application. Translation results,
+Start Verso, open Settings, and save the AI provider configuration. Verso does
+not read provider credentials from environment variables. Translation results,
 uploaded books, and page indexes are not stored in browser caches.
 
 ## Docker Deployment
@@ -91,8 +93,9 @@ docker compose up -d
 
 Then open `http://localhost:3000`. The named `verso-data` volume stores
 `verso.sqlite` and the `books/` directory used for uploaded books, page indexes,
-and translations. No external database or object-storage service is required.
-Back up this volume before replacing or moving the deployment.
+translations, and AI provider settings. No external database or object-storage
+service is required. The database contains the provider credential, so protect
+its backups and back up the volume before replacing or moving the deployment.
 
 The equivalent Docker command is:
 

@@ -90,12 +90,13 @@ export async function GET(request: NextRequest, context: RouteContext) {
       status: 206,
       headers: {
         "Accept-Ranges": "bytes",
-        "Cache-Control": "private, max-age=3600",
+        "Cache-Control": "private, no-store",
         "Content-Type": book.contentType,
         "Content-Disposition": `inline; filename*=UTF-8''${encodeURIComponent(book.name)}`,
         "Content-Range": `bytes ${range.offset}-${end}/${book.size}`,
         "Content-Length": String(range.length),
         ETag: `W/\"${file.size}-${Math.trunc(file.mtimeMs)}\"`,
+        Vary: "Range",
       },
     });
   } catch (error) {
