@@ -85,8 +85,8 @@ test("does not open local storage while server modules load", async () => {
   await assert.rejects(access(importDataDirectory), { code: "ENOENT" });
 });
 
-test("allows the homelab origin to hydrate against the development server", () => {
-  assert.deepEqual(nextConfig.allowedDevOrigins, ["homelab"]);
+test("does not maintain a deployment hostname allowlist", () => {
+  assert.equal(nextConfig.allowedDevOrigins, undefined);
 });
 
 test("server-renders the Verso reader shell", async () => {
