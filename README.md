@@ -11,12 +11,13 @@ source.
 
 - **Side-by-side reading:** compare the source scan and translation while
   navigating pages from a persistent sidebar with reading progress.
-- **Layout-aware vision translation:** preserve headings, paragraphs, lists,
-  captions, whitespace, and page numbers instead of flattening each page into
-  plain text.
-- **Cross-page context:** translate with a bounded window of consecutive pages,
-  revise unfinished paragraphs, and deterministically remove duplicated text at
-  page boundaries.
+- **Two-stage layout translation:** use a configurable vision model to recognize
+  source text, semantic roles, positions, and reading order, then send the
+  structured text to a separately configurable translation model.
+- **Cross-page ownership:** recognize incoming and outgoing page fragments,
+  claim each connected fragment group once inside the bounded prefetch window,
+  and leave out-of-window fragments visibly pending until their neighbor is
+  available.
 - **Server-managed AI providers:** use the OpenAI Responses API or an
   OpenAI-compatible endpoint without exposing provider credentials to the
   browser. Provider settings are stored in server-side SQLite together with
@@ -43,8 +44,9 @@ source.
 
 Open Settings to configure the server provider and tune the target language,
 prefetch behavior, and parallelism for the provider's limits. Provider
-credentials, endpoints, models, and reasoning settings are stored in the
-server-side SQLite database. The API key is never returned by the settings API.
+credentials, endpoints, recognition and translation models, and reasoning
+settings are stored in the server-side SQLite database. The API key is never
+returned by the settings API.
 
 ![Verso translation and reading settings](./docs/images/ai-settings.png)
 
@@ -60,7 +62,8 @@ retains its original appearance.
 - React 19 and the Next.js App Router.
 - Poppler for server-side, volume-backed page rasterization, with PDF.js as a
   browser fallback for files that have not finished uploading.
-- SQLite for metadata, navigation indexes, and translation records.
+- SQLite for metadata, navigation indexes, recognition results, and translation
+  records.
 - The local filesystem for uploaded PDF objects.
 - TypeScript, Tailwind CSS, and Lucide icons.
 

@@ -7,6 +7,9 @@ export type LayoutBlock = {
   indent: number;
   spaceBefore: "none" | "xs" | "sm" | "md" | "lg" | "xl";
   size: "xs" | "sm" | "md" | "lg" | "xl";
+  sourceBlockId?: string;
+  sourceContinuation?: "none" | "from_previous" | "to_next" | "both";
+  boundaryStatus?: "none" | "waiting_for_neighbor" | "queued" | "translating" | "translated";
 };
 
 const blockKinds = ["heading", "paragraph", "list_item", "caption", "spacer", "page_number"] as const;
@@ -22,7 +25,7 @@ export function normalizeLayoutBlock(value: unknown): LayoutBlock {
   const block = value && typeof value === "object" ? value as Record<string, unknown> : {};
   const rawKind = block.kind ?? block.type;
   const indent = typeof block.indent === "number" && Number.isFinite(block.indent) ? Math.round(block.indent) : 0;
-  return {
+  const normalized: LayoutBlock = {
     kind: enumValue(rawKind, blockKinds, "paragraph"),
     text: typeof block.text === "string" ? block.text : "",
     marker: typeof block.marker === "string" ? block.marker : "",
@@ -32,6 +35,22 @@ export function normalizeLayoutBlock(value: unknown): LayoutBlock {
     spaceBefore: enumValue(block.spaceBefore, blockSpaces, "none"),
     size: enumValue(block.size, blockSizes, "md"),
   };
+  if (typeof block.sourceBlockId === "string") normalized.sourceBlockId = block.sourceBlockId;
+  if (typeof block.sourceContinuation === "string") {
+    normalized.sourceContinuation = enumValue(
+      block.sourceContinuation,
+      ["none", "from_previous", "to_next", "both"] as const,
+      "none",
+    );
+  }
+  if (typeof block.boundaryStatus === "string") {
+    normalized.boundaryStatus = enumValue(
+      block.boundaryStatus,
+      ["none", "waiting_for_neighbor", "queued", "translating", "translated"] as const,
+      "none",
+    );
+  }
+  return normalized;
 }
 
 export function normalizeLayoutBlocks(value: unknown): LayoutBlock[] {

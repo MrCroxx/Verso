@@ -119,6 +119,15 @@ export async function ensureStorageSchema(db: LocalDatabase = getStorage().db) {
         updated_at INTEGER NOT NULL
       )`,
       "CREATE INDEX IF NOT EXISTS translations_document_page_idx ON translations (document_id, page)",
+      `CREATE TABLE IF NOT EXISTS page_recognitions (
+        document_id TEXT NOT NULL,
+        page INTEGER NOT NULL,
+        model TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (document_id, page, model)
+      )`,
+      "CREATE INDEX IF NOT EXISTS page_recognitions_document_page_idx ON page_recognitions (document_id, page)",
       `CREATE TABLE IF NOT EXISTS navigation_pages (
         document_id TEXT NOT NULL,
         pdf_page INTEGER NOT NULL,
@@ -142,11 +151,22 @@ export async function ensureStorageSchema(db: LocalDatabase = getStorage().db) {
         endpoint TEXT NOT NULL,
         api_key TEXT NOT NULL,
         model TEXT NOT NULL,
+        recognition_model TEXT,
+        translation_model TEXT,
         reasoning_effort TEXT NOT NULL CHECK (reasoning_effort IN ('none', 'low', 'medium', 'high', 'xhigh', 'max')),
         updated_at INTEGER NOT NULL
       )`,
     ];
     for (const statement of statements) await db.prepare(statement).run();
+    const providerColumns = await db.prepare("PRAGMA table_info(ai_provider_settings)")
+      .all<{ name: string }>();
+    const providerColumnNames = new Set(providerColumns.results.map((column) => column.name));
+    if (!providerColumnNames.has("recognition_model")) {
+      await db.prepare("ALTER TABLE ai_provider_settings ADD COLUMN recognition_model TEXT").run();
+    }
+    if (!providerColumnNames.has("translation_model")) {
+      await db.prepare("ALTER TABLE ai_provider_settings ADD COLUMN translation_model TEXT").run();
+    }
     db.optimize();
     hardenStoragePermissions();
   })();

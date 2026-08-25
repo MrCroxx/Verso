@@ -5,7 +5,8 @@ export type AiProviderSettings = {
   provider: AiProvider;
   endpoint: string;
   apiKey: string;
-  model: string;
+  recognitionModel: string;
+  translationModel: string;
   reasoningEffort: ReasoningEffort;
   updatedAt: number;
 };
@@ -21,14 +22,16 @@ export type AiProviderSettingsUpdate = {
   endpoint: string;
   apiKey?: string;
   clearApiKey?: boolean;
-  model: string;
+  recognitionModel: string;
+  translationModel: string;
   reasoningEffort: ReasoningEffort;
 };
 
 export const DEFAULT_AI_PROVIDER_SETTINGS = {
   provider: "openai",
   endpoint: "https://api.openai.com/v1/responses",
-  model: "gpt-5.6-luna",
+  recognitionModel: "gpt-5.6-luna",
+  translationModel: "gpt-5.6-luna",
   reasoningEffort: "medium",
 } satisfies Omit<AiProviderSettings, "apiKey" | "updatedAt">;
 
@@ -39,10 +42,16 @@ export function publicAiProviderSettings(settings: AiProviderSettings | null): P
   return {
     provider: settings?.provider || DEFAULT_AI_PROVIDER_SETTINGS.provider,
     endpoint: settings?.endpoint || DEFAULT_AI_PROVIDER_SETTINGS.endpoint,
-    model: settings?.model || DEFAULT_AI_PROVIDER_SETTINGS.model,
+    recognitionModel: settings?.recognitionModel || DEFAULT_AI_PROVIDER_SETTINGS.recognitionModel,
+    translationModel: settings?.translationModel || DEFAULT_AI_PROVIDER_SETTINGS.translationModel,
     reasoningEffort: settings?.reasoningEffort || DEFAULT_AI_PROVIDER_SETTINGS.reasoningEffort,
     updatedAt: settings?.updatedAt || 0,
-    configured: Boolean(settings?.endpoint && settings.model && apiKey),
+    configured: Boolean(
+      settings?.endpoint
+      && settings.recognitionModel
+      && settings.translationModel
+      && apiKey
+    ),
     apiKeyConfigured: Boolean(apiKey),
     apiKeyHint: apiKey ? `••••${apiKey.slice(-4)}` : "",
   };
@@ -55,7 +64,15 @@ export function normalizeAiProviderSettingsUpdate(
   if (!value || typeof value !== "object") return null;
   const input = value as Partial<AiProviderSettingsUpdate>;
   const provider = input.provider;
-  const model = typeof input.model === "string" ? input.model.trim() : "";
+  const legacyModel = typeof (input as { model?: unknown }).model === "string"
+    ? (input as { model: string }).model.trim()
+    : "";
+  const recognitionModel = typeof input.recognitionModel === "string"
+    ? input.recognitionModel.trim()
+    : legacyModel;
+  const translationModel = typeof input.translationModel === "string"
+    ? input.translationModel.trim()
+    : legacyModel;
   const reasoningEffort = input.reasoningEffort;
   const suppliedApiKey = typeof input.apiKey === "string" ? input.apiKey.trim() : "";
   const apiKey = input.clearApiKey ? "" : suppliedApiKey || existing?.apiKey || "";
@@ -63,7 +80,13 @@ export function normalizeAiProviderSettingsUpdate(
 
   if (provider !== "openai" && provider !== "compatible") return null;
   if (!REASONING_EFFORTS.has(reasoningEffort as ReasoningEffort)) return null;
-  if (!model || model.length > 200 || apiKey.length > 8192) return null;
+  if (
+    !recognitionModel
+    || recognitionModel.length > 200
+    || !translationModel
+    || translationModel.length > 200
+    || apiKey.length > 8192
+  ) return null;
   if (provider === "openai" && !endpoint) endpoint = DEFAULT_AI_PROVIDER_SETTINGS.endpoint;
   if (!endpoint || endpoint.length > 2048) return null;
   try {
@@ -77,7 +100,8 @@ export function normalizeAiProviderSettingsUpdate(
     provider,
     endpoint,
     apiKey,
-    model,
+    recognitionModel,
+    translationModel,
     reasoningEffort: reasoningEffort as ReasoningEffort,
     updatedAt: Date.now(),
   };

@@ -1,260 +1,250 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAiProviderSettings } from "../../../db/ai-provider-settings";
-import { findBook, getStorage } from "../../../db/books";
+import {
+  isResponsesEndpoint,
+  providerEndpoint,
+  providerErrorMessage,
+  providerOutputText,
+} from "../../../lib/ai-provider-client";
 import type { AiProviderSettings } from "../../../lib/ai-provider-settings";
-import { normalizeLayoutBlocks } from "../../../lib/translation-layout";
-import { getRenderedPage, PageRendererUnavailableError } from "../../../lib/server-page-renderer";
+import {
+  normalizePageRecognition,
+  recognitionBlockKey,
+  type BoundaryState,
+  type PageRecognition,
+} from "../../../lib/page-recognition";
+import type { LayoutBlock } from "../../../lib/translation-layout";
 
 export const runtime = "nodejs";
 
 type RequestBody = {
   targetLanguage: string;
-  page: number;
   totalPages: number;
-  images?: Array<{ page: number; dataUrl: string }>;
-  bookId?: string;
-  contextPages?: number[];
-  previousTranslationTail?: string;
+  requestedPages: number[];
+  recognitions: PageRecognition[];
+  boundaryStates?: Record<string, BoundaryState>;
 };
 
-type TranslationImage = { page: number; dataUrl: string };
+type ModelBlock = {
+  id: string;
+  text: string;
+  marker: string;
+  trailing: string;
+};
 
-const MAX_IMAGE_DATA_URL_LENGTH = 16 * 1024 * 1024;
-
-function isConfigured(config: AiProviderSettings | null): config is AiProviderSettings {
-  return Boolean(config?.apiKey && config.model && config.endpoint);
-}
-
-const blockSchema = {
+const translatedBlockSchema = {
   type: "object",
   additionalProperties: false,
   properties: {
-    kind: { type: "string", enum: ["heading", "paragraph", "list_item", "caption", "spacer", "page_number"] },
+    id: { type: "string" },
     text: { type: "string" },
     marker: { type: "string" },
     trailing: { type: "string" },
-    align: { type: "string", enum: ["left", "center", "right", "justify"] },
-    indent: { type: "integer", minimum: 0, maximum: 3 },
-    spaceBefore: { type: "string", enum: ["none", "xs", "sm", "md", "lg", "xl"] },
-    size: { type: "string", enum: ["xs", "sm", "md", "lg", "xl"] },
   },
-  required: ["kind", "text", "marker", "trailing", "align", "indent", "spaceBefore", "size"],
+  required: ["id", "text", "marker", "trailing"],
 };
 
-const schema = {
+const translationSchema = {
   type: "object",
   additionalProperties: false,
   properties: {
-    page: { type: "integer" },
-    blocks: { type: "array", items: blockSchema },
-    sourceSummary: { type: "string" },
-    previousPageRevision: {
-      anyOf: [
-        { type: "null" },
-        {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            page: { type: "integer" },
-            blocks: { type: "array", items: blockSchema },
-          },
-          required: ["page", "blocks"],
+    pages: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          page: { type: "integer" },
+          blocks: { type: "array", items: translatedBlockSchema },
         },
-      ],
+        required: ["page", "blocks"],
+      },
     },
   },
-  required: ["page", "blocks", "sourceSummary", "previousPageRevision"],
+  required: ["pages"],
 };
 
-function normalizeTranslationResponse(value: unknown, requestedPage: number) {
-  const result = value && typeof value === "object" ? value as Record<string, unknown> : {};
-  const revision = result.previousPageRevision && typeof result.previousPageRevision === "object"
-    ? result.previousPageRevision as Record<string, unknown>
-    : null;
-  const blocks = normalizeLayoutBlocks(result.blocks);
+function configured(settings: AiProviderSettings | null): settings is AiProviderSettings {
+  return Boolean(settings?.apiKey && settings.endpoint && settings.translationModel);
+}
+
+function normalizeRequest(body: RequestBody) {
+  if (
+    typeof body.targetLanguage !== "string"
+    || !body.targetLanguage.trim()
+    || body.targetLanguage.length > 80
+    || !Number.isSafeInteger(body.totalPages)
+    || body.totalPages < 1
+    || !Array.isArray(body.requestedPages)
+    || body.requestedPages.length < 1
+    || body.requestedPages.length > 9
+    || !Array.isArray(body.recognitions)
+    || body.recognitions.length < 1
+    || body.recognitions.length > 9
+  ) return null;
+  const requestedPages = [...new Set(body.requestedPages.map(Number))].sort((left, right) => left - right);
+  if (requestedPages.some((page) => !Number.isSafeInteger(page) || page < 1 || page > body.totalPages)) return null;
+  const recognitions = body.recognitions.map((recognition) => (
+    normalizePageRecognition(recognition, Number(recognition?.page), recognition?.model)
+  ));
+  if (
+    recognitions.some((recognition) => !Number.isSafeInteger(recognition.page) || recognition.page < 1)
+    || requestedPages.some((page) => !recognitions.some((recognition) => recognition.page === page))
+  ) return null;
   return {
-    page: typeof result.page === "number" ? result.page : requestedPage,
-    blocks,
-    isBlank: !blocks.some((block) => block.kind !== "spacer" && block.text.trim()),
-    sourceSummary: typeof result.sourceSummary === "string" ? result.sourceSummary : "",
-    previousPageRevision: revision
-      ? {
-          page: typeof revision.page === "number" ? revision.page : requestedPage - 1,
-          blocks: normalizeLayoutBlocks(revision.blocks),
-        }
-      : null,
+    requestedPages,
+    recognitions,
+    boundaryStates: body.boundaryStates || {},
   };
 }
 
-function prompt(body: RequestBody, images: TranslationImage[]) {
-  const available = images.map((image) => image.page).join(", ");
-  const previousTranslation = body.previousTranslationTail
-    ? `\nThe cached translation ends with: ${JSON.stringify(body.previousTranslationTail)}. Do not repeat this text at the start of page ${body.page}.`
-    : "";
-  return `You are translating a scanned book into ${body.targetLanguage}.
-The requested page is ${body.page} of ${body.totalPages}. Images are supplied in ascending page order for pages: ${available}.
-${previousTranslation}
+function translationPrompt(
+  targetLanguage: string,
+  recognitions: PageRecognition[],
+  requestedPages: number[],
+  boundaryStates: Record<string, BoundaryState>,
+) {
+  const pages = recognitions
+    .filter((recognition) => requestedPages.includes(recognition.page))
+    .map((recognition) => ({
+      page: recognition.page,
+      blocks: recognition.blocks.map((block) => ({
+        id: block.id,
+        kind: block.kind,
+        text: block.sourceText,
+        marker: block.marker,
+        trailing: block.trailing,
+        continuation: block.continuation,
+        translate: boundaryStates[recognitionBlockKey(recognition.page, block.id)] !== "waiting_for_neighbor"
+          && block.kind !== "spacer",
+      })),
+    }));
+  return `Translate the supplied, already-recognized book text into ${targetLanguage}. No image interpretation is needed.
 
-Instructions:
-- Read both the text and the page design visually. Reconstruct the requested page as ordered layout blocks.
-- Translate only requested page ${body.page}; adjacent pages are context, not additional output.
-- Resolve sentences and paragraphs that cross page boundaries using adjacent images.
-- Page ownership follows the source scan exactly. Every translated fragment in blocks must correspond to source text visibly printed on page ${body.page}.
-- If page ${body.page} begins mid-sentence or mid-phrase, output only its continuation. Never repeat translated words already owned by the previous page merely to make this page read independently.
-- Never invent text hidden or absent from the scan. Mark genuinely illegible fragments as [illegible].
-- Preserve every source list item as one list_item block. Put its number or bullet in marker, translated content in text, and a right-aligned page number or reference in trailing. Never merge adjacent list items.
-- On a table of contents, list of illustrations, or similar navigation page, encode every navigable row as a list_item. Preserve its printed page reference in trailing and represent hierarchy with indent.
-- Use heading, paragraph, caption, and page_number blocks according to their visual role. Preserve order, alignment, indentation, and relative typography with align, indent, and size.
-- Preserve meaningful vertical whitespace with spacer blocks. Use size xl for a large illustration/table region, lg for a large section gap, and smaller sizes for ordinary spacing. Do not describe or translate an image inside a spacer.
-- Use spaceBefore to approximate smaller gaps before text blocks. Avoid encoding layout with spaces, tabs, or repeated newlines inside text.
-- For fields that do not apply, return an empty string for marker and trailing. For spacer blocks, return empty strings for text, marker, and trailing.
-- If the requested page contains no readable or translatable text, return an empty blocks array. This is a valid successful result; do not invent content.
-- If page ${body.page - 1} ended mid-paragraph and the current page changes its meaning, return a complete corrected block layout for the previous page in previousPageRevision. Its text and the current blocks must remain disjoint with no repeated boundary fragment. Otherwise return null.
-- Keep names and technical terminology consistent. Do not add commentary.
-- Return JSON matching the supplied schema.`;
+The pages form one claimed translation unit. Blocks marked from_previous, to_next, or both across adjacent pages are fragments of the same prose. Interpret those fragments together exactly once, but return a separate translation for each source block ID so physical page ownership remains unchanged. Never repeat translated boundary words on both pages.
+
+Return every block whose translate field is true exactly once, grouped under its source page. Omit blocks whose translate field is false: their missing neighboring page is outside the active prefetch window, so they must remain untranslated. Preserve list markers, printed page references, names, terminology, and block order. Copy page numbers without changing them. Do not add commentary or source text.
+
+Recognized source JSON:
+${JSON.stringify(pages)}
+
+Return JSON matching the schema.`;
 }
 
-function validImages(value: unknown, requestedPage: number, totalPages: number): value is TranslationImage[] {
-  return Array.isArray(value)
-    && value.length > 0
-    && value.length <= 3
-    && value.some((image) => (image as TranslationImage | undefined)?.page === requestedPage)
-    && value.every((image) => (
-      image
-      && typeof image === "object"
-      && Number.isSafeInteger((image as TranslationImage).page)
-      && (image as TranslationImage).page >= 1
-      && (image as TranslationImage).page <= totalPages
-      && typeof (image as TranslationImage).dataUrl === "string"
-      && (image as TranslationImage).dataUrl.startsWith("data:image/")
-      && (image as TranslationImage).dataUrl.length <= MAX_IMAGE_DATA_URL_LENGTH
-    ));
-}
+function normalizedTranslations(
+  result: unknown,
+  recognitions: PageRecognition[],
+  requestedPages: number[],
+  boundaryStates: Record<string, BoundaryState>,
+) {
+  const output = result && typeof result === "object" ? result as { pages?: unknown } : {};
+  const outputPages = Array.isArray(output.pages) ? output.pages : [];
+  const translated = new Map<string, ModelBlock>();
+  for (const rawPage of outputPages) {
+    if (!rawPage || typeof rawPage !== "object") continue;
+    const page = rawPage as { page?: unknown; blocks?: unknown };
+    if (!Number.isSafeInteger(page.page) || !Array.isArray(page.blocks)) continue;
+    for (const rawBlock of page.blocks) {
+      if (!rawBlock || typeof rawBlock !== "object") continue;
+      const block = rawBlock as Partial<ModelBlock>;
+      if (typeof block.id !== "string") continue;
+      translated.set(recognitionBlockKey(Number(page.page), block.id), {
+        id: block.id,
+        text: typeof block.text === "string" ? block.text : "",
+        marker: typeof block.marker === "string" ? block.marker : "",
+        trailing: typeof block.trailing === "string" ? block.trailing : "",
+      });
+    }
+  }
 
-function validServerImageRequest(body: RequestBody) {
-  return typeof body.bookId === "string"
-    && body.bookId.length > 0
-    && body.bookId.length <= 256
-    && Array.isArray(body.contextPages)
-    && body.contextPages.length > 0
-    && body.contextPages.length <= 3
-    && body.contextPages.includes(body.page)
-    && body.contextPages.every((page) => (
-      Number.isSafeInteger(page) && page >= 1 && page <= body.totalPages
-    ));
-}
-
-async function resolveTranslationImages(body: RequestBody): Promise<TranslationImage[]> {
-  if (validImages(body.images, body.page, body.totalPages)) return body.images;
-  if (!validServerImageRequest(body)) throw new Error("Missing target language, page metadata, or page images.");
-
-  const { db } = getStorage();
-  const book = await findBook(db, body.bookId!);
-  if (!book) throw new Error("Book not found.");
-  if (book.pageCount !== body.totalPages) throw new Error("Book page count does not match the translation request.");
-
-  return Promise.all(body.contextPages!.map(async (page) => {
-    const rendered = await getRenderedPage(book, page, "vision");
-    return { page, dataUrl: `data:image/jpeg;base64,${rendered.bytes.toString("base64")}` };
-  }));
-}
-
-function endpointFor(config: AiProviderSettings) {
-  const raw = config.endpoint.trim().replace(/\/$/, "");
-  if (config.provider === "openai") return raw || "https://api.openai.com/v1/responses";
-  if (/\/(chat\/completions|responses)$/.test(raw)) return raw;
-  return `${raw}/chat/completions`;
+  return recognitions
+    .filter((recognition) => requestedPages.includes(recognition.page))
+    .map((recognition) => {
+      const blocks = recognition.blocks.map((source): LayoutBlock => {
+        const key = recognitionBlockKey(recognition.page, source.id);
+        const boundaryState = boundaryStates[key] || "none";
+        const pending = boundaryState === "waiting_for_neighbor";
+        const translation = translated.get(key);
+        if (!pending && source.kind !== "spacer" && source.sourceText.trim() && !translation) {
+          throw new Error(`The translation model omitted source block ${key}.`);
+        }
+        return {
+          kind: source.kind,
+          text: pending ? "" : translation?.text || "",
+          marker: pending ? "" : translation?.marker || source.marker,
+          trailing: pending ? "" : translation?.trailing || source.trailing,
+          align: source.align,
+          indent: source.indent,
+          spaceBefore: source.spaceBefore,
+          size: source.size,
+          sourceBlockId: source.id,
+          sourceContinuation: source.continuation,
+          boundaryStatus: pending ? "waiting_for_neighbor" : boundaryState === "none" ? "none" : "translated",
+        };
+      });
+      return {
+        page: recognition.page,
+        blocks,
+        isBlank: recognition.isBlank,
+        sourceSummary: recognition.sourceSummary,
+      };
+    });
 }
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json() as RequestBody;
-    if (
-      typeof body.targetLanguage !== "string"
-      || !body.targetLanguage.trim()
-      || body.targetLanguage.length > 80
-      || !Number.isSafeInteger(body.page)
-      || body.page < 1
-      || !Number.isSafeInteger(body.totalPages)
-      || body.totalPages < body.page
-      || (!validImages(body.images, body.page, body.totalPages) && !validServerImageRequest(body))
-    ) {
-      return NextResponse.json({ error: "Missing target language, page metadata, or page images." }, { status: 400 });
+    const normalized = normalizeRequest(body);
+    if (!normalized) {
+      return NextResponse.json({ error: "Missing target language or recognized page data." }, { status: 400 });
     }
-    const config = await getAiProviderSettings();
-    if (!isConfigured(config)) {
+    const settings = await getAiProviderSettings();
+    if (!configured(settings)) {
       return NextResponse.json({ error: "AI provider is not configured on the server." }, { status: 503 });
     }
-    const endpoint = endpointFor(config);
-    const headers = { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" };
-    const images = await resolveTranslationImages(body);
-    const instruction = prompt(body, images);
-    const isResponses = config.provider === "openai" || endpoint.endsWith("/responses");
-    const payload = isResponses
+    const endpoint = providerEndpoint(settings);
+    const responsesApi = isResponsesEndpoint(settings, endpoint);
+    const instruction = translationPrompt(
+      body.targetLanguage,
+      normalized.recognitions,
+      normalized.requestedPages,
+      normalized.boundaryStates,
+    );
+    const payload = responsesApi
       ? {
-          model: config.model,
-          ...(config.reasoningEffort !== "none" && { reasoning: { effort: config.reasoningEffort } }),
-          input: [{
-            role: "user",
-            content: [
-              { type: "input_text", text: instruction },
-              ...images.flatMap((image) => [
-                { type: "input_text", text: `Page ${image.page}:` },
-                { type: "input_image", image_url: image.dataUrl, detail: "high" },
-              ]),
-            ],
-          }],
-          text: { format: { type: "json_schema", name: "page_translation", strict: true, schema } },
+          model: settings.translationModel,
+          ...(settings.reasoningEffort !== "none" && { reasoning: { effort: settings.reasoningEffort } }),
+          input: [{ role: "user", content: [{ type: "input_text", text: instruction }] }],
+          text: { format: { type: "json_schema", name: "page_translation", strict: true, schema: translationSchema } },
         }
       : {
-          model: config.model,
-          ...(config.reasoningEffort !== "none" && { reasoning_effort: config.reasoningEffort }),
-          messages: [{
-            role: "user",
-            content: [
-              { type: "text", text: instruction },
-              ...images.flatMap((image) => [
-                { type: "text", text: `Page ${image.page}:` },
-                { type: "image_url", image_url: { url: image.dataUrl, detail: "high" } },
-              ]),
-            ],
-          }],
+          model: settings.translationModel,
+          ...(settings.reasoningEffort !== "none" && { reasoning_effort: settings.reasoningEffort }),
+          messages: [{ role: "user", content: instruction }],
           response_format: { type: "json_object" },
         };
-
     const response = await fetch(endpoint, {
       method: "POST",
-      headers,
+      headers: { Authorization: `Bearer ${settings.apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify(payload),
       signal: request.signal,
     });
     const result = await response.json() as Record<string, unknown>;
     if (!response.ok) {
-      const providerError = (result.error as { message?: string } | undefined)?.message;
-      return NextResponse.json({ error: providerError || `Provider returned ${response.status}.` }, { status: response.status });
+      return NextResponse.json({ error: providerErrorMessage(result, response.status) }, { status: response.status });
     }
-
-    let text: string | undefined;
-    if (isResponses) {
-      text = result.output_text as string | undefined;
-      if (!text && Array.isArray(result.output)) {
-        const output = result.output as Array<{ content?: Array<{ text?: string }> }>;
-        text = output.flatMap((item) => item.content || []).find((item) => item.text)?.text;
-      }
-    } else {
-      const choices = result.choices as Array<{ message?: { content?: string } }> | undefined;
-      text = choices?.[0]?.message?.content;
-    }
-    if (!text) throw new Error("The model returned no translation text.");
-    return NextResponse.json(normalizeTranslationResponse(JSON.parse(text), body.page));
+    const text = providerOutputText(result, responsesApi);
+    if (!text) throw new Error("The translation model returned no text.");
+    return NextResponse.json({
+      translations: normalizedTranslations(
+        JSON.parse(text),
+        normalized.recognitions,
+        normalized.requestedPages,
+        normalized.boundaryStates,
+      ),
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unexpected translation error.";
-    return NextResponse.json(
-      {
-        error: message,
-        ...(error instanceof PageRendererUnavailableError && { code: "PAGE_RENDERER_UNAVAILABLE" }),
-      },
-      { status: error instanceof PageRendererUnavailableError ? 503 : 500 },
-    );
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

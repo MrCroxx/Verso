@@ -52,6 +52,13 @@ import {
   type TocEntry,
 } from "../lib/document-navigation";
 import { createLatestTaskRegistry } from "../lib/latest-task-registry";
+import {
+  buildTranslationPlan,
+  translationGroupForPage,
+  type BoundaryState,
+  type PageRecognition,
+} from "../lib/page-recognition";
+import { createSharedTaskRegistry } from "../lib/shared-task-registry";
 import { isDocumentSearchShortcut } from "../lib/keyboard-shortcuts";
 import { deduplicatePageBoundary, normalizeTranslationPayload } from "../lib/translation-layout";
 import { searchTranslationPayload } from "../lib/translation-search";
@@ -125,6 +132,9 @@ type TranslationBlock = {
   indent: number;
   spaceBefore: "none" | "xs" | "sm" | "md" | "lg" | "xl";
   size: "xs" | "sm" | "md" | "lg" | "xl";
+  sourceBlockId?: string;
+  sourceContinuation?: "none" | "from_previous" | "to_next" | "both";
+  boundaryStatus?: "none" | "waiting_for_neighbor" | "queued" | "translating" | "translated";
 };
 
 type Translation = {
@@ -144,8 +154,13 @@ type TranslationResponse = {
   blocks: TranslationBlock[];
   isBlank: boolean;
   sourceSummary?: string;
-  previousPageRevision?: { page: number; blocks: TranslationBlock[] } | null;
 };
+
+type TranslationGroupResponse = {
+  translations: TranslationResponse[];
+};
+
+type PagePipelineState = "idle" | "recognizing" | "recognized" | "translating" | "waiting_for_neighbor";
 
 type TranslationSource = "cache" | "api";
 
@@ -180,7 +195,7 @@ const UI_MESSAGES = {
     settingsSubtitle: "阅读体验与视觉翻译设置",
     closeSettings: "关闭设置",
     serverProvider: "服务端 AI Provider",
-    serverProviderReady: (model: string) => `已保存在服务端 SQLite${model ? ` · ${model}` : ""}`,
+    serverProviderReady: (recognitionModel: string, translationModel: string) => `已保存在服务端 SQLite · 识别 ${recognitionModel} · 翻译 ${translationModel}`,
     serverProviderMissing: "尚未配置。保存以下服务端配置后即可翻译。",
     provider: "Provider",
     openaiProvider: "OpenAI",
@@ -189,7 +204,8 @@ const UI_MESSAGES = {
     apiKey: "API Key",
     apiKeyPlaceholder: "输入新的 API Key",
     apiKeyHelp: "密钥只保存在服务端 SQLite；读取设置时不会返回浏览器。留空可保留现有密钥。",
-    model: "Model",
+    recognitionModel: "识别模型",
+    translationModel: "翻译模型",
     reasoningEffort: "Reasoning Effort",
     saveProvider: "保存 AI Provider",
     savingProvider: "正在保存…",
@@ -200,7 +216,12 @@ const UI_MESSAGES = {
     parallelTranslation: (pages: number) => `并行翻译 · 同时 ${pages} 页`,
     concurrencyHelp: "默认 4；如果 Provider 返回限流错误，可以适当调低。",
     crossPageEnabled: "跨页上下文已启用",
-    crossPageHelp: "每次最多向模型发送连续 3 页；后页可修订上一页未闭合的段落。",
+    crossPageHelp: "先识别预取窗口，再将相连的跨页段落合并为一次翻译；窗口外片段保持等待状态。",
+    recognizingPage: "视觉识别中",
+    recognizedPage: "已识别文本结构",
+    translatingGroup: "跨页合并翻译中",
+    waitingForNeighbor: "等待相邻页进入预取范围",
+    boundaryTranslated: "跨页文本已合并翻译",
     smoothScrolling: "平滑滚动",
     smoothScrollingHelp: "目录跳转和翻页时播放滚动动画",
     translationAnimation: "渐变打字效果",
@@ -321,7 +342,7 @@ const UI_MESSAGES = {
     settingsSubtitle: "Reading and vision translation preferences",
     closeSettings: "Close settings",
     serverProvider: "Server AI provider",
-    serverProviderReady: (model: string) => `Stored in server-side SQLite${model ? ` · ${model}` : ""}`,
+    serverProviderReady: (recognitionModel: string, translationModel: string) => `Stored in server-side SQLite · Recognition: ${recognitionModel} · Translation: ${translationModel}`,
     serverProviderMissing: "Not configured. Save the server settings below to enable translation.",
     provider: "Provider",
     openaiProvider: "OpenAI",
@@ -330,7 +351,8 @@ const UI_MESSAGES = {
     apiKey: "API Key",
     apiKeyPlaceholder: "Enter a new API key",
     apiKeyHelp: "The key is stored only in server-side SQLite and is never returned when settings are read. Leave blank to keep the current key.",
-    model: "Model",
+    recognitionModel: "Recognition model",
+    translationModel: "Translation model",
     reasoningEffort: "Reasoning effort",
     saveProvider: "Save AI provider",
     savingProvider: "Saving…",
@@ -341,7 +363,12 @@ const UI_MESSAGES = {
     parallelTranslation: (pages: number) => `Parallel translation · ${pages} page${pages === 1 ? "" : "s"}`,
     concurrencyHelp: "Default: 4. Lower this if your provider returns rate-limit errors.",
     crossPageEnabled: "Cross-page context enabled",
-    crossPageHelp: "Each request includes at most 3 consecutive pages; a later page may revise an unfinished paragraph.",
+    crossPageHelp: "Recognize the prefetch window first, then translate connected cross-page prose once. Out-of-window fragments remain pending.",
+    recognizingPage: "Recognizing page structure",
+    recognizedPage: "Page structure recognized",
+    translatingGroup: "Translating claimed cross-page group",
+    waitingForNeighbor: "Waiting for the neighboring page to enter the prefetch window",
+    boundaryTranslated: "Cross-page text translated as one unit",
     smoothScrolling: "Smooth scrolling",
     smoothScrollingHelp: "Animate page and contents navigation",
     translationAnimation: "Gradient typewriter effect",
@@ -482,6 +509,7 @@ const EMPTY_TRANSLATION_SERVICE: TranslationService = {
 };
 
 const translationLimiter = createConcurrencyLimiter();
+const recognitionLimiter = createConcurrencyLimiter();
 let latestTranslationVersion = Date.now() * 1000;
 const EMPTY_NAVIGATION: DocumentNavigation = { observations: [], manualOffset: null };
 const BOOK_QUERY_PARAMETER = "book";
@@ -552,11 +580,11 @@ function isWorkCancellation(error: unknown) {
 }
 
 function cacheKey(documentId: string, page: number, settings: TranslationSettings) {
-  return ["layout-v3", documentId, page, cacheKeySuffix(settings)].join("::");
+  return ["layout-v4", documentId, page, cacheKeySuffix(settings)].join("::");
 }
 
 function cacheKeySuffix(settings: TranslationSettings) {
-  return ["server-v1", settings.targetLanguage].join("::");
+  return ["server-v2", settings.targetLanguage].join("::");
 }
 
 async function readLocalCache(
@@ -673,13 +701,6 @@ function translationMarkdown(blocks: TranslationBlock[]) {
   return blocks.filter((block) => block.text).map((block) => block.text).join("\n\n");
 }
 
-function boundaryTail(translation?: Translation) {
-  return translation?.blocks
-    ?.findLast((block) => (block.kind === "paragraph" || block.kind === "caption") && block.text.trim())
-    ?.text.trimEnd()
-    .slice(-160) || "";
-}
-
 function reconcilePageBoundary(previous: Translation | undefined, current: Translation) {
   if (!previous?.blocks?.length || !current.blocks?.length) return current;
   const result = deduplicatePageBoundary(previous.blocks, current.blocks);
@@ -691,6 +712,10 @@ function reconcilePageBoundary(previous: Translation | undefined, current: Trans
     isBlank: !result.blocks.some((block) => block.kind !== "spacer" && block.text.trim()),
     boundaryDeduplicated: true,
   };
+}
+
+function hasPendingBoundary(translation?: Translation) {
+  return Boolean(translation?.blocks?.some((block) => block.boundaryStatus === "waiting_for_neighbor"));
 }
 
 async function fingerprint(file: File) {
@@ -890,7 +915,16 @@ function TranslationText({
               `indent-${Math.min(3, Math.max(0, block.indent))}`,
               `before-${block.spaceBefore}`,
               `size-${block.size}`,
+              block.boundaryStatus && block.boundaryStatus !== "none" && `boundary-${block.boundaryStatus}`,
             );
+            if (block.boundaryStatus === "waiting_for_neighbor") {
+              return (
+                <div key={index} className={className} role="status">
+                  <span className="boundary-status-dot" aria-hidden="true" />
+                  {messages.waitingForNeighbor}
+                </div>
+              );
+            }
             if (block.kind === "spacer") {
               return <div key={index} className={className} aria-hidden="true" />;
             }
@@ -929,7 +963,9 @@ function TranslationText({
         </div>
         <div className="translation-meta">
           <CircleCheck size={14} />
-          {value.boundaryDeduplicated
+          {value.blocks.some((block) => block.boundaryStatus === "translated")
+            ? messages.boundaryTranslated
+            : value.boundaryDeduplicated
             ? messages.boundaryFixed
             : value.revised ? messages.revised : messages.cachedLayout}
         </div>
@@ -951,12 +987,31 @@ function TranslationText({
   );
 }
 
-function TranslationSkeleton({ page, messages, cached }: { page: number; messages: UiMessages; cached: boolean }) {
+function TranslationSkeleton({
+  page,
+  messages,
+  cached,
+  pipelineState = "idle",
+}: {
+  page: number;
+  messages: UiMessages;
+  cached: boolean;
+  pipelineState?: PagePipelineState;
+}) {
+  const status = pipelineState === "recognizing"
+    ? messages.recognizingPage
+    : pipelineState === "recognized"
+      ? messages.recognizedPage
+      : pipelineState === "translating"
+        ? messages.translatingGroup
+        : pipelineState === "waiting_for_neighbor"
+          ? messages.waitingForNeighbor
+          : cached ? messages.loadingCachedTranslation(page) : messages.readingContext(page);
   return (
     <div className="translation-skeleton">
       <div className="ai-working">
         {cached ? <HardDrive size={15} /> : <Sparkles size={15} />}
-        {cached ? messages.loadingCachedTranslation(page) : messages.readingContext(page)}
+        {status}
       </div>
       <i /><i /><i /><i className="short" />
     </div>
@@ -974,6 +1029,7 @@ type PageSpreadProps = {
   translationSource?: TranslationSource;
   animateTranslation: boolean;
   translationAnimationSpeed: number;
+  pipelineState: PagePipelineState;
   loading: boolean;
   error?: string;
   pageImageUrl?: string;
@@ -996,6 +1052,7 @@ function PageSpread({
   translationSource,
   animateTranslation,
   translationAnimationSpeed,
+  pipelineState,
   loading,
   error,
   pageImageUrl,
@@ -1141,14 +1198,14 @@ function PageSpread({
             onAnimationComplete={finishTranslationAnimation}
           />
         ) : loading ? (
-          <TranslationSkeleton page={page} messages={messages} cached={cachedTranslation} />
+          <TranslationSkeleton page={page} messages={messages} cached={cachedTranslation} pipelineState={pipelineState} />
         ) : error ? (
           <div className="translation-error">
             <p>{error}</p>
             <button className="secondary-button" onClick={() => requestTranslation(page, true)}>{messages.retry}</button>
           </div>
         ) : (
-          <TranslationSkeleton page={page} messages={messages} cached={cachedTranslation} />
+          <TranslationSkeleton page={page} messages={messages} cached={cachedTranslation} pipelineState={pipelineState} />
         )}
       </div>
       {page < totalPages && <div className="spread-divider"><span>{messages.pageDivider(page + 1)}</span></div>}
@@ -1182,7 +1239,8 @@ function SettingsPanel({
   const [provider, setProvider] = useState<AiProvider>(translationService.provider);
   const [endpoint, setEndpoint] = useState(translationService.endpoint);
   const [apiKey, setApiKey] = useState("");
-  const [model, setModel] = useState(translationService.model);
+  const [recognitionModel, setRecognitionModel] = useState(translationService.recognitionModel);
+  const [translationModel, setTranslationModel] = useState(translationService.translationModel);
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(translationService.reasoningEffort);
   const [providerSaving, setProviderSaving] = useState(false);
   const [providerMessage, setProviderMessage] = useState("");
@@ -1200,7 +1258,7 @@ function SettingsPanel({
     setProviderMessage("");
     setProviderSaveFailed(false);
     try {
-      await onProviderSave({ provider, endpoint, apiKey, model, reasoningEffort });
+      await onProviderSave({ provider, endpoint, apiKey, recognitionModel, translationModel, reasoningEffort });
       setApiKey("");
       setProviderMessage(messages.providerSaved);
     } catch {
@@ -1241,7 +1299,10 @@ function SettingsPanel({
             <strong>{messages.serverProvider}</strong>
             <p>
               {translationService.configured
-                ? messages.serverProviderReady(translationService.model)
+                ? messages.serverProviderReady(
+                    translationService.recognitionModel,
+                    translationService.translationModel,
+                  )
                 : messages.serverProviderMissing}
             </p>
           </div>
@@ -1280,10 +1341,23 @@ function SettingsPanel({
 
         <div className="field-grid">
           <div>
-            <label className="field-label" htmlFor="ai-model">{messages.model}</label>
-            <input id="ai-model" value={model} onChange={(event) => setModel(event.target.value)} />
+            <label className="field-label" htmlFor="recognition-model">{messages.recognitionModel}</label>
+            <input
+              id="recognition-model"
+              value={recognitionModel}
+              onChange={(event) => setRecognitionModel(event.target.value)}
+            />
           </div>
           <div>
+            <label className="field-label" htmlFor="translation-model">{messages.translationModel}</label>
+            <input
+              id="translation-model"
+              value={translationModel}
+              onChange={(event) => setTranslationModel(event.target.value)}
+            />
+          </div>
+        </div>
+        <div>
             <label className="field-label" htmlFor="reasoning-effort">{messages.reasoningEffort}</label>
             <select
               id="reasoning-effort"
@@ -1294,7 +1368,6 @@ function SettingsPanel({
                 <option key={effort} value={effort}>{effort}</option>
               ))}
             </select>
-          </div>
         </div>
         <button
           type="button"
@@ -1615,6 +1688,8 @@ export default function Home() {
   const renderEpoch = useRef(0);
   const translationRuns = useRef(createLatestTaskRegistry<string>());
   const translationRequests = useRef(new Map<string, AbortController>());
+  const recognitionTasks = useRef(createSharedTaskRegistry<string, PageRecognition>());
+  const translationGroupTasks = useRef(createSharedTaskRegistry<string, Translation[]>());
   const translationCacheWrites = useRef(new Set<Promise<void>>());
   const translationCacheClearing = useRef(false);
   const navigationWrites = useRef(new Set<string>());
@@ -1694,6 +1769,7 @@ export default function Home() {
   const [translationSources, setTranslationSources] = useState<Record<number, TranslationSource>>({});
   const [translationAnimationVersions, setTranslationAnimationVersions] = useState<Record<number, number>>({});
   const [loadingPages, setLoadingPages] = useState<Set<number>>(new Set());
+  const [pipelineStates, setPipelineStates] = useState<Record<number, PagePipelineState>>({});
   const [errors, setErrors] = useState<Record<number, string>>({});
   const [localBooks, setLocalBooks] = useState<LocalBook[]>([]);
   const [localBooksLoading, setLocalBooksLoading] = useState(false);
@@ -1795,7 +1871,10 @@ export default function Home() {
     translationRuns.current.cancelAll();
     for (const controller of translationRequests.current.values()) controller.abort();
     translationRequests.current.clear();
+    recognitionTasks.current.clear();
+    translationGroupTasks.current.clear();
     setLoadingPages(new Set());
+    setPipelineStates({});
   }, []);
 
   const cancelDocumentWork = useCallback(() => {
@@ -2411,15 +2490,18 @@ export default function Home() {
 
   const requestTranslation = useCallback(async (page: number, force = false, cacheOnly = false) => {
     if (translationCacheClearing.current) return;
+    const existingTranslation = translationsRef.current[page];
     if (!shouldStartTranslationRequest(
       isDemo,
-      Boolean(translationsRef.current[page]),
+      Boolean(existingTranslation) && !hasPendingBoundary(existingTranslation),
       force,
       cacheOnly,
       viewportWorkEnabledRef.current,
     )) return;
     const flightKey = `${documentId}:${page}`;
     if (force) {
+      recognitionTasks.current.clear();
+      translationGroupTasks.current.clear();
       translationRuns.current.cancel(flightKey);
       translationRequests.current.get(flightKey)?.abort();
       translationRequests.current.delete(flightKey);
@@ -2431,31 +2513,12 @@ export default function Home() {
     const currentMessages = messagesRef.current;
     const documentSequence = documentLoadSequence.current;
     const key = cacheKey(documentId, page, translationSettings);
-    const previousKey = page > 1 ? cacheKey(documentId, page - 1, translationSettings) : "";
-    const requestVersion = nextTranslationVersion();
-    let previousTranslation: Translation | undefined;
     const isCurrentRun = () => (
       documentSequence === documentLoadSequence.current
       && translationRuns.current.isCurrent(flightKey, runToken)
     );
     const requireCurrentRun = () => {
       if (!isCurrentRun()) throw new DOMException("Translation task was cancelled.", "AbortError");
-    };
-    const readPreviousTranslation = async () => {
-      if (!previousKey) return undefined;
-      try {
-        return await readLocalCache(
-          previousKey,
-          documentId,
-          page - 1,
-          translationSettings,
-          currentMessages.localTranslationReadFailed,
-          controller.signal,
-        );
-      } catch (error) {
-        if (controller.signal.aborted || isWorkCancellation(error)) throw error;
-        return undefined;
-      }
     };
     setLoadingPages((existing) => new Set(existing).add(page));
     setErrors((existing) => ({ ...existing, [page]: "" }));
@@ -2470,23 +2533,15 @@ export default function Home() {
           controller.signal,
         );
         if (cached) {
-          previousTranslation = await readPreviousTranslation();
           requireCurrentRun();
-          const reconciled = reconcilePageBoundary(previousTranslation, cached);
           completeTranslationAnimation(page);
           setTranslationSources((existing) => ({ ...existing, [page]: "cache" }));
-          updateTranslations((existing) => ({ ...existing, [page]: reconciled }));
-          recordNavigation(page, reconciled);
-          if (reconciled !== cached) {
-            void persistTranslation(
-              key,
-              documentId,
-              page,
-              reconciled,
-              currentMessages.localTranslationWriteFailed,
-            ).catch(() => undefined);
+          updateTranslations((existing) => ({ ...existing, [page]: cached }));
+          recordNavigation(page, cached);
+          if (!hasPendingBoundary(cached)) {
+            setPipelineStates((existing) => ({ ...existing, [page]: "idle" }));
+            return;
           }
-          return;
         }
         if (cacheOnly) {
           setTranslationSources((existing) => {
@@ -2498,110 +2553,137 @@ export default function Home() {
         }
       }
       if (!translationService.configured) throw new Error(currentMessages.apiKeyRequired);
-      previousTranslation = await readPreviousTranslation();
+      const activePages = [...new Set([
+        ...pageWorkWindow(currentPageRef.current, totalPages, settings.nearbyPages),
+        page,
+      ])].sort((left, right) => left - right);
+      const recognizePage = (recognitionPage: number) => {
+        const recognitionKey = [documentId, recognitionPage, translationService.recognitionModel].join("::");
+        return recognitionTasks.current.run(recognitionKey, () => recognitionLimiter.run(
+          translationSettings.translationConcurrency,
+          async () => {
+            setPipelineStates((existing) => ({ ...existing, [recognitionPage]: "recognizing" }));
+            const sendRecognition = (source: { bookId: string } | { image: { dataUrl: string } }) => fetch("/api/recognize", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                documentId,
+                page: recognitionPage,
+                totalPages,
+                force: force && recognitionPage === page,
+                ...source,
+              }),
+              signal: controller.signal,
+            });
+            let response = await sendRecognition(
+              serverBookAvailable
+                ? { bookId: documentId }
+                : { image: { dataUrl: await renderPage(recognitionPage) } },
+            );
+            let result = await response.json() as { recognition?: PageRecognition; error?: string; code?: string };
+            if (!response.ok && result.code === "PAGE_RENDERER_UNAVAILABLE" && serverBookAvailable) {
+              response = await sendRecognition({ image: { dataUrl: await renderPage(recognitionPage) } });
+              result = await response.json() as { recognition?: PageRecognition; error?: string; code?: string };
+            }
+            if (!response.ok || !result.recognition) {
+              throw new Error(result.error || currentMessages.translationRequestFailed);
+            }
+            setPipelineStates((existing) => ({ ...existing, [recognitionPage]: "recognized" }));
+            return result.recognition;
+          },
+          controller.signal,
+        ));
+      };
+      const recognitions = await Promise.all(activePages.map(recognizePage));
       requireCurrentRun();
-
-      const payload = await translationLimiter.run(translationSettings.translationConcurrency, async () => {
-        requireCurrentRun();
-        const contextPages = [page - 1, page, page + 1].filter((value) => value >= 1 && value <= totalPages);
-        let imageSource = serverBookAvailable
-          ? { bookId: documentId, contextPages }
-          : {
-              images: await Promise.all(contextPages.map(async (number) => ({
-                page: number,
-                dataUrl: await renderPage(number),
-              }))),
-            };
-        requireCurrentRun();
-        const sendTranslation = (source: typeof imageSource | { images: Array<{ page: number; dataUrl: string }> }) => (
-          fetch("/api/translate", {
+      const plan = buildTranslationPlan(recognitions, activePages, totalPages);
+      const group = translationGroupForPage(plan, page);
+      const groupBoundaryStates = Object.fromEntries(
+        Object.entries(plan.boundaryStates).filter(([blockKey]) => (
+          group.includes(Number(blockKey.split(":", 1)[0]))
+        )),
+      ) as Record<string, BoundaryState>;
+      const groupKey = JSON.stringify([
+        documentId,
+        translationSettings.targetLanguage,
+        translationService.translationModel,
+        group,
+        groupBoundaryStates,
+      ]);
+      const groupTranslations = await translationGroupTasks.current.run(groupKey, () => translationLimiter.run(
+        translationSettings.translationConcurrency,
+        async () => {
+          setPipelineStates((existing) => ({
+            ...existing,
+            ...Object.fromEntries(group.map((groupPage) => [groupPage, "translating"])),
+          }));
+          const response = await fetch("/api/translate", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               targetLanguage: translationSettings.targetLanguage,
-              page,
               totalPages,
-              ...source,
-              previousTranslationTail: boundaryTail(previousTranslation),
+              requestedPages: group,
+              recognitions,
+              boundaryStates: groupBoundaryStates,
             }),
             signal: controller.signal,
-          })
-        );
-        let response = await sendTranslation(imageSource);
-        let result = await response.json() as TranslationResponse & { error?: string; code?: string };
-        if (!response.ok && result.code === "PAGE_RENDERER_UNAVAILABLE" && serverBookAvailable) {
-          requireCurrentRun();
-          imageSource = {
-            images: await Promise.all(contextPages.map(async (number) => ({
-              page: number,
-              dataUrl: await renderPage(number),
-            }))),
-          };
-          requireCurrentRun();
-          response = await sendTranslation(imageSource);
-          result = await response.json() as TranslationResponse & { error?: string; code?: string };
-        }
-        if (!response.ok) throw new Error(result.error || currentMessages.translationRequestFailed);
-        if (!Array.isArray(result.blocks)) throw new Error(currentMessages.invalidTranslation);
-        return result;
-      }, controller.signal);
-      requireCurrentRun();
-      const revision: Translation | undefined = payload.previousPageRevision?.page === page - 1
-        && payload.previousPageRevision.blocks.length
-        ? {
-            ...previousTranslation,
-            page: page - 1,
-            markdown: translationMarkdown(payload.previousPageRevision.blocks),
-            blocks: payload.previousPageRevision.blocks,
-            revised: true,
-            cacheVersion: requestVersion,
-            cachedAt: Date.now(),
+          });
+          const result = await response.json() as TranslationGroupResponse & { error?: string };
+          if (!response.ok) throw new Error(result.error || currentMessages.translationRequestFailed);
+          if (!Array.isArray(result.translations) || result.translations.length !== group.length) {
+            throw new Error(currentMessages.invalidTranslation);
           }
-        : undefined;
-      const translated = reconcilePageBoundary(revision || previousTranslation, {
-        page,
-        markdown: translationMarkdown(payload.blocks),
-        blocks: payload.blocks,
-        isBlank: payload.isBlank,
-        sourceSummary: payload.sourceSummary,
-        cacheVersion: requestVersion,
-        cachedAt: Date.now(),
-      });
+          const version = nextTranslationVersion();
+          return result.translations.map((translation): Translation => {
+            const normalized = normalizeTranslationPayload(translation) as TranslationResponse;
+            return {
+              page: normalized.page,
+              markdown: translationMarkdown(normalized.blocks),
+              blocks: normalized.blocks,
+              isBlank: normalized.isBlank,
+              sourceSummary: normalized.sourceSummary,
+              cacheVersion: version,
+              cachedAt: Date.now(),
+            };
+          });
+        },
+        controller.signal,
+      ));
       requireCurrentRun();
       if (translationAnimationEnabledRef.current) {
-        setTranslationAnimationVersions((existing) => ({ ...existing, [page]: requestVersion }));
+        setTranslationAnimationVersions((existing) => ({
+          ...existing,
+          ...Object.fromEntries(groupTranslations.map((translation) => [translation.page, translation.cacheVersion!])),
+        }));
       }
       setTranslationSources((existing) => ({
         ...existing,
-        ...(revision ? { [page - 1]: "api" as const } : {}),
-        [page]: "api",
+        ...Object.fromEntries(groupTranslations.map((translation) => [translation.page, "api" as const])),
       }));
       updateTranslations((existing) => ({
         ...existing,
-        ...(revision ? { [page - 1]: revision } : {}),
-        [page]: translated,
+        ...Object.fromEntries(groupTranslations.map((translation) => [translation.page, translation])),
       }));
-      recordNavigation(page, translated);
-      if (revision) recordNavigation(page - 1, revision);
-      await Promise.all([
-        persistTranslation(
-          key,
-          documentId,
-          page,
-          translated,
-          currentMessages.localTranslationWriteFailed,
-        ),
-        ...(revision ? [persistTranslation(
-          previousKey,
-          documentId,
-          page - 1,
-          revision,
-          currentMessages.localTranslationWriteFailed,
-        )] : []),
-      ]);
+      setPipelineStates((existing) => ({
+        ...existing,
+        ...Object.fromEntries(groupTranslations.map((translation) => [
+          translation.page,
+          hasPendingBoundary(translation) ? "waiting_for_neighbor" : "idle",
+        ])),
+      }));
+      for (const translation of groupTranslations) recordNavigation(translation.page, translation);
+      await Promise.all(groupTranslations.map((translation) => persistTranslation(
+        cacheKey(documentId, translation.page, translationSettings),
+        documentId,
+        translation.page,
+        translation,
+        currentMessages.localTranslationWriteFailed,
+      )));
     } catch (error) {
       if (!isCurrentRun() || isWorkCancellation(error)) return;
       const message = error instanceof Error ? error.message : currentMessages.translationFailed;
+      setPipelineStates((existing) => ({ ...existing, [page]: "idle" }));
       setErrors((existing) => ({ ...existing, [page]: message }));
     } finally {
       if (translationRequests.current.get(flightKey) === controller) {
@@ -2615,7 +2697,7 @@ export default function Home() {
         });
       }
     }
-  }, [completeTranslationAnimation, documentId, isDemo, persistTranslation, recordNavigation, renderPage, serverBookAvailable, totalPages, translationService.configured, translationSettings, updateTranslations]);
+  }, [completeTranslationAnimation, documentId, isDemo, persistTranslation, recordNavigation, renderPage, serverBookAvailable, settings.nearbyPages, totalPages, translationService, translationSettings, updateTranslations]);
 
   useEffect(() => {
     if (isDemo || !documentReady || navigationLoading || !viewportWorkEnabled || !translationService.loaded) return;
@@ -2988,6 +3070,16 @@ export default function Home() {
                 <nav id="sidebar-pages" className="page-nav" aria-label={messages.pages}>
                   {pageNumbers.map((page) => {
                     const source = translationSources[page];
+                    const pipelineState = pipelineStates[page] || "idle";
+                    const pipelineStatus = pipelineState === "recognizing"
+                      ? messages.recognizingPage
+                      : pipelineState === "recognized"
+                        ? messages.recognizedPage
+                        : pipelineState === "translating"
+                          ? messages.translatingGroup
+                          : pipelineState === "waiting_for_neighbor"
+                            ? messages.waitingForNeighbor
+                            : "";
                     const status = source === "cache"
                       ? messages.translationCacheHit
                       : source === "api" ? messages.translationApiSucceeded : "";
@@ -2998,13 +3090,17 @@ export default function Home() {
                       }}>
                         <span className="page-thumbnail">{page <= 2 && isDemo ? <SampleScan page={page} messages={messages} /> : page}</span>
                         <span>{messages.page(page)}</span>
-                        {source === "cache" ? (
+                        {pipelineState === "waiting_for_neighbor" ? (
+                          <span className="page-translation-status boundary-waiting" title={pipelineStatus} aria-label={pipelineStatus}>
+                            WAIT
+                          </span>
+                        ) : loadingPages.has(page) || pipelineState !== "idle" ? (
+                          <span className={cn("page-translation-status", `pipeline-${pipelineState}`)} title={pipelineStatus} aria-label={pipelineStatus}>
+                            {pipelineState === "recognizing" ? "OCR" : pipelineState === "recognized" ? "READY" : "AI"}
+                          </span>
+                        ) : source === "cache" ? (
                           <span className="page-translation-status source-cache" title={status} aria-label={status}>
                             CACHE
-                          </span>
-                        ) : loadingPages.has(page) ? (
-                          <span className="page-translation-status loading" title={messages.translationInProgress} aria-label={messages.translationInProgress}>
-                            <LoaderCircle className="spin" size={13} aria-hidden="true" />
                           </span>
                         ) : source ? (
                           <span className={cn("page-translation-status", `source-${source}`)} title={status} aria-label={status}>
@@ -3183,6 +3279,7 @@ export default function Home() {
                     && settings.translationAnimation
                     && translationAnimationVersions[page] === displayedTranslations[page]?.cacheVersion}
                   translationAnimationSpeed={settings.translationAnimationSpeed}
+                  pipelineState={pipelineStates[page] || "idle"}
                   loading={loadingPages.has(page)}
                   error={errors[page]}
                   pageImageUrl={serverBookAvailable

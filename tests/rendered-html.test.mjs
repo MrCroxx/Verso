@@ -9,6 +9,8 @@ import { createLocalPdfRangeTransport } from "../lib/local-pdf-range-transport.t
 import { createConcurrencyLimiter } from "../lib/concurrency-limiter.ts";
 import { isDocumentSearchShortcut } from "../lib/keyboard-shortcuts.ts";
 import { createLatestTaskRegistry } from "../lib/latest-task-registry.ts";
+import { buildTranslationPlan, normalizePageRecognition, translationGroupForPage } from "../lib/page-recognition.ts";
+import { createSharedTaskRegistry } from "../lib/shared-task-registry.ts";
 import {
   calculatePageOffset,
   extractNavigationObservation,
@@ -153,7 +155,7 @@ test("rejects incomplete translation requests", async () => {
       body: JSON.stringify({}),
   });
   assert.equal(response.status, 400);
-  assert.deepEqual(await response.json(), { error: "Missing target language, page metadata, or page images." });
+  assert.deepEqual(await response.json(), { error: "Missing target language or recognized page data." });
 });
 
 test("ignores provider environment variables and reports SQLite settings without credentials", async () => {
@@ -163,7 +165,8 @@ test("ignores provider environment variables and reports SQLite settings without
   assert.deepEqual(await response.json(), {
     provider: "openai",
     endpoint: "https://api.openai.com/v1/responses",
-    model: "gpt-5.6-luna",
+    recognitionModel: "gpt-5.6-luna",
+    translationModel: "gpt-5.6-luna",
     reasoningEffort: "medium",
     updatedAt: 0,
     configured: false,
@@ -178,9 +181,24 @@ test("does not use provider credentials from environment variables for translati
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       targetLanguage: "English",
+      totalPages: 1,
+      requestedPages: [1],
+      recognitions: [{ page: 1, blocks: [], isBlank: true, sourceSummary: "", model: "vision", cachedAt: 1 }],
+    }),
+  });
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { error: "AI provider is not configured on the server." });
+});
+
+test("does not use provider credentials from environment variables for recognition", async () => {
+  const response = await fetch(`${baseUrl}/api/recognize`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      documentId: "recognition-test-book",
       page: 1,
       totalPages: 1,
-      images: [{ page: 1, dataUrl: "data:image/png;base64,AA==" }],
+      image: { dataUrl: "data:image/png;base64,AA==" },
     }),
   });
   assert.equal(response.status, 503);
@@ -196,7 +214,8 @@ test("stores AI provider settings in SQLite without returning the API key", asyn
       provider: "compatible",
       endpoint: "http://127.0.0.1:9/v1",
       apiKey,
-      model: "test-model",
+      recognitionModel: "test-vision-model",
+      translationModel: "test-translation-model",
       reasoningEffort: "low",
     }),
   });
@@ -215,7 +234,8 @@ test("stores AI provider settings in SQLite without returning the API key", asyn
     body: JSON.stringify({
       provider: "compatible",
       endpoint: "http://127.0.0.1:9/v1",
-      model: "test-model-v2",
+      recognitionModel: "test-vision-model-v2",
+      translationModel: "test-translation-model-v2",
       reasoningEffort: "medium",
     }),
   });
@@ -225,7 +245,8 @@ test("stores AI provider settings in SQLite without returning the API key", asyn
   const readText = await readResponse.text();
   assert.doesNotMatch(readText, new RegExp(apiKey));
   const settings = JSON.parse(readText);
-  assert.equal(settings.model, "test-model-v2");
+  assert.equal(settings.recognitionModel, "test-vision-model-v2");
+  assert.equal(settings.translationModel, "test-translation-model-v2");
   assert.equal(settings.apiKeyHint, "••••1234");
   assert.equal("apiKey" in settings, false);
 
@@ -549,6 +570,91 @@ test("keeps short ambiguous boundary matches", () => {
   const result = deduplicatePageBoundary(previous, current);
 
   assert.equal(result.removedText, "");
+});
+
+test("normalizes body text into incoming, local, and outgoing page regions", () => {
+  const recognition = normalizePageRecognition({
+    blocks: [
+      { kind: "paragraph", text: "incoming", continuation: "from_previous" },
+      { kind: "paragraph", text: "local", continuation: "none" },
+      { kind: "paragraph", text: "outgoing", continuation: "to_next" },
+    ],
+    sourceSummary: "Three body-flow regions",
+  }, 8, "vision-model");
+
+  assert.deepEqual(recognition.blocks.map(({ id, continuation }) => ({ id, continuation })), [
+    { id: "p8-b0", continuation: "from_previous" },
+    { id: "p8-b1", continuation: "none" },
+    { id: "p8-b2", continuation: "to_next" },
+  ]);
+});
+
+test("groups adjacent recognized pages into one claimed cross-page translation unit", () => {
+  const left = normalizePageRecognition({
+    blocks: [{ kind: "paragraph", text: "unfinished", continuation: "to_next" }],
+  }, 10);
+  const right = normalizePageRecognition({
+    blocks: [{ kind: "paragraph", text: "continuation", continuation: "from_previous" }],
+  }, 11);
+  const standalone = normalizePageRecognition({
+    blocks: [{ kind: "paragraph", text: "complete", continuation: "none" }],
+  }, 12);
+
+  const plan = buildTranslationPlan([left, right, standalone], [10, 11, 12], 20);
+
+  assert.deepEqual(translationGroupForPage(plan, 10), [10, 11]);
+  assert.deepEqual(translationGroupForPage(plan, 11), [10, 11]);
+  assert.deepEqual(translationGroupForPage(plan, 12), [12]);
+  assert.equal(plan.boundaryStates["10:p10-b0"], "queued");
+  assert.equal(plan.boundaryStates["11:p11-b0"], "queued");
+});
+
+test("leaves an out-of-window cross-page block untranslated", () => {
+  const recognition = normalizePageRecognition({
+    blocks: [{ kind: "paragraph", text: "unfinished", continuation: "to_next" }],
+  }, 4);
+
+  const plan = buildTranslationPlan([recognition], [4], 10);
+
+  assert.deepEqual(translationGroupForPage(plan, 4), [4]);
+  assert.equal(plan.boundaryStates["4:p4-b0"], "waiting_for_neighbor");
+});
+
+test("keeps an entire cross-page chain pending when one required neighbor is outside the window", () => {
+  const previous = normalizePageRecognition({
+    blocks: [{ kind: "paragraph", text: "start", continuation: "to_next" }],
+  }, 4);
+  const middle = normalizePageRecognition({
+    blocks: [{ kind: "paragraph", text: "middle", continuation: "both" }],
+  }, 5);
+
+  const plan = buildTranslationPlan([previous, middle], [4, 5], 10);
+
+  assert.deepEqual(translationGroupForPage(plan, 4), [4, 5]);
+  assert.equal(plan.boundaryStates["4:p4-b0"], "waiting_for_neighbor");
+  assert.equal(plan.boundaryStates["5:p5-b0"], "waiting_for_neighbor");
+});
+
+test("shares a claimed translation task across concurrent page workers", async () => {
+  const registry = createSharedTaskRegistry();
+  let calls = 0;
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const task = async () => {
+    calls += 1;
+    await gate;
+    return [10, 11];
+  };
+
+  const left = registry.run("book:10-11", task);
+  const right = registry.run("book:10-11", task);
+  release();
+
+  assert.deepEqual(await left, [10, 11]);
+  assert.deepEqual(await right, [10, 11]);
+  assert.equal(calls, 1);
 });
 
 test("runs translation work with bounded parallelism", async () => {
