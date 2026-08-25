@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { access, mkdtemp, rm, stat } from "node:fs/promises";
+import { access, chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -25,9 +25,23 @@ import nextConfig from "../next.config.ts";
 let baseUrl;
 let serverProcess;
 let testDataDirectory;
+let rendererLogPath;
 
 before(async () => {
   testDataDirectory = await mkdtemp(path.join(tmpdir(), "verso-test-"));
+  const rendererPath = path.join(testDataDirectory, "pdftocairo");
+  rendererLogPath = path.join(testDataDirectory, "renderer.log");
+  await writeFile(rendererPath, `#!/usr/bin/env node
+import { appendFileSync, writeFileSync } from "node:fs";
+
+const outputPrefix = process.argv.at(-1);
+if (!outputPrefix) process.exit(2);
+writeFileSync(outputPrefix + ".jpg", Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+if (process.env.VERSO_PDF_RENDERER_LOG) {
+  appendFileSync(process.env.VERSO_PDF_RENDERER_LOG, process.argv.join(" ") + "\\n");
+}
+`);
+  await chmod(rendererPath, 0o700);
   const port = await new Promise((resolve, reject) => {
     const probe = createServer();
     probe.once("error", reject);
@@ -46,6 +60,8 @@ before(async () => {
       VERSO_DATA_DIR: testDataDirectory,
       VERSO_AI_API_KEY: "ignored-environment-key",
       OPENAI_API_KEY: "ignored-environment-fallback",
+      VERSO_PDF_RENDERER_LOG: rendererLogPath,
+      PATH: `${testDataDirectory}:${process.env.PATH || ""}`,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -419,6 +435,39 @@ test("stores a multipart PDF locally and serves bounded byte ranges", async () =
     headers: { range: `bytes=0-${2 * 1024 * 1024}` },
   });
   assert.equal(oversizedResponse.status, 416);
+
+  const firstPageImage = await fetch(`${baseUrl}/api/books/${fingerprint}/pages/1?profile=display`);
+  assert.equal(firstPageImage.status, 200);
+  assert.equal(firstPageImage.headers.get("content-type"), "image/jpeg");
+  assert.equal(firstPageImage.headers.get("x-verso-render-cache"), "MISS");
+  assert.match(firstPageImage.headers.get("cache-control") ?? "", /immutable/);
+  assert.deepEqual(new Uint8Array(await firstPageImage.arrayBuffer()), new Uint8Array([0xff, 0xd8, 0xff, 0xd9]));
+
+  const cachedPageImage = await fetch(`${baseUrl}/api/books/${fingerprint}/pages/1?profile=display`);
+  assert.equal(cachedPageImage.status, 200);
+  assert.equal(cachedPageImage.headers.get("x-verso-render-cache"), "HIT");
+  const pageEtag = cachedPageImage.headers.get("etag");
+  assert.ok(pageEtag);
+
+  const notModifiedPageImage = await fetch(`${baseUrl}/api/books/${fingerprint}/pages/1?profile=display`, {
+    headers: { "if-none-match": pageEtag },
+  });
+  assert.equal(notModifiedPageImage.status, 304);
+
+  const invalidProfile = await fetch(`${baseUrl}/api/books/${fingerprint}/pages/1?profile=thumbnail`);
+  assert.equal(invalidProfile.status, 400);
+  const invalidPage = await fetch(`${baseUrl}/api/books/${fingerprint}/pages/2?profile=display`);
+  assert.equal(invalidPage.status, 400);
+
+  const visionUrl = `${baseUrl}/api/books/${fingerprint}/pages/1?profile=vision`;
+  const concurrentVisionImages = await Promise.all([fetch(visionUrl), fetch(visionUrl)]);
+  assert.ok(concurrentVisionImages.every((response) => response.status === 200));
+  assert.ok(concurrentVisionImages.some((response) => response.headers.get("x-verso-render-cache") === "MISS"));
+  const cachedVisionImage = await fetch(visionUrl);
+  assert.equal(cachedVisionImage.headers.get("x-verso-render-cache"), "HIT");
+
+  const rendererInvocations = (await readFile(rendererLogPath, "utf8")).trim().split("\n");
+  assert.equal(rendererInvocations.length, 2);
 });
 
 test("preserves list markers and trailing page references from compatible providers", () => {

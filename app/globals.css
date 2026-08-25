@@ -162,7 +162,7 @@ button { color: inherit; }
 .page-spread { position: relative; display: grid; grid-template-columns: 1fr 1fr; min-height: 690px; margin-bottom: 68px; scroll-margin-top: 129px; background: white; box-shadow: 0 8px 30px rgba(36,45,40,.08), 0 1px 3px rgba(36,45,40,.08); border: 1px solid #dfe2dd; }
 .page-surface { min-width: 0; position: relative; background: var(--paper); }
 .source-page { display: flex; align-items: flex-start; justify-content: center; padding: 48px 42px 36px; border-right: 1px solid #d5dad5; background: #ecebe5; overflow: hidden; }
-.source-page img { width: 100%; height: auto; display: block; box-shadow: 0 3px 12px rgba(34,40,36,.15); filter: saturate(.88) contrast(.98); }
+.source-page img, .source-page canvas { width: 100%; height: auto; display: block; box-shadow: 0 3px 12px rgba(34,40,36,.15); filter: saturate(.88) contrast(.98); }
 .page-label { font-family: var(--font-geist-mono), monospace; color: #98a09b; font-size: 9px; text-transform: uppercase; letter-spacing: .1em; }
 .source-page > .page-label { position: absolute; left: 17px; top: 16px; }
 .translated-page { padding: 0 50px 50px; overflow-anchor: none; }

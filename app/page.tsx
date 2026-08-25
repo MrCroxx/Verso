@@ -66,12 +66,12 @@ type PdfLoadingTask = import("pdfjs-dist").PDFDocumentLoadingTask;
 type PdfRenderTask = import("pdfjs-dist").RenderTask;
 type PdfWorker = import("pdfjs-dist").PDFWorker;
 
-let pdfJsPromise: Promise<typeof import("pdfjs-dist/legacy/build/pdf.mjs")> | undefined;
+let pdfJsPromise: Promise<typeof import("pdfjs-dist")> | undefined;
 let pdfWorkerPromise: Promise<PdfWorker> | undefined;
 
 function loadPdfJs() {
-  pdfJsPromise ??= import("pdfjs-dist/legacy/build/pdf.mjs").then((pdfjs) => {
-    pdfjs.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/legacy/build/pdf.worker.min.mjs", import.meta.url).toString();
+  pdfJsPromise ??= import("pdfjs-dist").then((pdfjs) => {
+    pdfjs.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
     return pdfjs;
   });
   return pdfJsPromise;
@@ -977,7 +977,8 @@ type PageSpreadProps = {
   translationAnimationSpeed: number;
   loading: boolean;
   error?: string;
-  renderPage: (page: number) => Promise<string>;
+  pageImageUrl?: string;
+  renderPageToCanvas: (page: number, canvas: HTMLCanvasElement, signal: AbortSignal) => Promise<void>;
   requestTranslation: (page: number, force?: boolean, cacheOnly?: boolean) => void;
   onTranslationAnimationComplete: (page: number, cacheVersion?: number) => void;
   setCurrentPage: (page: number) => void;
@@ -998,7 +999,8 @@ function PageSpread({
   translationAnimationSpeed,
   loading,
   error,
-  renderPage,
+  pageImageUrl,
+  renderPageToCanvas,
   requestTranslation,
   onTranslationAnimationComplete,
   setCurrentPage,
@@ -1006,8 +1008,12 @@ function PageSpread({
   searchQuery,
 }: PageSpreadProps) {
   const { ref, near } = useNearViewport(`${Math.max(1, nearbyPages) * 720}px 0px`);
-  const [image, setImage] = useState<string>();
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [sourceActive, setSourceActive] = useState(false);
+  const [sourceReady, setSourceReady] = useState(false);
+  const [serverImageFailed, setServerImageFailed] = useState(false);
   const [renderError, setRenderError] = useState("");
+  const [renderAttempt, setRenderAttempt] = useState(0);
   const cachedTranslation = translationSource === "cache";
   const finishTranslationAnimation = useCallback(
     () => onTranslationAnimationComplete(page, translation?.cacheVersion),
@@ -1017,28 +1023,43 @@ function PageSpread({
   useEffect(() => {
     if (isDemo) return;
     if (!near) {
-      const releaseImage = window.setTimeout(() => setImage(undefined), 500);
-      return () => window.clearTimeout(releaseImage);
+      const releaseSource = window.setTimeout(() => {
+        setSourceActive(false);
+        setSourceReady(false);
+        setServerImageFailed(false);
+        setRenderError("");
+      }, 500);
+      return () => window.clearTimeout(releaseSource);
     }
     if (!workEnabled) return;
 
-    let active = true;
-    const startRender = () => {
-      renderPage(page)
-        .then((result) => active && setImage(result))
-        .catch((error) => {
-          if (!active || isWorkCancellation(error)) return;
-          setRenderError(error instanceof Error ? error.message : "Unknown page rendering error");
-        });
-    };
     let timer: number | undefined;
-    if (workDistance === 0) startRender();
-    else timer = window.setTimeout(startRender, workDistance * 180);
+    const activate = () => setSourceActive(true);
+    if (workDistance === 0) activate();
+    else timer = window.setTimeout(activate, workDistance * 180);
     return () => {
-      active = false;
       if (timer) window.clearTimeout(timer);
     };
-  }, [isDemo, near, page, renderPage, workDistance, workEnabled]);
+  }, [isDemo, near, workDistance, workEnabled]);
+
+  useEffect(() => {
+    if (isDemo || !sourceActive || (pageImageUrl && !serverImageFailed)) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const controller = new AbortController();
+    setSourceReady(false);
+    setRenderError("");
+    void renderPageToCanvas(page, canvas, controller.signal)
+      .then(() => {
+        if (!controller.signal.aborted) setSourceReady(true);
+      })
+      .catch((error) => {
+        if (controller.signal.aborted || isWorkCancellation(error)) return;
+        setRenderError(error instanceof Error ? error.message : "Unknown page rendering error");
+      });
+    return () => controller.abort();
+  }, [isDemo, page, pageImageUrl, renderAttempt, renderPageToCanvas, serverImageFailed, sourceActive]);
 
   useEffect(() => {
     const node = ref.current;
@@ -1057,19 +1078,41 @@ function PageSpread({
         <div className="page-label">{messages.sourcePage(page)}</div>
         {isDemo ? (
           <SampleScan page={page} messages={messages} />
-        ) : image ? (
-          <img src={image} alt={messages.scannedSourceAlt(page)} />
         ) : renderError ? (
           <div className="page-render-error">
             <strong>{messages.scanFailed}</strong>
             <p>{renderError}</p>
             <button className="secondary-button" onClick={() => {
               setRenderError("");
-              renderPage(page).then(setImage).catch((renderingError) => {
-                setRenderError(renderingError instanceof Error ? renderingError.message : "Unknown page rendering error");
-              });
+              setRenderAttempt((attempt) => attempt + 1);
             }}>{messages.retryRender}</button>
           </div>
+        ) : sourceActive && pageImageUrl && !serverImageFailed ? (
+          <>
+            <img
+              src={pageImageUrl}
+              alt={messages.scannedSourceAlt(page)}
+              decoding="async"
+              fetchPriority={workDistance === 0 ? "high" : "auto"}
+              style={{ display: sourceReady ? "block" : "none" }}
+              onLoad={() => setSourceReady(true)}
+              onError={() => {
+                setSourceReady(false);
+                setServerImageFailed(true);
+              }}
+            />
+            {!sourceReady && <div className="page-loading"><LoaderCircle className="spin" size={24} /> {messages.renderingScan}</div>}
+          </>
+        ) : sourceActive ? (
+          <>
+            <canvas
+              ref={canvasRef}
+              role="img"
+              aria-label={messages.scannedSourceAlt(page)}
+              style={{ display: sourceReady ? "block" : "none" }}
+            />
+            {!sourceReady && <div className="page-loading"><LoaderCircle className="spin" size={24} /> {messages.renderingScan}</div>}
+          </>
         ) : (
           <div className="page-loading"><LoaderCircle className="spin" size={24} /> {messages.renderingScan}</div>
         )}
@@ -1533,7 +1576,7 @@ export default function Home() {
   const pdfLoadingTaskRef = useRef<PdfLoadingTask | undefined>(undefined);
   const imageCache = useRef(new Map<number, string>());
   const renderJobs = useRef(new Map<number, Promise<string>>());
-  const renderTasks = useRef(new Map<number, PdfRenderTask>());
+  const renderTasks = useRef(new Set<PdfRenderTask>());
   const renderEpoch = useRef(0);
   const translationRuns = useRef(createLatestTaskRegistry<string>());
   const translationRequests = useRef(new Map<string, AbortController>());
@@ -1611,6 +1654,7 @@ export default function Home() {
   const [localIndexLoaded, setLocalIndexLoaded] = useState(false);
   const [documentError, setDocumentError] = useState("");
   const [isDemo, setIsDemo] = useState(true);
+  const [serverBookAvailable, setServerBookAvailable] = useState(false);
   const [translations, setTranslations] = useState<Record<number, Translation>>(DEMO_TRANSLATIONS);
   const [translationSources, setTranslationSources] = useState<Record<number, TranslationSource>>({});
   const [translationAnimationVersions, setTranslationAnimationVersions] = useState<Record<number, number>>({});
@@ -1700,7 +1744,7 @@ export default function Home() {
 
   const cancelPageRenders = useCallback(() => {
     renderEpoch.current += 1;
-    for (const task of renderTasks.current.values()) {
+    for (const task of renderTasks.current) {
       try {
         task.cancel();
       } catch {
@@ -1879,7 +1923,6 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    void loadPdfRuntime().catch(() => undefined);
     const preload = window.setTimeout(() => void refreshBooks(), 0);
     return () => window.clearTimeout(preload);
   }, [refreshBooks]);
@@ -2091,10 +2134,15 @@ export default function Home() {
     setNavigationLoading(false);
     setNavigationError("");
     setIsDemo(false);
+    setServerBookAvailable(hasLocalIndex);
     setLocalIndexLoaded(hasLocalIndex);
-    setDocumentReady(false);
-    setLoadingDocument(true);
+    setDocumentReady(hasLocalIndex);
+    setLoadingDocument(!hasLocalIndex);
     setDocumentError("");
+    if (hasLocalIndex) {
+      viewportWorkEnabledRef.current = true;
+      setViewportWorkEnabled(true);
+    }
     window.scrollTo({ top: 0, behavior: "instant" });
     return sequence;
   }, [cancelDocumentWork, suspendViewportWork]);
@@ -2175,6 +2223,7 @@ export default function Home() {
         setStorageMessage(messages.localBookReused);
         if (initialized.book && documentIdRef.current === fileFingerprint) {
           replaceBookInUrl(initialized.book.fingerprint);
+          setServerBookAvailable(true);
         }
         await refreshBooks();
         return;
@@ -2215,13 +2264,75 @@ export default function Home() {
       if (!complete.ok || !completed.book) throw new Error(completed.error || messages.uploadCompleteFailed);
       setUploadProgress(100);
       setStorageMessage(messages.cachedLocal);
-      if (documentIdRef.current === fileFingerprint) replaceBookInUrl(completed.book.fingerprint);
+      if (documentIdRef.current === fileFingerprint) {
+        replaceBookInUrl(completed.book.fingerprint);
+        setServerBookAvailable(true);
+      }
       await refreshBooks();
     } catch (error) {
       setUploadProgress(null);
       setStorageMessage(error instanceof Error ? error.message : messages.uploadFailed);
     }
   }, [messages, refreshBooks]);
+
+  const renderPdfPageToCanvas = useCallback(async (
+    pageNumber: number,
+    canvas: HTMLCanvasElement,
+    targetWidth: number,
+    signal?: AbortSignal,
+  ) => {
+    if (!viewportWorkEnabledRef.current) {
+      throw new DOMException("Page rendering is paused while the viewport is moving.", "AbortError");
+    }
+    if (signal?.aborted) throw new DOMException("Page rendering was cancelled.", "AbortError");
+
+    const epoch = renderEpoch.current;
+    const pdf = pdfRef.current || await pdfLoadingTaskRef.current?.promise;
+    if (!pdf) throw new Error("PDF is not ready");
+    const page = await pdf.getPage(pageNumber);
+    if (epoch !== renderEpoch.current || signal?.aborted) {
+      throw new DOMException("Page rendering was cancelled.", "AbortError");
+    }
+
+    const base = page.getViewport({ scale: 1 });
+    const scale = Math.min(2.5, targetWidth / base.width);
+    const viewport = page.getViewport({ scale });
+    canvas.width = Math.max(1, Math.round(viewport.width));
+    canvas.height = Math.max(1, Math.round(viewport.height));
+    const context = canvas.getContext("2d", { alpha: false });
+    if (!context) throw new Error("Canvas is unavailable");
+
+    const renderTask = page.render({ canvas, canvasContext: context, viewport });
+    const cancel = () => {
+      try {
+        renderTask.cancel();
+      } catch {
+        // The task may have completed between the abort and cancellation.
+      }
+    };
+    renderTasks.current.add(renderTask);
+    signal?.addEventListener("abort", cancel, { once: true });
+    try {
+      await renderTask.promise;
+      if (epoch !== renderEpoch.current || signal?.aborted) {
+        throw new DOMException("Page rendering was cancelled.", "AbortError");
+      }
+    } finally {
+      signal?.removeEventListener("abort", cancel);
+      renderTasks.current.delete(renderTask);
+    }
+  }, []);
+
+  const renderPageToCanvas = useCallback(async (
+    pageNumber: number,
+    canvas: HTMLCanvasElement,
+    signal: AbortSignal,
+  ) => {
+    const cssWidth = canvas.parentElement?.clientWidth || window.innerWidth;
+    const pixelRatio = Math.min(2, window.devicePixelRatio || 1);
+    const targetWidth = Math.min(1280, Math.max(640, Math.round(cssWidth * pixelRatio)));
+    await renderPdfPageToCanvas(pageNumber, canvas, targetWidth, signal);
+  }, [renderPdfPageToCanvas]);
 
   const renderPage = useCallback(async (pageNumber: number) => {
     const cached = imageCache.current.get(pageNumber);
@@ -2236,28 +2347,10 @@ export default function Home() {
     const existing = renderJobs.current.get(pageNumber);
     if (existing) return existing;
 
-    const epoch = renderEpoch.current;
-    let activeRenderTask: PdfRenderTask | undefined;
     const job: Promise<string> = (async () => {
-      const pdf = pdfRef.current;
-      if (!pdf) throw new Error("PDF is not ready");
-      const page = await pdf.getPage(pageNumber);
-      if (epoch !== renderEpoch.current) throw new DOMException("Page rendering was cancelled.", "AbortError");
-      const base = page.getViewport({ scale: 1 });
-      const scale = Math.min(2, 1280 / base.width);
-      const viewport = page.getViewport({ scale });
       const canvas = document.createElement("canvas");
-      canvas.width = Math.round(viewport.width);
-      canvas.height = Math.round(viewport.height);
-      const context = canvas.getContext("2d", { alpha: false });
-      if (!context) throw new Error("Canvas is unavailable");
-      const renderTask = page.render({ canvas, canvasContext: context, viewport });
-      activeRenderTask = renderTask;
-      renderTasks.current.set(pageNumber, renderTask);
-      await renderTask.promise;
-      if (epoch !== renderEpoch.current) throw new DOMException("Page rendering was cancelled.", "AbortError");
+      await renderPdfPageToCanvas(pageNumber, canvas, 1800);
       const image = canvas.toDataURL("image/jpeg", 0.82);
-      if (epoch !== renderEpoch.current) throw new DOMException("Page rendering was cancelled.", "AbortError");
       imageCache.current.set(pageNumber, image);
       while (imageCache.current.size > 12) {
         const oldest = imageCache.current.keys().next().value as number | undefined;
@@ -2267,13 +2360,10 @@ export default function Home() {
       return image;
     })().finally(() => {
       if (renderJobs.current.get(pageNumber) === job) renderJobs.current.delete(pageNumber);
-      if (activeRenderTask && renderTasks.current.get(pageNumber) === activeRenderTask) {
-        renderTasks.current.delete(pageNumber);
-      }
     });
     renderJobs.current.set(pageNumber, job);
     return job;
-  }, []);
+  }, [renderPdfPageToCanvas]);
 
   const requestTranslation = useCallback(async (page: number, force = false, cacheOnly = false) => {
     if (translationCacheClearing.current) return;
@@ -2370,21 +2460,43 @@ export default function Home() {
       const payload = await translationLimiter.run(translationSettings.translationConcurrency, async () => {
         requireCurrentRun();
         const contextPages = [page - 1, page, page + 1].filter((value) => value >= 1 && value <= totalPages);
-        const images = await Promise.all(contextPages.map(async (number) => ({ page: number, dataUrl: await renderPage(number) })));
+        let imageSource = serverBookAvailable
+          ? { bookId: documentId, contextPages }
+          : {
+              images: await Promise.all(contextPages.map(async (number) => ({
+                page: number,
+                dataUrl: await renderPage(number),
+              }))),
+            };
         requireCurrentRun();
-        const response = await fetch("/api/translate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            targetLanguage: translationSettings.targetLanguage,
-            page,
-            totalPages,
-            images,
-            previousTranslationTail: boundaryTail(previousTranslation),
-          }),
-          signal: controller.signal,
-        });
-        const result = await response.json() as TranslationResponse & { error?: string };
+        const sendTranslation = (source: typeof imageSource | { images: Array<{ page: number; dataUrl: string }> }) => (
+          fetch("/api/translate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              targetLanguage: translationSettings.targetLanguage,
+              page,
+              totalPages,
+              ...source,
+              previousTranslationTail: boundaryTail(previousTranslation),
+            }),
+            signal: controller.signal,
+          })
+        );
+        let response = await sendTranslation(imageSource);
+        let result = await response.json() as TranslationResponse & { error?: string; code?: string };
+        if (!response.ok && result.code === "PAGE_RENDERER_UNAVAILABLE" && serverBookAvailable) {
+          requireCurrentRun();
+          imageSource = {
+            images: await Promise.all(contextPages.map(async (number) => ({
+              page: number,
+              dataUrl: await renderPage(number),
+            }))),
+          };
+          requireCurrentRun();
+          response = await sendTranslation(imageSource);
+          result = await response.json() as TranslationResponse & { error?: string; code?: string };
+        }
         if (!response.ok) throw new Error(result.error || currentMessages.translationRequestFailed);
         if (!Array.isArray(result.blocks)) throw new Error(currentMessages.invalidTranslation);
         return result;
@@ -2459,7 +2571,7 @@ export default function Home() {
         });
       }
     }
-  }, [completeTranslationAnimation, documentId, isDemo, persistTranslation, recordNavigation, renderPage, totalPages, translationService.configured, translationSettings, updateTranslations]);
+  }, [completeTranslationAnimation, documentId, isDemo, persistTranslation, recordNavigation, renderPage, serverBookAvailable, totalPages, translationService.configured, translationSettings, updateTranslations]);
 
   useEffect(() => {
     if (isDemo || !documentReady || navigationLoading || !viewportWorkEnabled || !translationService.loaded) return;
@@ -2541,9 +2653,7 @@ export default function Home() {
       void failure.catch((error) => {
         if (sequence !== documentLoadSequence.current) return;
         pdfRef.current = undefined;
-        setDocumentReady(false);
-        setLoadingDocument(false);
-        setDocumentError(messagesRef.current.openLocalFailed(error.message));
+        setStorageMessage(messagesRef.current.openLocalFailed(error.message));
         void loadingTask.destroy();
       });
       const pdf = await Promise.race([loadingTask.promise, failure]);
@@ -2554,8 +2664,7 @@ export default function Home() {
     } catch (error) {
       if (sequence !== documentLoadSequence.current) return;
       const detail = error instanceof Error ? error.message : "Unknown PDF error";
-      setDocumentError(currentMessages.openLocalFailed(detail));
-      setLoadingDocument(false);
+      setStorageMessage(currentMessages.openLocalFailed(detail));
     }
   }, [beginDocumentLoad, finishDocumentLoad, loadNavigation, translationSettings]);
 
@@ -2965,7 +3074,7 @@ export default function Home() {
             <div className="spreads">
               {pageNumbers.map((page) => (
                 <PageSpread
-                  key={`${documentId}-${page}`}
+                  key={`${documentId}-${page}-${serverBookAvailable ? "server" : "local"}`}
                   page={page}
                   totalPages={totalPages}
                   nearbyPages={settings.nearbyPages}
@@ -2980,7 +3089,10 @@ export default function Home() {
                   translationAnimationSpeed={settings.translationAnimationSpeed}
                   loading={loadingPages.has(page)}
                   error={errors[page]}
-                  renderPage={renderPage}
+                  pageImageUrl={serverBookAvailable
+                    ? `/api/books/${encodeURIComponent(documentId)}/pages/${page}?profile=display`
+                    : undefined}
+                  renderPageToCanvas={renderPageToCanvas}
                   requestTranslation={requestTranslation}
                   onTranslationAnimationComplete={completeTranslationAnimation}
                   setCurrentPage={observeCurrentPage}

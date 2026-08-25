@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAiProviderSettings } from "../../../db/ai-provider-settings";
+import { findBook, getStorage } from "../../../db/books";
 import type { AiProviderSettings } from "../../../lib/ai-provider-settings";
 import { normalizeLayoutBlocks } from "../../../lib/translation-layout";
+import { getRenderedPage, PageRendererUnavailableError } from "../../../lib/server-page-renderer";
 
 export const runtime = "nodejs";
 
@@ -9,9 +11,15 @@ type RequestBody = {
   targetLanguage: string;
   page: number;
   totalPages: number;
-  images: Array<{ page: number; dataUrl: string }>;
+  images?: Array<{ page: number; dataUrl: string }>;
+  bookId?: string;
+  contextPages?: number[];
   previousTranslationTail?: string;
 };
+
+type TranslationImage = { page: number; dataUrl: string };
+
+const MAX_IMAGE_DATA_URL_LENGTH = 16 * 1024 * 1024;
 
 function isConfigured(config: AiProviderSettings | null): config is AiProviderSettings {
   return Boolean(config?.apiKey && config.model && config.endpoint);
@@ -78,8 +86,8 @@ function normalizeTranslationResponse(value: unknown, requestedPage: number) {
   };
 }
 
-function prompt(body: RequestBody) {
-  const available = body.images.map((image) => image.page).join(", ");
+function prompt(body: RequestBody, images: TranslationImage[]) {
+  const available = images.map((image) => image.page).join(", ");
   const previousTranslation = body.previousTranslationTail
     ? `\nThe cached translation ends with: ${JSON.stringify(body.previousTranslationTail)}. Do not repeat this text at the start of page ${body.page}.`
     : "";
@@ -106,6 +114,51 @@ Instructions:
 - Return JSON matching the supplied schema.`;
 }
 
+function validImages(value: unknown, requestedPage: number, totalPages: number): value is TranslationImage[] {
+  return Array.isArray(value)
+    && value.length > 0
+    && value.length <= 3
+    && value.some((image) => (image as TranslationImage | undefined)?.page === requestedPage)
+    && value.every((image) => (
+      image
+      && typeof image === "object"
+      && Number.isSafeInteger((image as TranslationImage).page)
+      && (image as TranslationImage).page >= 1
+      && (image as TranslationImage).page <= totalPages
+      && typeof (image as TranslationImage).dataUrl === "string"
+      && (image as TranslationImage).dataUrl.startsWith("data:image/")
+      && (image as TranslationImage).dataUrl.length <= MAX_IMAGE_DATA_URL_LENGTH
+    ));
+}
+
+function validServerImageRequest(body: RequestBody) {
+  return typeof body.bookId === "string"
+    && body.bookId.length > 0
+    && body.bookId.length <= 256
+    && Array.isArray(body.contextPages)
+    && body.contextPages.length > 0
+    && body.contextPages.length <= 3
+    && body.contextPages.includes(body.page)
+    && body.contextPages.every((page) => (
+      Number.isSafeInteger(page) && page >= 1 && page <= body.totalPages
+    ));
+}
+
+async function resolveTranslationImages(body: RequestBody): Promise<TranslationImage[]> {
+  if (validImages(body.images, body.page, body.totalPages)) return body.images;
+  if (!validServerImageRequest(body)) throw new Error("Missing target language, page metadata, or page images.");
+
+  const { db } = getStorage();
+  const book = await findBook(db, body.bookId!);
+  if (!book) throw new Error("Book not found.");
+  if (book.pageCount !== body.totalPages) throw new Error("Book page count does not match the translation request.");
+
+  return Promise.all(body.contextPages!.map(async (page) => {
+    const rendered = await getRenderedPage(book, page, "vision");
+    return { page, dataUrl: `data:image/jpeg;base64,${rendered.bytes.toString("base64")}` };
+  }));
+}
+
 function endpointFor(config: AiProviderSettings) {
   const raw = config.endpoint.trim().replace(/\/$/, "");
   if (config.provider === "openai") return raw || "https://api.openai.com/v1/responses";
@@ -124,13 +177,9 @@ export async function POST(request: NextRequest) {
       || body.page < 1
       || !Number.isSafeInteger(body.totalPages)
       || body.totalPages < body.page
-      || !Array.isArray(body.images)
-      || !body.images.length
+      || (!validImages(body.images, body.page, body.totalPages) && !validServerImageRequest(body))
     ) {
       return NextResponse.json({ error: "Missing target language, page metadata, or page images." }, { status: 400 });
-    }
-    if (body.images.length > 3) {
-      return NextResponse.json({ error: "At most three adjacent pages are allowed." }, { status: 400 });
     }
     const config = await getAiProviderSettings();
     if (!isConfigured(config)) {
@@ -138,7 +187,8 @@ export async function POST(request: NextRequest) {
     }
     const endpoint = endpointFor(config);
     const headers = { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" };
-    const instruction = prompt(body);
+    const images = await resolveTranslationImages(body);
+    const instruction = prompt(body, images);
     const isResponses = config.provider === "openai" || endpoint.endsWith("/responses");
     const payload = isResponses
       ? {
@@ -148,7 +198,7 @@ export async function POST(request: NextRequest) {
             role: "user",
             content: [
               { type: "input_text", text: instruction },
-              ...body.images.flatMap((image) => [
+              ...images.flatMap((image) => [
                 { type: "input_text", text: `Page ${image.page}:` },
                 { type: "input_image", image_url: image.dataUrl, detail: "high" },
               ]),
@@ -163,7 +213,7 @@ export async function POST(request: NextRequest) {
             role: "user",
             content: [
               { type: "text", text: instruction },
-              ...body.images.flatMap((image) => [
+              ...images.flatMap((image) => [
                 { type: "text", text: `Page ${image.page}:` },
                 { type: "image_url", image_url: { url: image.dataUrl, detail: "high" } },
               ]),
@@ -199,6 +249,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(normalizeTranslationResponse(JSON.parse(text), body.page));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unexpected translation error.";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json(
+      {
+        error: message,
+        ...(error instanceof PageRendererUnavailableError && { code: "PAGE_RENDERER_UNAVAILABLE" }),
+      },
+      { status: error instanceof PageRendererUnavailableError ? 503 : 500 },
+    );
   }
 }

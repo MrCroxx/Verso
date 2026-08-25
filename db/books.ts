@@ -72,21 +72,28 @@ export class LocalDatabase {
 const dataDirectory = process.env.VERSO_DATA_DIR || ".data";
 const booksDirectory = `${dataDirectory}/books`;
 const uploadsDirectory = `${dataDirectory}/uploads`;
+const rendersDirectory = `${dataDirectory}/renders`;
 const databasePath = `${dataDirectory}/verso.sqlite`;
 
-let storage: { db: LocalDatabase; booksDirectory: string; uploadsDirectory: string } | undefined;
+let storage: {
+  db: LocalDatabase;
+  booksDirectory: string;
+  uploadsDirectory: string;
+  rendersDirectory: string;
+} | undefined;
 let schemaReady: Promise<void> | undefined;
 
 export function getStorage() {
   if (storage) return storage;
-  mkdirSync(booksDirectory, { recursive: true });
-  mkdirSync(uploadsDirectory, { recursive: true });
-  const sqlite = new DatabaseSync(databasePath);
+  mkdirSync(/* turbopackIgnore: true */ booksDirectory, { recursive: true });
+  mkdirSync(/* turbopackIgnore: true */ uploadsDirectory, { recursive: true });
+  mkdirSync(/* turbopackIgnore: true */ rendersDirectory, { recursive: true });
+  const sqlite = new DatabaseSync(/* turbopackIgnore: true */ databasePath);
   sqlite.exec("PRAGMA busy_timeout = 5000");
   sqlite.exec("PRAGMA journal_mode = WAL");
   sqlite.exec("PRAGMA foreign_keys = ON");
   hardenStoragePermissions();
-  storage = { db: new LocalDatabase(sqlite), booksDirectory, uploadsDirectory };
+  storage = { db: new LocalDatabase(sqlite), booksDirectory, uploadsDirectory, rendersDirectory };
   return storage;
 }
 
@@ -148,7 +155,9 @@ export async function ensureStorageSchema(db: LocalDatabase = getStorage().db) {
 
 export function hardenStoragePermissions() {
   for (const path of [databasePath, `${databasePath}-wal`, `${databasePath}-shm`]) {
-    if (existsSync(path)) chmodSync(path, 0o600);
+    if (existsSync(/* turbopackIgnore: true */ path)) {
+      chmodSync(/* turbopackIgnore: true */ path, 0o600);
+    }
   }
 }
 
@@ -179,4 +188,20 @@ export function resolveBookPath(objectKey: string) {
 export function resolveUploadDirectory(uploadId: string) {
   if (!/^[0-9a-f-]{36}$/.test(uploadId)) throw new Error("Invalid upload session.");
   return `${uploadsDirectory}/${uploadId}`;
+}
+
+export function resolveRenderPath(
+  fingerprint: string,
+  version: string,
+  profile: string,
+  page: number,
+) {
+  if (!/^(?:[a-f0-9]{64}|fnv1a-[a-f0-9]{16})$/.test(fingerprint)) {
+    throw new Error("Invalid render fingerprint.");
+  }
+  if (!/^v\d+$/.test(version) || !/^[a-z]+$/.test(profile)) {
+    throw new Error("Invalid render profile.");
+  }
+  if (!Number.isSafeInteger(page) || page < 1) throw new Error("Invalid render page.");
+  return `${rendersDirectory}/${fingerprint}/${version}/${profile}/${String(page).padStart(6, "0")}.jpg`;
 }

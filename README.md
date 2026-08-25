@@ -29,8 +29,9 @@ source.
   manually.
 - **Translation search:** search locally cached translations, jump directly to a
   result, and highlight matches without scanning or retranslating the book.
-- **Large-book performance:** lazily render pages and bound background
-  translation work to keep scanned books with hundreds of pages responsive.
+- **Large-book performance:** lazily rasterize requested pages on the server,
+  persist display and vision derivatives in the local volume, and bound both
+  page rendering and background translation work.
 - **Reader preferences:** switch the interface between English and Simplified
   Chinese independently of the translation target, choose a light or dark
   theme, and configure animated page navigation without altering the source
@@ -57,7 +58,8 @@ retains its original appearance.
 ## Technology
 
 - React 19 and the Next.js App Router.
-- PDF.js for browser-side scanned page rendering.
+- Poppler for server-side, volume-backed page rasterization, with PDF.js as a
+  browser fallback for files that have not finished uploading.
 - SQLite for metadata, navigation indexes, and translation records.
 - The local filesystem for uploaded PDF objects.
 - TypeScript, Tailwind CSS, and Lucide icons.
@@ -66,6 +68,9 @@ retains its original appearance.
 
 - Node.js 22.13 or newer.
 - npm.
+- Poppler's `pdftocairo` for the server page cache in non-Docker deployments.
+  The Docker image already includes it; without it, the reader falls back to
+  PDF.js in the browser.
 
 ## Local Development
 
@@ -74,7 +79,9 @@ npm ci
 npm run dev
 ```
 
-The development server listens on `0.0.0.0:3000`. Open
+On Debian or Ubuntu, install the optional server renderer with
+`apt-get install poppler-utils`. The development server listens on
+`0.0.0.0:3000`. Open
 `http://localhost:3000` locally or use the machine hostname from another device
 on the same network.
 
@@ -103,10 +110,11 @@ docker compose up -d
 ```
 
 Then open `http://localhost:3000`. The named `verso-data` volume stores
-`verso.sqlite` and the `books/` directory used for uploaded books, page indexes,
-translations, and AI provider settings. No external database or object-storage
-service is required. The database contains the provider credential, so protect
-its backups and back up the volume before replacing or moving the deployment.
+`verso.sqlite`, uploaded books, and lazily generated page images together with
+page indexes, translations, and AI provider settings. No external database,
+queue, or object-storage service is required. The database contains the
+provider credential, so protect its backups and back up the volume before
+replacing or moving the deployment.
 
 The equivalent Docker command is:
 

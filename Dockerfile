@@ -20,7 +20,7 @@ ENV NODE_ENV=production \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates \
+    && apt-get install --yes --no-install-recommends ca-certificates poppler-utils \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /data \
     && chown node:node /app /data
