@@ -100,15 +100,15 @@ test("does not open local storage while server modules load", async () => {
   await assert.rejects(access(importDataDirectory), { code: "ENOENT" });
 });
 
-test("does not maintain a deployment hostname allowlist", () => {
-  assert.equal(nextConfig.allowedDevOrigins, undefined);
+test("allows development access through homelab proxies", () => {
+  assert.deepEqual(nextConfig.allowedDevOrigins, ["homelab", "**.*"]);
 });
 
 test("excludes volume-backed storage from the standalone build", () => {
   assert.deepEqual(nextConfig.outputFileTracingExcludes, { "/*": [".data/**/*"] });
 });
 
-test("server-renders the Verso reader shell", async () => {
+test("server-renders the Verso library home", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
@@ -118,7 +118,8 @@ test("server-renders the Verso reader shell", async () => {
   assert.match(html, /<html lang="en-US">/i);
   assert.match(html, /Verso/);
   assert.match(html, /AI Reader/);
-  assert.match(html, /Open PDF/);
+  assert.match(html, /Your library/);
+  assert.match(html, /Upload a new PDF/);
   assert.match(html, /Local Library/);
   assert.match(html, /Toggle light or dark mode/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
@@ -128,7 +129,7 @@ test("server-renders the preferred interface locale without a hydration switch",
   const chineseResponse = await render("/", { "accept-language": "zh-CN,zh;q=0.9,en;q=0.8" });
   const chineseHtml = await chineseResponse.text();
   assert.match(chineseHtml, /<html lang="zh-CN">/i);
-  assert.match(chineseHtml, /打开 PDF/);
+  assert.match(chineseHtml, /上传新 PDF/);
 
   const savedEnglishResponse = await render("/", {
     "accept-language": "zh-CN,zh;q=0.9",
@@ -136,7 +137,7 @@ test("server-renders the preferred interface locale without a hydration switch",
   });
   const savedEnglishHtml = await savedEnglishResponse.text();
   assert.match(savedEnglishHtml, /<html lang="en-US">/i);
-  assert.match(savedEnglishHtml, /Open PDF/);
+  assert.match(savedEnglishHtml, /Upload a new PDF/);
 });
 
 test("resolves an explicit locale before the best supported browser language", () => {
@@ -454,8 +455,9 @@ test("stores a multipart PDF locally and serves bounded byte ranges", async () =
   });
   assert.equal(notModifiedPageImage.status, 304);
 
-  const invalidProfile = await fetch(`${baseUrl}/api/books/${fingerprint}/pages/1?profile=thumbnail`);
-  assert.equal(invalidProfile.status, 400);
+  const thumbnailImage = await fetch(`${baseUrl}/api/books/${fingerprint}/pages/1?profile=thumbnail`);
+  assert.equal(thumbnailImage.status, 200);
+  assert.equal(thumbnailImage.headers.get("content-type"), "image/jpeg");
   const invalidPage = await fetch(`${baseUrl}/api/books/${fingerprint}/pages/2?profile=display`);
   assert.equal(invalidPage.status, 400);
 
@@ -467,7 +469,7 @@ test("stores a multipart PDF locally and serves bounded byte ranges", async () =
   assert.equal(cachedVisionImage.headers.get("x-verso-render-cache"), "HIT");
 
   const rendererInvocations = (await readFile(rendererLogPath, "utf8")).trim().split("\n");
-  assert.equal(rendererInvocations.length, 2);
+  assert.equal(rendererInvocations.length, 3);
 });
 
 test("preserves list markers and trailing page references from compatible providers", () => {

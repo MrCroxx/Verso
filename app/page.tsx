@@ -8,7 +8,6 @@ import {
   ChevronRight,
   CircleCheck,
   HardDrive,
-  HardDriveUpload,
   FileText,
   Globe2,
   Languages,
@@ -214,13 +213,12 @@ const UI_MESSAGES = {
     translationsDiscarded: (count: number) => `已丢弃 ${count} 页缓存译文。`,
     discardTranslationsFailed: "无法丢弃本书的译文缓存。",
     saveSettings: "保存设置",
-    libraryDialog: "本地书库",
     localLibrary: "本地书库",
-    librarySubtitle: "选择已上传的扫描书，无需重复上传",
-    closeLibrary: "关闭书库",
+    libraryHomeTitle: "你的书库",
+    librarySlogan: "对照原文，跨越语言阅读。",
+    bookCoverAlt: (name: string) => `${name} 的封面`,
+    openBook: (name: string) => `打开《${name}》`,
     uploadPdf: "上传新 PDF",
-    uploadHelp: "自动按文件指纹去重并保存到 Docker 数据卷",
-    uploaded: "已上传",
     bookCount: (count: number) => `${count} 本`,
     loadingLibrary: "正在读取书库",
     bookMeta: (pages: number, size: string, date: string) => `${pages} 页 · ${size} · ${date}`,
@@ -356,13 +354,12 @@ const UI_MESSAGES = {
     translationsDiscarded: (count: number) => `Discarded cached translations for ${count} page${count === 1 ? "" : "s"}.`,
     discardTranslationsFailed: "Unable to discard translations for this book.",
     saveSettings: "Save settings",
-    libraryDialog: "Local library",
     localLibrary: "Local Library",
-    librarySubtitle: "Open an uploaded scanned book without uploading it again",
-    closeLibrary: "Close library",
+    libraryHomeTitle: "Your library",
+    librarySlogan: "See the original. Read beyond language.",
+    bookCoverAlt: (name: string) => `Cover of ${name}`,
+    openBook: (name: string) => `Open ${name}`,
     uploadPdf: "Upload a new PDF",
-    uploadHelp: "Deduplicated by fingerprint and stored in the Docker data volume",
-    uploaded: "Uploaded",
     bookCount: (count: number) => `${count} book${count === 1 ? "" : "s"}`,
     loadingLibrary: "Loading library",
     bookMeta: (pages: number, size: string, date: string) => `${pages} pages · ${size} · ${date}`,
@@ -493,11 +490,13 @@ function bookIdFromUrl() {
   return new URL(window.location.href).searchParams.get(BOOK_QUERY_PARAMETER)?.trim() || null;
 }
 
-function replaceBookInUrl(bookId: string | null) {
+function updateBookInUrl(bookId: string | null, mode: "push" | "replace" = "replace") {
   const url = new URL(window.location.href);
   if (bookId) url.searchParams.set(BOOK_QUERY_PARAMETER, bookId);
   else url.searchParams.delete(BOOK_QUERY_PARAMETER);
-  window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+  const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+  if (mode === "push") window.history.pushState(window.history.state, "", nextUrl);
+  else window.history.replaceState(window.history.state, "", nextUrl);
 }
 
 function nextTranslationVersion() {
@@ -1399,61 +1398,97 @@ function formatFileSize(size: number) {
   return `${(size / 1024 / 1024).toFixed(size < 10 * 1024 * 1024 ? 1 : 0)} MB`;
 }
 
-function BookLibrary({
+function LibraryHome({
   books,
   locale,
   messages,
-  currentDocumentId,
   loading,
+  error,
   onSelect,
   onUpload,
-  onClose,
+  onRetry,
+  onOpenSettings,
+  onToggleLocale,
+  onToggleTheme,
+  theme,
 }: {
   books: LocalBook[];
   locale: UiLocale;
   messages: UiMessages;
-  currentDocumentId: string;
   loading: boolean;
+  error: string;
   onSelect: (book: LocalBook) => void;
   onUpload: () => void;
-  onClose: () => void;
+  onRetry: () => void;
+  onOpenSettings: () => void;
+  onToggleLocale: () => void;
+  onToggleTheme: () => void;
+  theme: ThemeMode;
 }) {
   return (
-    <div className="settings-backdrop" role="presentation" onMouseDown={onClose}>
-      <aside className="settings-panel library-panel" role="dialog" aria-modal="true" aria-label={messages.libraryDialog} onMouseDown={(event) => event.stopPropagation()}>
-        <div className="settings-title">
-          <div><span>{messages.localLibrary}</span><p>{messages.librarySubtitle}</p></div>
-          <button className="icon-button" onClick={onClose} aria-label={messages.closeLibrary}><X size={18} /></button>
+    <>
+      <header className="topbar library-topbar">
+        <div className="brand"><div className="brand-mark">V</div><span>Verso</span><em>AI Reader</em></div>
+        <div className="top-actions">
+          <button className="icon-button locale-button" title={messages.switchLanguage} aria-label={messages.switchLanguage} onClick={onToggleLocale}><Globe2 size={16} /><span>{locale === "zh-CN" ? "EN" : "中"}</span></button>
+          <button className="icon-button" title={messages.switchTheme} aria-label={messages.switchTheme} aria-pressed={theme === "dark"} onClick={onToggleTheme}>{theme === "light" ? <Moon size={17} /> : <Sun size={17} />}</button>
+          <button className="secondary-button" onClick={onOpenSettings}><Settings2 size={16} /> {messages.settings}</button>
+          <button className="primary-button" onClick={onUpload}><Plus size={16} /><span className="action-label">{messages.uploadPdf}</span></button>
         </div>
-        <button className="library-upload" onClick={onUpload}>
-          <HardDriveUpload size={19} />
-          <span><strong>{messages.uploadPdf}</strong><small>{messages.uploadHelp}</small></span>
-        </button>
-        <div className="library-section-title"><span>{messages.uploaded}</span><strong>{messages.bookCount(books.length)}</strong></div>
+      </header>
+      <section className="library-home" aria-labelledby="library-title">
+        <div className="library-hero">
+          <div>
+            <p>{messages.localLibrary}</p>
+            <h1 id="library-title">{messages.libraryHomeTitle}</h1>
+            <span>{messages.librarySlogan}</span>
+          </div>
+          <strong>{messages.bookCount(books.length)}</strong>
+        </div>
         {loading ? (
-          <div className="library-empty"><LoaderCircle className="spin" size={22} /> {messages.loadingLibrary}</div>
+          <div className="library-home-empty"><LoaderCircle className="spin" size={24} /><strong>{messages.loadingLibrary}</strong></div>
+        ) : error ? (
+          <div className="library-home-empty library-home-error" role="alert">
+            <span><X size={28} /></span>
+            <strong>{messages.libraryReadFailed}</strong>
+            <p>{error}</p>
+            <button className="secondary-button" onClick={onRetry}><RefreshCw size={15} />{messages.retry}</button>
+          </div>
         ) : books.length ? (
-          <div className="book-list">
+          <div className="library-grid">
             {books.map((book) => (
               <button
                 key={book.id}
-                className={cn("local-book", currentDocumentId === book.fingerprint && "active")}
+                className="library-book"
                 onClick={() => onSelect(book)}
+                aria-label={messages.openBook(book.name.replace(/\.pdf$/i, ""))}
               >
-                <span className="local-book-cover"><BookOpen size={18} /></span>
-                <span className="local-book-copy">
+                <span className="library-cover">
+                  <BookOpen size={28} />
+                  <img
+                    src={`/api/books/${encodeURIComponent(book.id)}/pages/1?profile=thumbnail`}
+                    alt={messages.bookCoverAlt(book.name.replace(/\.pdf$/i, ""))}
+                    loading="lazy"
+                    onError={(event) => { event.currentTarget.hidden = true; }}
+                  />
+                </span>
+                <span className="library-book-copy">
                   <strong>{book.name.replace(/\.pdf$/i, "")}</strong>
                   <small>{messages.bookMeta(book.pageCount, formatFileSize(book.size), new Date(book.uploadedAt).toLocaleDateString(locale))}</small>
                 </span>
-                {currentDocumentId === book.fingerprint ? <CircleCheck size={18} /> : <ChevronRight size={17} />}
               </button>
             ))}
           </div>
         ) : (
-          <div className="library-empty"><HardDrive size={25} /><strong>{messages.noBooks}</strong><p>{messages.noBooksHelp}</p></div>
+          <div className="library-home-empty">
+            <span><BookOpen size={30} /></span>
+            <strong>{messages.noBooks}</strong>
+            <p>{messages.noBooksHelp}</p>
+            <button className="primary-button" onClick={onUpload}><Plus size={16} />{messages.uploadPdf}</button>
+          </div>
         )}
-      </aside>
-    </div>
+      </section>
+    </>
   );
 }
 
@@ -1599,7 +1634,7 @@ export default function Home() {
   const translationsRef = useRef<Record<number, Translation>>(DEMO_TRANSLATIONS);
   const translationSourcesRef = useRef<Record<number, TranslationSource>>({});
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [showLibraryHome, setShowLibraryHome] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarDrawerOpen, setSidebarDrawerOpen] = useState(false);
   const [readerMenuOpen, setReaderMenuOpen] = useState(false);
@@ -1662,6 +1697,7 @@ export default function Home() {
   const [errors, setErrors] = useState<Record<number, string>>({});
   const [localBooks, setLocalBooks] = useState<LocalBook[]>([]);
   const [localBooksLoading, setLocalBooksLoading] = useState(false);
+  const [libraryError, setLibraryError] = useState("");
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [storageMessage, setStorageMessage] = useState("");
   const [navigation, setNavigation] = useState<DocumentNavigation>(EMPTY_NAVIGATION);
@@ -1910,13 +1946,16 @@ export default function Home() {
   const refreshBooks = useCallback(async () => {
     const currentMessages = messagesRef.current;
     setLocalBooksLoading(true);
+    setLibraryError("");
     try {
       const response = await fetch("/api/books", { cache: "no-store" });
       const result = await response.json() as { books?: LocalBook[]; error?: string };
       if (!response.ok) throw new Error(result.error || currentMessages.libraryReadFailed);
       setLocalBooks(result.books || []);
     } catch (error) {
-      setStorageMessage(error instanceof Error ? error.message : currentMessages.libraryReadFailed);
+      const message = error instanceof Error ? error.message : currentMessages.libraryReadFailed;
+      setStorageMessage(message);
+      setLibraryError(message);
     } finally {
       setLocalBooksLoading(false);
     }
@@ -1942,9 +1981,9 @@ export default function Home() {
   useEffect(() => {
     function handleSearchShortcut(event: KeyboardEvent) {
       if (isDocumentSearchShortcut(event)) {
+        if (showLibraryHome) return;
         event.preventDefault();
         setSettingsOpen(false);
-        setLibraryOpen(false);
         setSidebarOpen(true);
         setSidebarDrawerOpen(window.matchMedia("(max-width: 900px)").matches);
         setSidebarView("search");
@@ -1966,7 +2005,7 @@ export default function Home() {
 
     window.addEventListener("keydown", handleSearchShortcut);
     return () => window.removeEventListener("keydown", handleSearchShortcut);
-  }, [sidebarView]);
+  }, [showLibraryHome, sidebarView]);
 
   useEffect(() => {
     const query = searchQuery.trim();
@@ -2051,9 +2090,14 @@ export default function Home() {
   }, [cancelDocumentWork]);
 
   const openLibrary = useCallback(() => {
-    setLibraryOpen(true);
+    cancelDocumentWork();
+    setReaderMenuOpen(false);
+    setSettingsOpen(false);
+    setShowLibraryHome(true);
+    if (bookIdFromUrl()) updateBookInUrl(null, "push");
+    window.scrollTo({ top: 0, behavior: "instant" });
     void refreshBooks();
-  }, [refreshBooks]);
+  }, [cancelDocumentWork, refreshBooks]);
 
   const loadNavigation = useCallback(async (id: string, sequence: number, providerSettings: TranslationSettings) => {
     setNavigationLoading(true);
@@ -2222,7 +2266,7 @@ export default function Home() {
         setUploadProgress(100);
         setStorageMessage(messages.localBookReused);
         if (initialized.book && documentIdRef.current === fileFingerprint) {
-          replaceBookInUrl(initialized.book.fingerprint);
+          updateBookInUrl(initialized.book.fingerprint);
           setServerBookAvailable(true);
         }
         await refreshBooks();
@@ -2265,7 +2309,7 @@ export default function Home() {
       setUploadProgress(100);
       setStorageMessage(messages.cachedLocal);
       if (documentIdRef.current === fileFingerprint) {
-        replaceBookInUrl(completed.book.fingerprint);
+        updateBookInUrl(completed.book.fingerprint);
         setServerBookAvailable(true);
       }
       await refreshBooks();
@@ -2586,7 +2630,8 @@ export default function Home() {
 
   const handleFile = useCallback(async (file?: File) => {
     if (!file) return;
-    replaceBookInUrl(null);
+    setShowLibraryHome(false);
+    updateBookInUrl(null);
     const fileFingerprint = await fingerprint(file);
     const sequence = beginDocumentLoad(fileFingerprint, file.name, 1, false);
     void loadNavigation(fileFingerprint, sequence, translationSettings);
@@ -2620,8 +2665,8 @@ export default function Home() {
   }, [beginDocumentLoad, finishDocumentLoad, loadNavigation, messages, translationSettings, uploadToLocal]);
 
   const loadLocalBook = useCallback(async (book: LocalBook, updateUrl = true) => {
-    setLibraryOpen(false);
-    if (updateUrl) replaceBookInUrl(book.fingerprint);
+    setShowLibraryHome(false);
+    if (updateUrl) updateBookInUrl(book.fingerprint, "push");
     const sequence = beginDocumentLoad(book.fingerprint, book.name, book.pageCount, true);
     void loadNavigation(book.fingerprint, sequence, translationSettings);
     const currentMessages = messagesRef.current;
@@ -2669,18 +2714,29 @@ export default function Home() {
   }, [beginDocumentLoad, finishDocumentLoad, loadNavigation, translationSettings]);
 
   useEffect(() => {
-    const requestedBookId = bookIdFromUrl();
-    if (!requestedBookId) return;
-    const restoreTimer = window.setTimeout(() => {
+    const restoreFromUrl = () => {
+      const requestedBookId = bookIdFromUrl();
+      if (!requestedBookId) {
+        cancelDocumentWork();
+        setShowLibraryHome(true);
+        return;
+      }
+      setShowLibraryHome(false);
       void readLocalBook(requestedBookId, messagesRef.current.libraryReadFailed)
         .then((book) => loadLocalBook(book, false))
         .catch((error) => {
           const detail = error instanceof Error ? error.message : messagesRef.current.libraryReadFailed;
-          setDocumentError(messagesRef.current.openLocalFailed(detail));
+          setStorageMessage(messagesRef.current.openLocalFailed(detail));
+          setShowLibraryHome(true);
         });
-    }, 0);
-    return () => window.clearTimeout(restoreTimer);
-  }, [loadLocalBook]);
+    };
+    const restoreTimer = window.setTimeout(restoreFromUrl, 0);
+    window.addEventListener("popstate", restoreFromUrl);
+    return () => {
+      window.clearTimeout(restoreTimer);
+      window.removeEventListener("popstate", restoreFromUrl);
+    };
+  }, [cancelDocumentWork, loadLocalBook]);
 
   const pageNumbers = useMemo(() => Array.from({ length: totalPages }, (_, index) => index + 1), [totalPages]);
   const displayedTranslations = useMemo(() => {
@@ -2790,10 +2846,50 @@ export default function Home() {
     }
   }, []);
 
+  if (showLibraryHome) {
+    return (
+      <main className="app-shell library-shell">
+        <LibraryHome
+          books={localBooks}
+          locale={locale}
+          messages={messages}
+          loading={localBooksLoading}
+          error={libraryError}
+          theme={theme}
+          onSelect={(book) => void loadLocalBook(book)}
+          onUpload={() => fileInput.current?.click()}
+          onRetry={() => void refreshBooks()}
+          onOpenSettings={() => setSettingsOpen(true)}
+          onToggleLocale={() => setLocale(locale === "zh-CN" ? "en-US" : "zh-CN")}
+          onToggleTheme={() => setTheme((value) => value === "light" ? "dark" : "light")}
+        />
+        <input ref={fileInput} type="file" accept="application/pdf" hidden onChange={(event) => {
+          const file = event.currentTarget.files?.[0];
+          event.currentTarget.value = "";
+          void handleFile(file);
+        }} />
+        {settingsOpen && (
+          <SettingsPanel
+            settings={settings}
+            translationService={translationService}
+            currentBookName={fileName}
+            canDiscardTranslations={false}
+            locale={locale}
+            messages={messages}
+            onChange={updateSettings}
+            onProviderSave={saveTranslationService}
+            onDiscardTranslations={discardCurrentBookTranslations}
+            onClose={() => setSettingsOpen(false)}
+          />
+        )}
+      </main>
+    );
+  }
+
   return (
     <main className={cn("app-shell", sidebarDrawerOpen && "sidebar-drawer-open")}>
       <header className="topbar">
-        <div className="brand"><div className="brand-mark">V</div><span>Verso</span><em>AI Reader</em></div>
+        <button className="brand brand-button" onClick={openLibrary} aria-label={messages.openLibrary}><div className="brand-mark">V</div><span>Verso</span><em>AI Reader</em></button>
         <button className="document-title" onClick={openLibrary} title={messages.openLibrary}><FileText size={16} /><span>{fileName}</span><ChevronDown size={14} /></button>
         <div className="top-actions">
           <div className="cache-status" title={storageMessage}>
@@ -3118,21 +3214,6 @@ export default function Home() {
           onProviderSave={saveTranslationService}
           onDiscardTranslations={discardCurrentBookTranslations}
           onClose={() => setSettingsOpen(false)}
-        />
-      )}
-      {libraryOpen && (
-        <BookLibrary
-          books={localBooks}
-          locale={locale}
-          messages={messages}
-          currentDocumentId={documentId}
-          loading={localBooksLoading}
-          onSelect={(book) => void loadLocalBook(book)}
-          onUpload={() => {
-            setLibraryOpen(false);
-            fileInput.current?.click();
-          }}
-          onClose={() => setLibraryOpen(false)}
         />
       )}
     </main>

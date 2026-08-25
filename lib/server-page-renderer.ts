@@ -8,10 +8,11 @@ import { createConcurrencyLimiter } from "./concurrency-limiter.ts";
 
 export const PAGE_RENDER_VERSION = "v1";
 
-export type PageRenderProfile = "display" | "vision";
+export type PageRenderProfile = "display" | "thumbnail" | "vision";
 
 const PROFILE_OPTIONS: Record<PageRenderProfile, { maxDimension: number; quality: number }> = {
   display: { maxDimension: 1600, quality: 82 },
+  thumbnail: { maxDimension: 480, quality: 76 },
   vision: { maxDimension: 2200, quality: 88 },
 };
 
@@ -35,7 +36,7 @@ export class PageRendererUnavailableError extends Error {
 }
 
 export function parsePageRenderProfile(value: string | null): PageRenderProfile | null {
-  return value === "display" || value === "vision" ? value : null;
+  return value === "display" || value === "thumbnail" || value === "vision" ? value : null;
 }
 
 function pageEtag(book: StoredBook, page: number, profile: PageRenderProfile) {
