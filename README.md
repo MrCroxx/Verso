@@ -159,6 +159,44 @@ docker compose pull
 docker compose up -d
 ```
 
+## Translation traces
+
+Open **Settings → View translation traces** (`/traces`). The local waterfall
+refreshes every two seconds and shows foreground and background requests,
+queue waits, image preparation, provider latency, PDF text/OCR extraction,
+alignment, persistence, cache hits, failures, and token usage when the provider
+reports it. Completed traces survive restarts; the latest 200 are retained in
+`translation_traces` in the volume-backed SQLite database. In-flight traces
+are held in memory and disappear on restart. No credentials, prompts, page
+images, translation text, or provider response bodies are recorded.
+
+For Chrome debugging:
+
+1. In **Network**, select a `/api/translate` request and open **Timing** to see
+   its `Server-Timing` stages. `X-Verso-Trace-Id` identifies the corresponding
+   local trace, including on failed requests.
+2. In **Performance**, enable **Capture settings → Show custom tracks**, start
+   recording before requesting a translation, and stop after it completes.
+   The **Verso translation** group contains browser queue/image preparation
+   and server-stage tracks. Server spans are anchored at response receipt to
+   avoid cross-machine clock skew; their network alignment is approximate.
+   See the [Chrome custom-track documentation](https://developer.chrome.com/docs/devtools/performance/extension).
+3. For background work or requests completed before recording, use **Export**
+   on `/traces`. Open the Chrome Trace Event JSON in `chrome://tracing` or a
+   [Perfetto-compatible viewer](https://perfetto.dev/docs/getting-started/other-formats).
+   `/api/traces?format=chrome` exports all retained traces; add `&id=TRACE_ID`
+   for one request.
+
+The provider currently returns non-streaming JSON. `provider.wait_headers`
+can include reasoning and generation, not just network latency, and must not
+be interpreted as time to first token. Parent spans include child work and
+parallel spans overlap; adding every duration overcounts elapsed time.
+`queue.shared_wait` means the request joined an existing page translation;
+inspect that page's original request for its provider stages.
+
+See [the performance investigation](docs/translation-performance.md) for
+measurements, changes, and their practical limits.
+
 ## Validation
 
 ```bash

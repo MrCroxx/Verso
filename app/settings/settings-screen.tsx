@@ -50,6 +50,7 @@ export function SettingsScreen({ backHref }: { backHref: string }) {
           </section>
           <section id="translation" className="settings-card" aria-labelledby="translation-heading">
             <h2 id="translation-heading">{copy.translation}</h2>
+            <Link className="secondary-button" href="/traces">{locale === "zh-CN" ? "查看翻译耗时" : "View translation traces"}</Link>
             <label className="field-label" htmlFor="language">{messages.targetLanguage}</label>
             <select id="language" value={settings.targetLanguage} onChange={(event) => update("targetLanguage", event.target.value)}>
               {Object.keys({

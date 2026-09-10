@@ -1,6 +1,7 @@
 "use client";
 /* eslint-disable @next/next/no-img-element */
 
+import { recordClientTiming, recordTranslationTrace, type TranslationTrace } from "../lib/translation-trace";
 import {
   BookOpen,
   ChevronDown,
@@ -2111,7 +2112,10 @@ export default function Home() {
       previousTranslation = await readPreviousTranslation();
       requireCurrentRun();
 
+      const clientQueuedAt = performance.now();
       const payload = await translationLimiter.run(translationSettings.translationConcurrency, async () => {
+        recordClientTiming("queue.client", clientQueuedAt, page);
+        const imagesStartedAt = performance.now();
         requireCurrentRun();
         const contextPages = [page - 1, page, page + 1].filter((value) => value >= 1 && value <= totalPages);
         let imageSource = serverBookAvailable
@@ -2123,6 +2127,7 @@ export default function Home() {
               }))),
             };
         requireCurrentRun();
+        recordClientTiming("images.client", imagesStartedAt, page);
         const sendTranslation = (source: typeof imageSource | { images: Array<{ page: number; dataUrl: string }> }) => (
           fetch("/api/translate", {
             method: "POST",
@@ -2141,7 +2146,8 @@ export default function Home() {
           })
         );
         let response = await sendTranslation(imageSource);
-        let result = await response.json() as TranslationResponse & { error?: string; code?: string };
+        let result = await response.json() as TranslationResponse & { error?: string; code?: string; trace?: TranslationTrace };
+        if (result.trace) recordTranslationTrace(result.trace);
         if (!response.ok && result.code === "PAGE_RENDERER_UNAVAILABLE" && serverBookAvailable) {
           requireCurrentRun();
           imageSource = {
@@ -2152,7 +2158,8 @@ export default function Home() {
           };
           requireCurrentRun();
           response = await sendTranslation(imageSource);
-          result = await response.json() as TranslationResponse & { error?: string; code?: string };
+          result = await response.json() as TranslationResponse & { error?: string; code?: string; trace?: TranslationTrace };
+          if (result.trace) recordTranslationTrace(result.trace);
         }
         if (!response.ok) throw new Error(result.error || currentMessages.translationRequestFailed);
         if (!Array.isArray(result.blocks)) throw new Error(currentMessages.invalidTranslation);

@@ -44,6 +44,16 @@ if (process.env.VERSO_PDF_RENDERER_LOG) {
 }
 `);
   await chmod(rendererPath, 0o700);
+  // Deterministic local extraction makes provider/OCR overlap observable without system tools.
+  for (const [tool, source] of Object.entries({
+    pdftotext: `console.log('<page width="100" height="100"></page>')`,
+    pdfinfo: 'console.log("Page rot: 0")',
+    tesseract: `setTimeout(() => console.log(${JSON.stringify("level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n1\t1\t0\t0\t0\t0\t0\t0\t100\t100\t-1\t\n5\t1\t1\t1\t1\t1\t10\t10\t40\t10\t99\tPage")}), 100)`,
+  })) {
+    const executable = path.join(testDataDirectory, tool);
+    await writeFile(executable, `#!/usr/bin/env node\n${source}\n`);
+    await chmod(executable, 0o700);
+  }
   const port = await new Promise((resolve, reject) => {
     const probe = createServer();
     probe.once("error", reject);
@@ -215,6 +225,14 @@ test("does not use provider credentials from environment variables for translati
   });
   assert.equal(response.status, 503);
   assert.deepEqual(await response.json(), { error: "AI provider is not configured on the server." });
+  const id = response.headers.get("x-verso-trace-id");
+  assert.ok(id);
+  const traceResponse = await fetch(`${baseUrl}/api/traces?id=${id}`);
+  assert.match(traceResponse.headers.get("cache-control"), /no-store/);
+  const { traces } = await traceResponse.json();
+  assert.equal(traces.length, 1);
+  assert.equal(traces[0].status, "error");
+  assert.ok(traces[0].spans.every(span => span.status !== "running"));
 });
 
 test("connection testing requires stored credentials", async () => {
@@ -946,6 +964,15 @@ test("requests and persists image crops, typography, and sentence positions with
       assert.equal(response.status, 200);
       const translation = await response.json();
       assert.equal(translation.isBlank, false);
+      assert.equal(response.headers.get("x-verso-trace-id"), translation.trace.id);
+      assert.match(response.headers.get("server-timing"), /provider.wait_headers/);
+      assert.equal(translation.trace.status, "ok");
+      assert.equal(translation.trace.attributes.model, "vision-test");
+      assert.doesNotMatch(JSON.stringify(translation.trace), /test-key|data:image|Source sentence|译文/);
+      const traceExport = await (await fetch(`${baseUrl}/api/traces?id=${translation.trace.id}&format=chrome`)).json();
+      const lanes = traceExport.traceEvents.filter(event => event.ph === "X").map(event => `${event.pid}:${event.tid}`);
+      assert.equal(new Set(lanes).size, lanes.length);
+      assert.ok(traceExport.traceEvents.some(event => event.ph === "X" && event.name === "provider.wait_headers" && event.dur >= 0));
       assert.deepEqual(translation.blocks[0].sentences, textBlock.sentences);
       assert.equal(translation.blocks[0].fontSize, 0.025);
       assert.deepEqual(translation.blocks[1].sourceRect, imageBlock.sourceRect);
@@ -1489,6 +1516,24 @@ test("persists whole-book work, shares reader requests, skips cached blank pages
     assert.equal(blank.status, 200);
     await Promise.all([enqueueTestBook(book), enqueueTestBook(book)]);
     await waitFor(() => responses.has(2));
+    const live = await (await fetch(`${baseUrl}/api/traces`)).json();
+    assert.ok(live.traces.some(trace => trace.background && trace.page === 2 && trace.status === "running" && trace.spans.some(span => span.name === "provider.wait_headers" && span.status === "running")));
+    // A cached blank page must bypass a queue whose only provider slot is occupied.
+    const cachedWhileBusy = await fetch(`${baseUrl}/api/translate`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bookId: book.fingerprint, targetLanguage: "English", page: 1, totalPages: book.pageCount, contextPages: [1], translationConcurrency: 1 }),
+      signal: AbortSignal.timeout(2000) });
+    assert.equal(cachedWhileBusy.status, 200);
+    const fast = await cachedWhileBusy.json();
+    assert.equal(fast.isBlank, true);
+    assert.equal(fast.trace.attributes.cacheHit, true);
+    assert.ok(!fast.trace.spans.some(span => span.name === "queue.wait"));
+    // OCR must finish while the provider is still deliberately held open.
+    await waitFor(async () => {
+      const { traces } = await (await fetch(`${baseUrl}/api/traces`)).json();
+      return traces.some(trace => trace.bookId === book.fingerprint && trace.page === 2 && trace.status === "running"
+        && trace.spans.some(span => span.name === "source.ocr" && span.status === "ok")
+        && trace.spans.some(span => span.name === "provider.wait_headers" && span.status === "running"));
+    });
     const samePage = readTestPage(book, 2);
     const reader = readTestPage(book, 4);
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -1572,4 +1617,30 @@ test("persists whole-book work, shares reader requests, skips cached blank pages
     provider.closeAllConnections();
     await new Promise((resolve) => provider.close(resolve));
   }
+});
+
+test("bounds persisted traces and reads them after a process restart", async () => {
+  const directory = path.join(testDataDirectory, "trace-retention");
+  const run = (source) => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--input-type=module", "--eval", source], {
+      cwd: process.cwd(), env: { ...process.env, VERSO_DATA_DIR: directory }, stdio: ["ignore", "pipe", "pipe"],
+    });
+    let output = "";
+    child.stderr.on("data", chunk => { output += chunk; });
+    child.once("error", reject);
+    child.once("exit", code => code === 0 ? resolve() : reject(new Error(output)));
+  });
+  await run(`
+    import { withTranslationTrace, traceStep } from './lib/server-translation-trace.ts';
+    for (let page = 1; page <= 205; page++) {
+      await withTranslationTrace({ page }, true, () => traceStep('fixture', async () => page));
+    }
+  `);
+  await run(`
+    import assert from 'node:assert/strict';
+    import { listTranslationTraces } from './lib/server-translation-trace.ts';
+    const traces = await listTranslationTraces();
+    assert.equal(traces.length, 200);
+    assert.ok(traces.every(trace => trace.status === 'ok' && trace.spans[0].durationMs >= 0));
+  `);
 });

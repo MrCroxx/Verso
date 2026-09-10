@@ -46,5 +46,5 @@ export function createPriorityTaskQueue<T>() {
       drain();
       return promise;
   }
-  return { run: enqueue };
+  return { run: enqueue, has: (key: string) => jobs.has(key) };
 }
