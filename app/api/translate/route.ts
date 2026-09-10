@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAiProviderSettings } from "../../../db/ai-provider-settings";
 import { findBook, getStorage } from "../../../db/books";
 import type { AiProviderSettings } from "../../../lib/ai-provider-settings";
-import { normalizeLayoutBlocks } from "../../../lib/translation-layout";
+import { hasLayoutContent, normalizeLayoutBlocks } from "../../../lib/translation-layout";
+import { alignSourceBlocks } from "../../../lib/source-alignment";
+import { getSourcePageLayout } from "../../../lib/server-source-layout";
 import { getRenderedPage, PageRendererUnavailableError } from "../../../lib/server-page-renderer";
 
 export const runtime = "nodejs";
@@ -25,11 +27,38 @@ function isConfigured(config: AiProviderSettings | null): config is AiProviderSe
   return Boolean(config?.apiKey && config.model && config.endpoint);
 }
 
+const rectSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    x: { type: "number", minimum: 0, maximum: 1 },
+    y: { type: "number", minimum: 0, maximum: 1 },
+    width: { type: "number", minimum: 0, maximum: 1 },
+    height: { type: "number", minimum: 0, maximum: 1 },
+  },
+  required: ["x", "y", "width", "height"],
+};
+
 const blockSchema = {
   type: "object",
   additionalProperties: false,
   properties: {
-    kind: { type: "string", enum: ["heading", "paragraph", "list_item", "caption", "spacer", "page_number"] },
+    kind: { type: "string", enum: ["heading", "paragraph", "list_item", "caption", "spacer", "page_number", "image"] },
+    sourceRect: { anyOf: [rectSchema, { type: "null" }] },
+    fontSize: { anyOf: [{ type: "number", minimum: 0, maximum: 0.25 }, { type: "null" }] },
+    sentences: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          text: { type: "string" },
+          sourceText: { type: "string" },
+          sourceRects: { type: "array", items: rectSchema },
+        },
+        required: ["text", "sourceText", "sourceRects"],
+      },
+    },
     text: { type: "string" },
     marker: { type: "string" },
     trailing: { type: "string" },
@@ -38,7 +67,7 @@ const blockSchema = {
     spaceBefore: { type: "string", enum: ["none", "xs", "sm", "md", "lg", "xl"] },
     size: { type: "string", enum: ["xs", "sm", "md", "lg", "xl"] },
   },
-  required: ["kind", "text", "marker", "trailing", "align", "indent", "spaceBefore", "size"],
+  required: ["kind", "text", "marker", "trailing", "align", "indent", "spaceBefore", "size", "sourceRect", "fontSize", "sentences"],
 };
 
 const schema = {
@@ -73,9 +102,9 @@ function normalizeTranslationResponse(value: unknown, requestedPage: number) {
     : null;
   const blocks = normalizeLayoutBlocks(result.blocks);
   return {
-    page: typeof result.page === "number" ? result.page : requestedPage,
+    page: requestedPage,
     blocks,
-    isBlank: !blocks.some((block) => block.kind !== "spacer" && block.text.trim()),
+    isBlank: !hasLayoutContent(blocks),
     sourceSummary: typeof result.sourceSummary === "string" ? result.sourceSummary : "",
     previousPageRevision: revision
       ? {
@@ -105,13 +134,17 @@ Instructions:
 - Preserve every source list item as one list_item block. Put its number or bullet in marker, translated content in text, and a right-aligned page number or reference in trailing. Never merge adjacent list items.
 - On a table of contents, list of illustrations, or similar navigation page, encode every navigable row as a list_item. Preserve its printed page reference in trailing and represent hierarchy with indent.
 - Use heading, paragraph, caption, and page_number blocks according to their visual role. Preserve order, alignment, indentation, and relative typography with align, indent, and size.
-- Preserve meaningful vertical whitespace with spacer blocks. Use size xl for a large illustration/table region, lg for a large section gap, and smaller sizes for ordinary spacing. Do not describe or translate an image inside a spacer.
+- For every block, mark sourceRect around its source region. All coordinates are fractions from 0 to 1 of THAT page image, origin at the top left: x, y, width, height. Use the displayed orientation and full page image, including margins. Never use pixel coordinates or coordinates from an adjacent page.
+- Record fontSize as the approximate source glyph/em height divided by the full page image WIDTH (for example 20px glyphs on a 1000px-wide scan = 0.02). Preserve relative typography; use null for non-text blocks.
+- Extract each source sentence (or the visible fragment of a sentence crossing a page boundary) into sentences, including headings, captions, list contents, and page numbers. Each entry contains its translated text, verbatim sourceText, and sourceRects tightly enclosing the original words, one rectangle per line fragment. Do not include neighboring sentences in these rectangles. The sentence text strings concatenated in order MUST equal block.text exactly, including punctuation and whitespace. List marker/trailing remain separate from block.text.
+- Preserve every illustration, photograph, diagram, and graphical table as an image block at its reading-order position, with sourceRect enclosing the COMPLETE image to crop from the original scan, including its outermost strokes, labels, legends, and panel markers. Allow a small whitespace border; never place a crop edge through visible artwork. Preserve horizontal placement and relative width. Do not replace images with spacers or generate image descriptions. Keep captions as separate translated caption blocks outside the image crop. For image blocks use empty text, marker, trailing, and sentences.
+- Preserve meaningful empty vertical whitespace with spacer blocks; reserve spacers for actual blank gaps.
 - Use spaceBefore to approximate smaller gaps before text blocks. Avoid encoding layout with spaces, tabs, or repeated newlines inside text.
 - For fields that do not apply, return an empty string for marker and trailing. For spacer blocks, return empty strings for text, marker, and trailing.
-- If the requested page contains no readable or translatable text, return an empty blocks array. This is a valid successful result; do not invent content.
+- Return an empty blocks array only if the page has neither text nor images. Image-only pages must retain their image blocks. For unavailable sourceRect or fontSize use null; for non-text blocks use an empty sentences array.
 - If page ${body.page - 1} ended mid-paragraph and the current page changes its meaning, return a complete corrected block layout for the previous page in previousPageRevision. Its text and the current blocks must remain disjoint with no repeated boundary fragment. Otherwise return null.
 - Keep names and technical terminology consistent. Do not add commentary.
-- Return JSON matching the supplied schema.`;
+- Return JSON matching the supplied schema:\n${JSON.stringify(schema)}`;
 }
 
 function validImages(value: unknown, requestedPage: number, totalPages: number): value is TranslationImage[] {
@@ -246,7 +279,21 @@ export async function POST(request: NextRequest) {
       text = choices?.[0]?.message?.content;
     }
     if (!text) throw new Error("The model returned no translation text.");
-    return NextResponse.json(normalizeTranslationResponse(JSON.parse(text), body.page));
+    const translation = normalizeTranslationResponse(JSON.parse(text), body.page);
+    if (body.bookId) {
+      const book = await findBook(getStorage().db, body.bookId);
+      if (book) {
+        try {
+          translation.blocks = alignSourceBlocks(translation.blocks, await getSourcePageLayout(book, body.page));
+          if (translation.previousPageRevision?.page === body.page - 1 && body.page > 1) {
+            translation.previousPageRevision.blocks = alignSourceBlocks(
+              translation.previousPageRevision.blocks, await getSourcePageLayout(book, body.page - 1),
+            );
+          }
+        } catch { /* Keep the translation readable if local extraction is temporarily unavailable. */ }
+      }
+    }
+    return NextResponse.json(translation);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unexpected translation error.";
     return NextResponse.json(

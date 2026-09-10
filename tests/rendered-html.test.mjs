@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { access, chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
+import { createServer as createHttpServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test, { after, before } from "node:test";
@@ -15,7 +16,7 @@ import {
   parsePageReference,
   resolveTocEntryPage,
 } from "../lib/document-navigation.ts";
-import { deduplicatePageBoundary, normalizeTranslationPayload } from "../lib/translation-layout.ts";
+import { deduplicatePageBoundary, normalizeSourceRect, normalizeTranslationPayload } from "../lib/translation-layout.ts";
 import { searchTranslationPayload } from "../lib/translation-search.ts";
 import { typewriterDuration, typewriterProgress } from "../lib/translation-typewriter.ts";
 import { resolveUiLocale, UI_LOCALE_COOKIE } from "../lib/ui-locale.ts";
@@ -759,4 +760,197 @@ test("uses a manual page offset when automatic calibration needs correction", ()
   }, [], 21, 410);
 
   assert.deepEqual(result, { page: 24, offset: 21, calibrated: true });
+});
+
+test("validates scan coordinates before cropping or highlighting", () => {
+  for (const rect of [null, {}, { x: NaN, y: 0, width: 0.1, height: 0.1 },
+    { x: -0.1, y: 0, width: 0.1, height: 0.1 }, { x: 100, y: 20, width: 30, height: 10 },
+    { x: 0, y: 0, width: 0, height: 0.1 }, { x: 0, y: 0, width: Infinity, height: 0.1 }]) {
+    assert.equal(normalizeSourceRect(rect), undefined);
+  }
+  const clipped = normalizeSourceRect({ x: 0.9, y: 0.8, width: 0.2, height: 0.3 });
+  assert.equal(clipped.x + clipped.width, 1);
+  assert.equal(clipped.y + clipped.height, 1);
+});
+
+test("preserves image-only pages even when a stale blank flag is present", () => {
+  const sourceRect = { x: 0.1, y: 0.2, width: 0.8, height: 0.6 };
+  const translation = normalizeTranslationPayload({ isBlank: true, blocks: [{ kind: "image", sourceRect }] });
+  assert.equal(translation.isBlank, false);
+  assert.equal(translation.blocks[0].kind, "image");
+  assert.deepEqual(translation.blocks[0].sourceRect, sourceRect);
+  assert.equal(normalizeTranslationPayload({ blocks: [{ kind: "image" }] }).isBlank, true);
+});
+
+test("keeps typography and multi-line sentence mappings without losing translated text", () => {
+  const sourceRects = [{ x: 0.1, y: 0.2, width: 0.7, height: 0.02 }, { x: 0.1, y: 0.23, width: 0.3, height: 0.02 }];
+  const sentences = [
+    { text: "第一句。", sourceText: "First sentence.", sourceRects },
+    { text: " 第二句。", sourceText: "Second sentence.", sourceRects: [sourceRects[1]] },
+  ];
+  const block = { kind: "paragraph", text: "第一句。 第二句。", fontSize: 0.026, sentences };
+  const translation = normalizeTranslationPayload({ blocks: [block] });
+  assert.equal(translation.blocks[0].fontSize, 0.026);
+  assert.deepEqual(translation.blocks[0].sentences, sentences);
+  const malformed = normalizeTranslationPayload({ blocks: [{ ...block, fontSize: 26, sentences: [sentences[1]] }] });
+  assert.equal(malformed.blocks[0].text, block.text);
+  assert.equal(malformed.blocks[0].sentences, undefined);
+  assert.equal(malformed.blocks[0].fontSize, undefined);
+});
+
+test("retains sentence ownership when trimming a repeated page-boundary fragment", () => {
+  const sourceRects = [{ x: 0.1, y: 0.1, width: 0.5, height: 0.02 }];
+  const current = [{ kind: "paragraph", text: "“症候式解读”。下一句。", sentences: [
+    { text: "“症候式解读”。", sourceText: "reading continuation", sourceRects },
+    { text: "下一句。", sourceText: "Next sentence.", sourceRects },
+  ] }];
+  const result = deduplicatePageBoundary([{ kind: "paragraph", text: "上一页“症候式" }], current);
+  assert.equal(result.blocks[0].text, "解读”。下一句。");
+  assert.equal(result.blocks[0].sentences.map((sentence) => sentence.text).join(""), result.blocks[0].text);
+  assert.deepEqual(result.blocks[0].sentences[0].sourceRects, sourceRects);
+  assert.equal(result.blocks[0].sentences[1].sourceText, "Next sentence.");
+});
+
+test("requests and persists image crops, typography, and sentence positions with both provider formats", async () => {
+  const rect = { x: 0.15, y: 0.25, width: 0.6, height: 0.04 };
+  const textBlock = {
+    kind: "paragraph", text: "译文。", marker: "", trailing: "", align: "left", indent: 0,
+    spaceBefore: "sm", size: "md", fontSize: 0.025, sourceRect: rect,
+    sentences: [{ text: "译文。", sourceText: "Source sentence.", sourceRects: [rect] }],
+  };
+  const imageBlock = {
+    ...textBlock, kind: "image", text: "", fontSize: null, sentences: [],
+    sourceRect: { x: 0.1, y: 0.4, width: 0.8, height: 0.3 },
+  };
+  let incoming;
+  const providerResult = { page: 2, blocks: [textBlock, imageBlock], sourceSummary: "", previousPageRevision: { page: 1, blocks: [textBlock, imageBlock] } };
+  const provider = createHttpServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    incoming = JSON.parse(Buffer.concat(chunks).toString());
+    response.setHeader("Content-Type", "application/json");
+    response.end(JSON.stringify(incoming.input
+      ? { output_text: JSON.stringify(providerResult) }
+      : { choices: [{ message: { content: JSON.stringify(providerResult) } }] }));
+  });
+  await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
+  try {
+    for (const format of ["openai", "compatible"]) {
+      const settings = await fetch(`${baseUrl}/api/settings/ai-provider`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: format, endpoint: `http://127.0.0.1:${provider.address().port}/${format === "openai" ? "responses" : "v1"}`, apiKey: "test-key", model: "vision-test", reasoningEffort: "none" }),
+      });
+      assert.equal(settings.status, 200);
+      const response = await fetch(`${baseUrl}/api/translate`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targetLanguage: "Simplified Chinese", page: 2, totalPages: 2, images: [1, 2].map((page) => ({ page, dataUrl: "data:image/png;base64,AA==" })) }),
+      });
+      assert.equal(response.status, 200);
+      const translation = await response.json();
+      assert.equal(translation.isBlank, false);
+      assert.deepEqual(translation.blocks[0].sentences, textBlock.sentences);
+      assert.equal(translation.blocks[0].fontSize, 0.025);
+      assert.deepEqual(translation.blocks[1].sourceRect, imageBlock.sourceRect);
+      assert.deepEqual(translation.previousPageRevision.blocks, translation.blocks);
+      const instruction = (incoming.input || incoming.messages)[0].content[0].text;
+      assert.match(instruction, /one rectangle per line fragment/);
+      assert.match(instruction, /"sourceRects"/);
+      assert.match(instruction, /"fontSize"/);
+      if (format === "openai") {
+        const blockSchema = incoming.text.format.schema.properties.blocks.items;
+        assert.ok(blockSchema.required.includes("sentences"));
+        assert.ok(blockSchema.properties.kind.enum.includes("image"));
+      }
+      const key = `layout-v3::aligned-${format}::2::server-v1::Simplified Chinese`;
+      const saved = await fetch(`${baseUrl}/api/translations`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key, documentId: `aligned-${format}`, page: 2, translation }),
+      });
+      assert.equal(saved.status, 200);
+      const cached = await (await fetch(`${baseUrl}/api/translations?key=${encodeURIComponent(key)}`)).json();
+      assert.deepEqual(cached.translation.blocks, translation.blocks);
+      assert.equal(searchTranslationPayload(cached.translation, 2, "译文").length, 1);
+    }
+  } finally {
+    await new Promise((resolve, reject) => provider.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test("grounds sentence highlights in PDF words instead of estimated model rectangles", async () => {
+  const { parsePdfWordLayout, alignSourceBlocks } = await import("../lib/source-alignment.ts");
+  const layout = parsePdfWordLayout(`<page width="600" height="800"><line>
+    <word xMin="72" yMin="80" xMax="100" yMax="92">First</word>
+    <word xMin="105" yMin="80" xMax="160" yMax="92">sentence.</word>
+    <word xMin="170" yMin="80" xMax="210" yMax="92">Second</word></line><line>
+    <word xMin="72" yMin="100" xMax="130" yMax="112">sentence.</word></line></page>`);
+  const block = normalizeTranslationPayload({ blocks: [{ text: "第一句。第二句。", fontSize: 0.013, sentences: [
+    { text: "第一句。", sourceText: "First sentence.", sourceRects: [{ x: 0.08, y: 0.1, width: 0.84, height: 0.02 }] },
+    { text: "第二句。", sourceText: "Second sentence.", sourceRects: [] },
+  ] }] }).blocks;
+  const aligned = alignSourceBlocks(block, layout)[0];
+  assert.deepEqual(aligned.sentences[0].sourceRects, [{ x: 0.12, y: 0.1, width: 160 / 600 - 0.12, height: 0.015 }]);
+  assert.equal(aligned.sentences[1].sourceRects.length, 2);
+  assert.equal(aligned.sentences[1].sourceRects[0].x, 170 / 600);
+  assert.equal(aligned.fontSize, 0.02);
+});
+
+test("aligns ligatures and hyphenated line breaks and refuses ungrounded text", async () => {
+  const { parsePdfWordLayout, alignSourceBlocks } = await import("../lib/source-alignment.ts");
+  const layout = parsePdfWordLayout(`<page width="600" height="800"><line>
+    <word xMin="60" yMin="80" xMax="120" yMax="92">efﬁcient</word>
+    <word xMin="125" yMin="80" xMax="160" yMax="92">pre-</word></line><line>
+    <word xMin="60" yMin="100" xMax="130" yMax="112">training</word></line></page>`);
+  const blocks = normalizeTranslationPayload({ blocks: [{ text: "译文。错误。", sentences: [
+    { text: "译文。", sourceText: "efficient pre-training", sourceRects: [] },
+    { text: "错误。", sourceText: "invented sentence", sourceRects: [{ x: .1, y: .2, width: .5, height: .1 }] },
+  ] }] }).blocks;
+  const aligned = alignSourceBlocks(blocks, layout)[0];
+  assert.equal(aligned.sentences[0].sourceRects.length, 2);
+  assert.deepEqual(aligned.sentences[1].sourceRects, []);
+});
+
+test("normalizes local OCR word coordinates and rejects low-confidence words", async () => {
+  const { parseOcrWordLayout } = await import("../lib/source-alignment.ts");
+  const layout = parseOcrWordLayout("level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n1\t1\t0\t0\t0\t0\t0\t0\t1000\t1400\t-1\t\n5\t1\t1\t1\t1\t1\t100\t140\t200\t28\t95\tHello\n5\t1\t1\t1\t1\t2\t310\t140\t100\t28\t10\tnoise");
+  assert.equal(layout.method, "ocr");
+  assert.equal(layout.words.length, 1);
+  assert.deepEqual(layout.words[0].rect, { x: .1, y: .1, width: .2, height: .02 });
+});
+
+test("uses displayed page dimensions for rotated CropBox word positions", async () => {
+  const { parsePdfWordLayout } = await import("../lib/source-alignment.ts");
+  const layout = parsePdfWordLayout('<page width="500" height="600"><line><word xMin="395" yMin="50" xMax="417" yMax="105">Hello</word></line></page>', 90);
+  assert.equal(layout.width, 600);
+  assert.equal(layout.height, 500);
+  assert.deepEqual(layout.words[0].rect, { x: 395 / 600, y: .1, width: 22 / 600, height: .11 });
+});
+
+test("extends clipped illustration edges to whitespace without including a nearby caption", async () => {
+  const { expandImageCropToWhitespace } = await import("../lib/image-crop.ts");
+  const width = 140, height = 100;
+  const data = new Uint8ClampedArray(width * height * 4).fill(255);
+  const paint = (x, y, w, h) => {
+    for (let row = y; row < y + h; row++) for (let col = x; col < x + w; col++) {
+      data.set([80, 90, 255, 255], (row * width + col) * 4);
+    }
+  };
+  paint(20, 20, 80, 40);
+  paint(10, 75, 120, 5);
+  const crop = expandImageCropToWhitespace({ width, height, data }, { x: 30, y: 25, width: 50, height: 20 });
+  assert.ok(crop.x <= 20 && crop.y <= 20);
+  assert.ok(crop.x + crop.width >= 100 && crop.y + crop.height >= 60);
+  assert.ok(crop.y + crop.height < 75);
+});
+
+test("keeps complete crops stable and bounds corrections to their search region", async () => {
+  const { expandImageCropToWhitespace } = await import("../lib/image-crop.ts");
+  const width = 100, height = 100;
+  const data = new Uint8ClampedArray(width * height * 4).fill(255);
+  const rect = { x: 10, y: 10, width: 80, height: 80 };
+  assert.deepEqual(expandImageCropToWhitespace({ width, height, data }, rect), rect);
+  for (let y = 30; y < 70; y++) for (let x = 0; x < width; x++) data.set([0, 0, 0, 255], (y * width + x) * 4);
+  const crop = expandImageCropToWhitespace({ width, height, data }, { x: 10, y: 35, width: 80, height: 20 });
+  assert.equal(crop.x, 10);
+  assert.equal(crop.width, 80);
+  assert.ok(crop.y >= 0 && crop.y + crop.height <= height);
 });

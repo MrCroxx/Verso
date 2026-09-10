@@ -12,8 +12,16 @@ source.
 - **Side-by-side reading:** compare the source scan and translation while
   navigating pages from a persistent sidebar with reading progress.
 - **Layout-aware vision translation:** preserve headings, paragraphs, lists,
-  captions, whitespace, and page numbers instead of flattening each page into
-  plain text.
+  captions, whitespace, and page numbers. Restore illustrations cropped from
+  the source scan in reading order and retain their horizontal placement and
+  relative width, preserving typography as the entire reading view scales.
+- **Sentence alignment:** hover over or keyboard-focus a translated sentence to
+  highlight its original lines on the scan. Match the source sentence against
+  actual PDF word boxes, using local Tesseract OCR for image-only pages. Word
+  indexes are cached in the data volume; existing sentence mappings are corrected
+  when their page is opened. Unmatched text is not highlighted.
+  Existing cached pages remain readable; use the page's retranslate button to
+  add image crops and sentence alignment.
 - **Cross-page context:** translate with a bounded window of consecutive pages,
   revise unfinished paragraphs, and deterministically remove duplicated text at
   page boundaries.
@@ -32,6 +40,10 @@ source.
 - **Large-book performance:** lazily rasterize requested pages on the server,
   persist display and vision derivatives in the local volume, and bound both
   page rendering and background translation work.
+- **Reading view zoom:** fit both pages to the available width while preserving
+  the margins inside each page. Zoom the entire spread with the toolbar, Ctrl/Cmd + mouse wheel, or
+  Ctrl/Cmd + plus/minus; Ctrl/Cmd + 0 restores fit width. The sidebar and toolbar
+  stay at their normal size. Browser-menu zoom remains a browser-level setting.
 - **Reader preferences:** switch the interface between English and Simplified
   Chinese independently of the translation target, choose a light or dark
   theme, and configure animated page navigation without altering the source
@@ -68,9 +80,12 @@ retains its original appearance.
 
 - Node.js 22.13 or newer.
 - npm.
-- Poppler's `pdftocairo` for the server page cache in non-Docker deployments.
-  The Docker image already includes it; without it, the reader falls back to
-  PDF.js in the browser.
+- Poppler's `pdftocairo` and `pdftotext` for page rendering and word positions.
+- Tesseract with English, Simplified/Traditional Chinese, and Japanese language
+  data for word positions in image-only PDFs.
+  The Docker image includes these tools. Without Poppler, page display falls
+  back to PDF.js; reliable sentence highlighting requires the local text/OCR
+  tools.
 
 ## Local Development
 
@@ -80,7 +95,7 @@ npm run dev
 ```
 
 On Debian or Ubuntu, install the optional server renderer with
-`apt-get install poppler-utils`. The development server listens on
+`apt-get install poppler-utils tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-chi-tra tesseract-ocr-jpn`. The development server listens on
 `0.0.0.0:3000`. Open
 `http://localhost:3000` locally or use the machine hostname from another device
 on the same network.

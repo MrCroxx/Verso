@@ -53,12 +53,15 @@ import {
 } from "../lib/document-navigation";
 import { createLatestTaskRegistry } from "../lib/latest-task-registry";
 import { isDocumentSearchShortcut } from "../lib/keyboard-shortcuts";
-import { deduplicatePageBoundary, normalizeTranslationPayload } from "../lib/translation-layout";
+import { deduplicatePageBoundary, hasLayoutContent, normalizeTranslationPayload, type LayoutBlock, type SourceRect } from "../lib/translation-layout";
 import { searchTranslationPayload } from "../lib/translation-search";
 import { DEFAULT_TYPEWRITER_CHARACTERS_PER_SECOND, typewriterProgress } from "../lib/translation-typewriter";
 import type { UiLocale } from "../lib/ui-locale";
 import { pageWorkWindow, isPageWorkEnabled, shouldStartTranslationRequest } from "../lib/viewport-work";
 import { useUiLocale } from "./ui-locale";
+import { SourceImageCrop } from "./source-image-crop";
+import { ReaderViewport, READER_PAGE_WIDTH, MIN_READER_ZOOM, MAX_READER_ZOOM } from "./reader-viewport";
+import { alignSourceBlocks, type SourcePageLayout } from "../lib/source-alignment";
 
 type PdfDocument = import("pdfjs-dist").PDFDocumentProxy;
 type PdfLoadingTask = import("pdfjs-dist").PDFDocumentLoadingTask;
@@ -116,16 +119,7 @@ type LocalBook = {
   uploadedAt: number;
 };
 
-type TranslationBlock = {
-  kind: "heading" | "paragraph" | "list_item" | "caption" | "spacer" | "page_number";
-  text: string;
-  marker: string;
-  trailing: string;
-  align: "left" | "center" | "right" | "justify";
-  indent: number;
-  spaceBefore: "none" | "xs" | "sm" | "md" | "lg" | "xl";
-  size: "xs" | "sm" | "md" | "lg" | "xl";
-};
+type TranslationBlock = LayoutBlock;
 
 type Translation = {
   page: number;
@@ -172,6 +166,10 @@ const UI_MESSAGES = {
     renderingScan: "正在渲染扫描页",
     retranslate: "重新翻译本页",
     restartTranslation: "停止当前任务并重新翻译本页",
+    zoomIn: "放大阅读视图",
+    zoomOut: "缩小阅读视图",
+    fitWidth: "适应宽度",
+    readerZoom: "阅读视图缩放",
     readingContext: (page: number) => `正在读取第 ${page} 页及相邻上下文`,
     loadingCachedTranslation: (page: number) => `正在载入第 ${page} 页的缓存译文`,
     retry: "重试",
@@ -313,6 +311,10 @@ const UI_MESSAGES = {
     renderingScan: "Rendering scanned page",
     retranslate: "Translate this page again",
     restartTranslation: "Stop the current task and translate this page again",
+    zoomIn: "Zoom in reading view",
+    zoomOut: "Zoom out reading view",
+    fitWidth: "Fit width",
+    readerZoom: "Reading view zoom",
     readingContext: (page: number) => `Reading page ${page} and adjacent context`,
     loadingCachedTranslation: (page: number) => `Loading cached translation for page ${page}`,
     retry: "Retry",
@@ -688,7 +690,7 @@ function reconcilePageBoundary(previous: Translation | undefined, current: Trans
     ...current,
     blocks: result.blocks,
     markdown: translationMarkdown(result.blocks),
-    isBlank: !result.blocks.some((block) => block.kind !== "spacer" && block.text.trim()),
+    isBlank: !hasLayoutContent(result.blocks),
     boundaryDeduplicated: true,
   };
 }
@@ -785,6 +787,37 @@ function TypewriterText({ text, query, offset, progress }: { text: string; query
   );
 }
 
+function MappedTranslationText({ block, query, offset, progress, onHighlight }: {
+  block: TranslationBlock;
+  query: string;
+  offset: number;
+  progress: number;
+  onHighlight: (rects: SourceRect[]) => void;
+}) {
+  if (!block.sentences?.length) {
+    return <TypewriterText text={block.text} query={query} offset={offset} progress={progress} />;
+  }
+  const sentences = block.sentences;
+  return sentences.map((sentence, index) => {
+    const start = offset + sentences.slice(0, index).reduce((sum, item) => sum + Array.from(item.text).length, 0);
+    const interactive = sentence.sourceRects.length > 0 && progress > start;
+    return (
+      <span
+        key={index}
+        className={interactive ? "translation-sentence" : undefined}
+        tabIndex={interactive ? 0 : undefined}
+        title={interactive ? sentence.sourceText : undefined}
+        onMouseEnter={() => onHighlight(interactive ? sentence.sourceRects : [])}
+        onMouseLeave={() => onHighlight([])}
+        onFocus={() => onHighlight(interactive ? sentence.sourceRects : [])}
+        onBlur={() => onHighlight([])}
+      >
+        <TypewriterText text={sentence.text} query={query} offset={start} progress={progress} />
+      </span>
+    );
+  });
+}
+
 function useTypewriterProgress(
   texts: string[],
   pending: boolean,
@@ -838,7 +871,11 @@ function TranslationText({
   animationActive,
   animationSpeed,
   onAnimationComplete,
+  sourceRaster,
+  onHighlight,
 }: {
+  sourceRaster: HTMLImageElement | HTMLCanvasElement | null;
+  onHighlight: (rects: SourceRect[]) => void;
   value: Translation;
   messages: UiMessages;
   searchQuery: string;
@@ -849,7 +886,7 @@ function TranslationText({
 }) {
   const texts = value.blocks?.length
     ? value.blocks.flatMap((block) => {
-      if (block.kind === "spacer") return [];
+      if (block.kind === "spacer" || block.kind === "image") return [];
       if (block.kind === "list_item") return [block.marker, block.text, block.trailing];
       return [block.text];
     })
@@ -894,17 +931,23 @@ function TranslationText({
             if (block.kind === "spacer") {
               return <div key={index} className={className} aria-hidden="true" />;
             }
+            if (block.kind === "image") {
+              return block.sourceRect ? (
+                <SourceImageCrop key={index} source={sourceRaster} rect={block.sourceRect} className={className} alt={messages.scannedSourceAlt(value.page)} />
+              ) : null;
+            }
+            const style = block.fontSize ? { fontSize: block.fontSize * READER_PAGE_WIDTH } : undefined;
             if (block.kind === "list_item") {
               const markerIndex = segmentIndex++;
               const textIndex = segmentIndex++;
               const trailingIndex = segmentIndex++;
               return (
-                <div key={index} className={className}>
+                <div key={index} className={className} style={style}>
                   <span className="block-marker">
                     <TypewriterText text={block.marker} query="" offset={offsets[markerIndex] ?? 0} progress={progress} />
                   </span>
                   <span className="block-text">
-                    <TypewriterText text={block.text} query={searchQuery} offset={offsets[textIndex] ?? 0} progress={progress} />
+                    <MappedTranslationText block={block} query={searchQuery} offset={offsets[textIndex] ?? 0} progress={progress} onHighlight={onHighlight} />
                   </span>
                   <span className="block-trailing">
                     <TypewriterText text={block.trailing} query="" offset={offsets[trailingIndex] ?? 0} progress={progress} />
@@ -914,17 +957,18 @@ function TranslationText({
             }
             const currentTextIndex = segmentIndex++;
             const content = (
-              <TypewriterText
-                text={block.text}
+              <MappedTranslationText
+                block={block}
+                onHighlight={onHighlight}
                 query={searchQuery}
                 offset={offsets[currentTextIndex] ?? 0}
                 progress={progress}
               />
             );
             if (block.kind === "heading") {
-              return <h2 key={index} className={className}>{content}</h2>;
+              return <h2 key={index} className={className} style={style}>{content}</h2>;
             }
-            return <p key={index} className={className}>{content}</p>;
+            return <p key={index} className={className} style={style}>{content}</p>;
           })}
         </div>
         <div className="translation-meta">
@@ -1009,7 +1053,32 @@ function PageSpread({
   const { ref, near } = useNearViewport(`${Math.max(1, nearbyPages) * 720}px 0px`);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [sourceActive, setSourceActive] = useState(false);
+  const [sourceLayout, setSourceLayout] = useState<SourcePageLayout | null>(null);
+  const alignedTranslation = useMemo(() => translation?.blocks ? {
+    ...translation,
+    blocks: sourceLayout ? alignSourceBlocks(translation.blocks, sourceLayout) : translation.blocks.map((block) => ({
+      ...block, sentences: block.sentences?.map((sentence) => ({ ...sentence, sourceRects: [] })),
+    })),
+  } : translation, [translation, sourceLayout]);
+  const needsAlignment = Boolean(translation?.blocks?.some((block) => block.text.trim()));
+  useEffect(() => {
+    if (!sourceActive || !pageImageUrl || !needsAlignment) return;
+    const controller = new AbortController();
+    const url = `${pageImageUrl.split("?")[0]}/layout`;
+    void fetch(url, { signal: controller.signal, cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) return;
+        const layout = await response.json() as SourcePageLayout;
+        if (!controller.signal.aborted) setSourceLayout(layout);
+      }).catch(() => undefined);
+    return () => controller.abort();
+  }, [sourceActive, pageImageUrl, needsAlignment]);
   const [sourceReady, setSourceReady] = useState(false);
+  const [sourceAspectRatio, setSourceAspectRatio] = useState("1 / 1.4142");
+  const [sourceRaster, setSourceRaster] = useState<HTMLImageElement | HTMLCanvasElement | null>(null);
+  const [highlight, setHighlight] = useState<{ translation: Translation | undefined; rects: SourceRect[] } | null>(null);
+  const highlightSource = useCallback((rects: SourceRect[]) => setHighlight({ translation, rects }), [translation]);
+  const highlightRects = sourceReady && highlight?.translation === translation ? highlight?.rects ?? [] : [];
   const [serverImageFailed, setServerImageFailed] = useState(false);
   const [renderError, setRenderError] = useState("");
   const [renderAttempt, setRenderAttempt] = useState(0);
@@ -1025,6 +1094,9 @@ function PageSpread({
       const releaseSource = window.setTimeout(() => {
         setSourceActive(false);
         setSourceReady(false);
+        setSourceRaster(null);
+        setSourceLayout(null);
+        setHighlight(null);
         setServerImageFailed(false);
         setRenderError("");
       }, 500);
@@ -1051,7 +1123,11 @@ function PageSpread({
     setRenderError("");
     void renderPageToCanvas(page, canvas, controller.signal)
       .then(() => {
-        if (!controller.signal.aborted) setSourceReady(true);
+        if (!controller.signal.aborted) {
+          setSourceReady(true);
+          setSourceRaster(canvas);
+          setSourceAspectRatio(`${canvas.width} / ${canvas.height}`);
+        }
       })
       .catch((error) => {
         if (controller.signal.aborted || isWorkCancellation(error)) return;
@@ -1075,46 +1151,57 @@ function PageSpread({
     <section className="page-spread" ref={ref} data-page={page}>
       <div className="source-page page-surface">
         <div className="page-label">{messages.sourcePage(page)}</div>
-        {isDemo ? (
-          <SampleScan page={page} messages={messages} />
-        ) : renderError ? (
-          <div className="page-render-error">
-            <strong>{messages.scanFailed}</strong>
-            <p>{renderError}</p>
-            <button className="secondary-button" onClick={() => {
-              setRenderError("");
-              setRenderAttempt((attempt) => attempt + 1);
-            }}>{messages.retryRender}</button>
+        <div className="source-raster" style={isDemo ? undefined : { aspectRatio: sourceAspectRatio }}>
+          {isDemo ? (
+            <SampleScan page={page} messages={messages} />
+          ) : renderError ? (
+            <div className="page-render-error">
+              <strong>{messages.scanFailed}</strong>
+              <p>{renderError}</p>
+              <button className="secondary-button" onClick={() => {
+                setRenderError("");
+                setRenderAttempt((attempt) => attempt + 1);
+              }}>{messages.retryRender}</button>
+            </div>
+          ) : sourceActive && pageImageUrl && !serverImageFailed ? (
+            <>
+              <img
+                src={pageImageUrl}
+                alt={messages.scannedSourceAlt(page)}
+                decoding="async"
+                fetchPriority={workDistance === 0 ? "high" : "auto"}
+                style={{ display: sourceReady ? "block" : "none" }}
+                onLoad={(event) => {
+                  setSourceReady(true);
+                  setSourceRaster(event.currentTarget);
+                  setSourceAspectRatio(`${event.currentTarget.naturalWidth} / ${event.currentTarget.naturalHeight}`);
+                }}
+                onError={() => {
+                  setSourceReady(false);
+                  setServerImageFailed(true);
+                }}
+              />
+              {!sourceReady && <div className="page-loading"><LoaderCircle className="spin" size={24} /> {messages.renderingScan}</div>}
+            </>
+          ) : sourceActive ? (
+            <>
+              <canvas
+                ref={canvasRef}
+                role="img"
+                aria-label={messages.scannedSourceAlt(page)}
+                style={{ display: sourceReady ? "block" : "none" }}
+              />
+              {!sourceReady && <div className="page-loading"><LoaderCircle className="spin" size={24} /> {messages.renderingScan}</div>}
+            </>
+          ) : (
+            <div className="page-loading"><LoaderCircle className="spin" size={24} /> {messages.renderingScan}</div>
+          )}
+          <div className="source-highlights" aria-hidden="true">
+            {highlightRects.map((rect, index) => (
+              <span key={index} style={{ left: `${rect.x * 100}%`, top: `${rect.y * 100}%`, width: `${rect.width * 100}%`, height: `${rect.height * 100}%` }} />
+            ))}
           </div>
-        ) : sourceActive && pageImageUrl && !serverImageFailed ? (
-          <>
-            <img
-              src={pageImageUrl}
-              alt={messages.scannedSourceAlt(page)}
-              decoding="async"
-              fetchPriority={workDistance === 0 ? "high" : "auto"}
-              style={{ display: sourceReady ? "block" : "none" }}
-              onLoad={() => setSourceReady(true)}
-              onError={() => {
-                setSourceReady(false);
-                setServerImageFailed(true);
-              }}
-            />
-            {!sourceReady && <div className="page-loading"><LoaderCircle className="spin" size={24} /> {messages.renderingScan}</div>}
-          </>
-        ) : sourceActive ? (
-          <>
-            <canvas
-              ref={canvasRef}
-              role="img"
-              aria-label={messages.scannedSourceAlt(page)}
-              style={{ display: sourceReady ? "block" : "none" }}
-            />
-            {!sourceReady && <div className="page-loading"><LoaderCircle className="spin" size={24} /> {messages.renderingScan}</div>}
-          </>
-        ) : (
-          <div className="page-loading"><LoaderCircle className="spin" size={24} /> {messages.renderingScan}</div>
-        )}
+        </div>
       </div>
       <div className="translated-page page-surface">
         <div className="translation-heading">
@@ -1132,7 +1219,9 @@ function PageSpread({
         </div>
         {translation ? (
           <TranslationText
-            value={translation}
+            value={alignedTranslation!}
+            sourceRaster={sourceReady ? sourceRaster : null}
+            onHighlight={highlightSource}
             messages={messages}
             searchQuery={searchQuery}
             animate={animateTranslation}
@@ -1638,6 +1727,7 @@ export default function Home() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarDrawerOpen, setSidebarDrawerOpen] = useState(false);
   const [readerMenuOpen, setReaderMenuOpen] = useState(false);
+  const [readerZoom, setReaderZoom] = useState(1);
   const [sidebarView, setSidebarView] = useState<SidebarView>("pages");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchMatches, setSearchMatches] = useState<SearchMatch[]>([]);
@@ -2553,6 +2643,7 @@ export default function Home() {
             page: page - 1,
             markdown: translationMarkdown(payload.previousPageRevision.blocks),
             blocks: payload.previousPageRevision.blocks,
+            isBlank: !hasLayoutContent(payload.previousPageRevision.blocks),
             revised: true,
             cacheVersion: requestVersion,
             cachedAt: Date.now(),
@@ -3109,6 +3200,12 @@ export default function Home() {
               </div>
             </div>
             <div className="column-labels"><span>{messages.sourceScan}</span><i /><span><Languages size={15} /> {targetLanguageLabel(settings.targetLanguage, locale)}</span></div>
+            <div className="reader-zoom" role="group" aria-label={messages.readerZoom}>
+              <button className="icon-button" aria-label={messages.zoomOut} disabled={readerZoom <= MIN_READER_ZOOM} onClick={() => setReaderZoom((value) => Math.max(MIN_READER_ZOOM, value - 0.1))}><Minus size={16} /></button>
+              <button className="zoom-fit" title={messages.fitWidth} onClick={() => setReaderZoom(1)}>{Math.round(readerZoom * 100)}%</button>
+              <button className="icon-button" aria-label={messages.zoomIn} disabled={readerZoom >= MAX_READER_ZOOM} onClick={() => setReaderZoom((value) => Math.min(MAX_READER_ZOOM, value + 0.1))}><Plus size={16} /></button>
+              <button className="zoom-fit" onClick={() => setReaderZoom(1)}>{messages.fitWidth}</button>
+            </div>
             <div className="reader-menu-anchor" ref={readerMenu}>
               <button
                 className="icon-button reader-menu-button"
@@ -3167,7 +3264,7 @@ export default function Home() {
               <p>{messages.rendererFailedHelp}</p>
             </div>
           ) : (
-            <div className="spreads">
+            <ReaderViewport zoom={readerZoom} onZoom={setReaderZoom} currentPage={currentPage}>
               {pageNumbers.map((page) => (
                 <PageSpread
                   key={`${documentId}-${page}-${serverBookAvailable ? "server" : "local"}`}
@@ -3196,7 +3293,7 @@ export default function Home() {
                   searchQuery={sidebarView === "search" ? searchQuery.trim() : ""}
                 />
               ))}
-            </div>
+            </ReaderViewport>
           )}
         </section>
       </div>

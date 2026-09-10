@@ -1,5 +1,16 @@
+export type SourceRect = { x: number; y: number; width: number; height: number };
+
+export type TranslationSentence = {
+  text: string;
+  sourceText: string;
+  sourceRects: SourceRect[];
+};
+
 export type LayoutBlock = {
-  kind: "heading" | "paragraph" | "list_item" | "caption" | "spacer" | "page_number";
+  kind: "heading" | "paragraph" | "list_item" | "caption" | "spacer" | "page_number" | "image";
+  sourceRect?: SourceRect;
+  fontSize?: number;
+  sentences?: TranslationSentence[];
   text: string;
   marker: string;
   trailing: string;
@@ -9,7 +20,7 @@ export type LayoutBlock = {
   size: "xs" | "sm" | "md" | "lg" | "xl";
 };
 
-const blockKinds = ["heading", "paragraph", "list_item", "caption", "spacer", "page_number"] as const;
+const blockKinds = ["heading", "paragraph", "list_item", "caption", "spacer", "page_number", "image"] as const;
 const blockAlignments = ["left", "center", "right", "justify"] as const;
 const blockSpaces = ["none", "xs", "sm", "md", "lg", "xl"] as const;
 const blockSizes = ["xs", "sm", "md", "lg", "xl"] as const;
@@ -18,11 +29,48 @@ function enumValue<T extends string>(value: unknown, allowed: readonly T[], fall
   return typeof value === "string" && allowed.includes(value as T) ? value as T : fallback;
 }
 
+// Coordinates are fractions of the displayed page, with the origin at its top left.
+export function normalizeSourceRect(value: unknown): SourceRect | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const { x, y, width, height } = value as SourceRect;
+  if (![x, y, width, height].every((part) => typeof part === "number" && Number.isFinite(part))) return undefined;
+  if (x < 0 || y < 0 || x >= 1 || y >= 1 || width <= 0 || height <= 0 || width > 1 || height > 1) return undefined;
+  return { x, y, width: Math.min(width, 1 - x), height: Math.min(height, 1 - y) };
+}
+
+function normalizeSentences(value: unknown, text: string): TranslationSentence[] | undefined {
+  if (!Array.isArray(value) || !value.length) return undefined;
+  const sentences = value.map((item) => {
+    const sentence = item && typeof item === "object" ? item : {};
+    return {
+      text: typeof sentence.text === "string" ? sentence.text : "",
+      sourceText: typeof sentence.sourceText === "string" ? sentence.sourceText : "",
+      sourceRects: Array.isArray(sentence.sourceRects)
+        ? sentence.sourceRects.map(normalizeSourceRect).filter((rect: SourceRect | undefined): rect is SourceRect => Boolean(rect))
+        : [],
+    };
+  }).filter((sentence) => sentence.text);
+  // Never substitute an incomplete or reordered sentence mapping for the translation.
+  return sentences.length && sentences.map((sentence) => sentence.text).join("") === text ? sentences : undefined;
+}
+
+export function hasLayoutContent(blocks: LayoutBlock[]) {
+  return blocks.some((block) => block.kind === "image" ? Boolean(block.sourceRect) : block.kind !== "spacer" && Boolean(block.text.trim()));
+}
+
 export function normalizeLayoutBlock(value: unknown): LayoutBlock {
   const block = value && typeof value === "object" ? value as Record<string, unknown> : {};
   const rawKind = block.kind ?? block.type;
   const indent = typeof block.indent === "number" && Number.isFinite(block.indent) ? Math.round(block.indent) : 0;
+  const text = typeof block.text === "string" ? block.text : "";
+  const sourceRect = normalizeSourceRect(block.sourceRect);
+  const sentences = normalizeSentences(block.sentences, text);
+  const fontSize = typeof block.fontSize === "number" && Number.isFinite(block.fontSize) && block.fontSize > 0 && block.fontSize <= 0.25
+    ? block.fontSize : undefined;
   return {
+    ...(sourceRect && { sourceRect }),
+    ...(fontSize && { fontSize }),
+    ...(sentences && { sentences }),
     kind: enumValue(rawKind, blockKinds, "paragraph"),
     text: typeof block.text === "string" ? block.text : "",
     marker: typeof block.marker === "string" ? block.marker : "",
@@ -41,11 +89,11 @@ export function normalizeLayoutBlocks(value: unknown): LayoutBlock[] {
 export function normalizeTranslationPayload(value: unknown) {
   const payload = value && typeof value === "object" ? value as Record<string, unknown> : {};
   const blocks = normalizeLayoutBlocks(payload.blocks);
-  const inferredBlank = !blocks.some((block) => block.kind !== "spacer" && block.text.trim());
+  const inferredBlank = !hasLayoutContent(blocks);
   return {
     ...payload,
     blocks,
-    isBlank: typeof payload.isBlank === "boolean" ? payload.isBlank : inferredBlank,
+    isBlank: blocks.length ? inferredBlank : typeof payload.isBlank === "boolean" ? payload.isBlank : inferredBlank,
   };
 }
 
@@ -94,8 +142,19 @@ export function deduplicatePageBoundary(previousValue: unknown, currentValue: un
   }
   if (!removedText) return { blocks: currentBlocks, removedText: "" };
 
+  const text = currentText.slice(removedText.length).trimStart();
+  let remaining = currentBlock.text.length - text.length;
+  const sentences = currentBlock.sentences?.flatMap((sentence) => {
+    if (remaining >= sentence.text.length) {
+      remaining -= sentence.text.length;
+      return [];
+    }
+    const trimmed = { ...sentence, text: sentence.text.slice(remaining) };
+    remaining = 0;
+    return [trimmed];
+  });
   const blocks = currentBlocks.map((block, index) => index === currentIndex
-    ? { ...block, text: currentText.slice(removedText.length).trimStart() }
+    ? { ...block, text, ...(sentences && { sentences }) }
     : block);
   if (!blocks[currentIndex].text && !blocks[currentIndex].marker && !blocks[currentIndex].trailing) {
     blocks.splice(currentIndex, 1);
