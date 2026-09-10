@@ -19,10 +19,9 @@ export function currentTrace() { const trace = state.context.getStore(); return 
 export function traceAttributes(attributes: TranslationTrace["attributes"]) {
   Object.assign(currentTrace()?.attributes ?? {}, attributes);
 }
-export function startSpan(name: string, attributes: TraceSpan["attributes"] = {}) {
+export function startSpan(name: string, attributes: TraceSpan["attributes"] = {}, start = performance.now()) {
   const trace = currentTrace();
   if (!trace) return () => {};
-  const start = performance.now();
   const span: TraceSpan = { name, startMs: start - starts.get(trace)!, status: "running", attributes };
   trace.spans.push(span);
   return (status: "ok" | "error" = "ok", extra: TraceSpan["attributes"] = {}) => {

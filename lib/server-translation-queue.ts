@@ -1,3 +1,5 @@
+import { joinTranslationProgress } from "./server-translation-progress";
+import type { TranslationProgress } from "./translation-progress";
 import { withTranslationTrace, traceStep, traceAttributes, startSpan, bindTrace } from "./server-translation-trace";
 import type { TranslationTrace } from "./translation-trace";
 import { ensureStorageSchema, findBook, getStorage } from "../db/books";
@@ -55,11 +57,13 @@ async function saveTranslation(documentId: string, language: string, translation
 
 const markdown = (blocks: LayoutBlock[]) => blocks.filter((block) => block.text).map((block) => block.text).join("\n\n");
 
-export async function requestPageTranslation(input: TranslationRequest, background = false, onTrace?: (trace: TranslationTrace) => void): Promise<Result> {
-  return withTranslationTrace(input, background, () => runPageTranslation(input, background), onTrace);
+type ProgressObserver = { onProgress: (progress: TranslationProgress) => void; signal?: AbortSignal };
+
+export async function requestPageTranslation(input: TranslationRequest, background = false, onTrace?: (trace: TranslationTrace) => void, observer?: ProgressObserver): Promise<Result> {
+  return withTranslationTrace(input, background, () => runPageTranslation(input, background, observer), onTrace);
 }
 
-async function runPageTranslation(input: TranslationRequest, background: boolean): Promise<Result> {
+async function runPageTranslation(input: TranslationRequest, background: boolean, observer?: ProgressObserver): Promise<Result> {
   const prepared = startSpan("storage.prepare");
   const { db } = getStorage();
   await ensureStorageSchema(db);
@@ -81,8 +85,12 @@ async function runPageTranslation(input: TranslationRequest, background: boolean
   const shared = state.tasks.has(taskKey) && !input.force;
   traceAttributes({ shared, cacheHit: false });
   const queued = startSpan(shared ? "queue.shared_wait" : "queue.wait");
+  let observing = !input.force;
+  const progress = joinTranslationProgress(taskKey, observer ? (value) => { if (observing) observer.onProgress(value); } : undefined, observer?.signal, !input.force);
   try { return await state.tasks.run(taskKey, background ? 0 : 1, input.translationConcurrency || 4, bindTrace(async () => {
     queued();
+    observing = true;
+    progress.publish({ phase: "preparing" });
     if (documentId && (state.generations.get(documentId) || 0) !== generation) throw new Error("Translation was discarded.");
     if (documentId && !input.force) {
       const cached = await traceStep("cache.recheck", () => readTranslation(documentId, input.page, input.targetLanguage));
@@ -92,7 +100,7 @@ async function runPageTranslation(input: TranslationRequest, background: boolean
     const previous = documentId && input.page > 1 ? await traceStep("cache.previous", () => readTranslation(documentId, input.page - 1, input.targetLanguage)) : null;
     const version = Date.now() * 1000;
     const result = await generateTranslation({ ...input, previousTranslationTail: previous?.blocks?.findLast((block) =>
-      (block.kind === "paragraph" || block.kind === "caption") && block.text.trim())?.text.trimEnd().slice(-160) || input.previousTranslationTail });
+      (block.kind === "paragraph" || block.kind === "caption") && block.text.trim())?.text.trimEnd().slice(-160) || input.previousTranslationTail }, progress.publish);
     if (!documentId) return result;
     if ((state.generations.get(documentId) || 0) !== generation) throw new Error("Translation was discarded.");
     const persisted = startSpan("storage.persist");
@@ -112,7 +120,7 @@ async function runPageTranslation(input: TranslationRequest, background: boolean
     return saved;
   }), Boolean(input.force));
   } catch (error) { queued("error"); throw error; }
-  finally { queued(); }
+  finally { queued(); progress.release(); }
 }
 
 async function pump() {

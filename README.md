@@ -170,29 +170,52 @@ reports it. Completed traces survive restarts; the latest 200 are retained in
 are held in memory and disappear on restart. No credentials, prompts, page
 images, translation text, or provider response bodies are recorded.
 
+Translation uses streaming for both Responses and Chat Completions providers.
+While a page is translating, the reader shows the current phase and the latest
+line of generated translation text, refreshed at most every 150 ms. JSON layout
+syntax is filtered out; the preview retains at most 240 characters. During
+reasoning, it shows a thinking indicator and the received character count.
+Reasoning text is not forwarded to the reader. A reader joining an existing
+background job receives its latest progress without a second model request.
+
+Previews stay in memory and are removed when the request finishes or the reader
+switches documents. The complete model output is still validated, aligned, and
+saved before it replaces the page. An interrupted or incomplete stream is an
+error, never a partially saved translation. Providers that return ordinary JSON
+instead of SSE remain readable and are marked `streamed: false` in the trace.
+
 For Chrome debugging:
 
-1. In **Network**, select a `/api/translate` request and open **Timing** to see
-   its `Server-Timing` stages. `X-Verso-Trace-Id` identifies the corresponding
-   local trace, including on failed requests.
-2. In **Performance**, enable **Capture settings → Show custom tracks**, start
+1. In **Performance**, enable **Capture settings → Show custom tracks**, start
    recording before requesting a translation, and stop after it completes.
    The **Verso translation** group contains browser queue/image preparation
    and server-stage tracks. Server spans are anchored at response receipt to
    avoid cross-machine clock skew; their network alignment is approximate.
    See the [Chrome custom-track documentation](https://developer.chrome.com/docs/devtools/performance/extension).
+2. In **Network**, `/api/translate` requests with `Accept: text/event-stream`
+   contain `progress` events followed by a final `result` or `error` event. The
+   final event includes the trace. Clients requesting ordinary JSON also get
+   `Server-Timing` and `X-Verso-Trace-Id` response headers. Streaming responses
+   cannot include final durations in headers sent before generation completes.
 3. For background work or requests completed before recording, use **Export**
    on `/traces`. Open the Chrome Trace Event JSON in `chrome://tracing` or a
    [Perfetto-compatible viewer](https://perfetto.dev/docs/getting-started/other-formats).
    `/api/traces?format=chrome` exports all retained traces; add `&id=TRACE_ID`
    for one request.
 
-The provider currently returns non-streaming JSON. `provider.wait_headers`
-can include reasoning and generation, not just network latency, and must not
-be interpreted as time to first token. Parent spans include child work and
-parallel spans overlap; adding every duration overcounts elapsed time.
-`queue.shared_wait` means the request joined an existing page translation;
-inspect that page's original request for its provider stages.
+`provider.wait_headers` ends at HTTP response headers. `provider.first_event`
+and `provider.first_text` measure from request start to the first parsed SSE
+event and the first nonempty output-text delta, respectively. `provider.stream`
+measures from headers until the completed output has been received. The first
+text delta can contain JSON structure before any translated words. Old traces
+and JSON-only provider responses may include full generation in header latency.
+Parent spans include child work and parallel spans overlap; adding every
+duration overcounts elapsed time. `queue.shared_wait` means the request joined
+an existing page translation; inspect that page's original request for its
+provider stages.
+
+Protocol references: [OpenAI streaming](https://developers.openai.com/api/docs/guides/streaming-responses)
+and [DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/).
 
 See [the performance investigation](docs/translation-performance.md) for
 measurements, changes, and their practical limits.

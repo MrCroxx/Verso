@@ -10,6 +10,7 @@ const labels: Record<string, string> = {
   "storage.prepare": "准备存储", "cache.lookup": "查询译文缓存", "cache.recheck": "复查译文缓存", "cache.previous": "读取上一页",
   "queue.wait": "排队", "queue.shared_wait": "等待已有翻译任务", "settings.load": "读取配置", "images.prepare": "准备页面图片",
   "images.page": "读取或渲染图片", "request.encode": "编码模型请求", "provider.wait_headers": "等待模型响应头", "provider.read_body": "接收模型响应",
+  "provider.first_event": "请求至首个流事件", "provider.first_text": "请求至首段正文", "provider.stream": "接收模型输出流",
   "response.normalize": "解析翻译结果", "alignment.current": "当前页原文对齐", "alignment.previous": "上一页原文对齐",
   "source.cache": "读取原文位置缓存", "source.queue": "原文提取排队", "source.shared_wait": "等待已有原文提取",
   "source.pdf_text": "提取 PDF 文本", "source.ocr": "本地 OCR", "storage.persist": "保存译文和索引", "source.prepare": "准备原文位置",
@@ -42,7 +43,7 @@ export default function TracesPage() {
     <div className="settings-page trace-page">
       <h1>{zh ? "翻译耗时" : "Translation traces"}</h1>
       <p>{zh ? "每 2 秒刷新；最近 200 条记录保存在本地。点击一页查看各阶段耗时。" : "Refreshes every 2 seconds. The latest 200 completed traces are stored locally. Select a page to inspect its stages."}</p>
-      <p>{zh ? "模型未开启流式返回：等待响应头可能包含推理和生成时间，不代表首 token 延迟。并行阶段的耗时不可直接相加。" : "The provider response is not streamed: waiting for headers may include reasoning and generation, and is not time to first token. Overlapping stages must not be added together."}</p>
+      <p>{zh ? "流式请求分别记录响应头、首个事件、首段正文和完整输出。等待响应头不等于首段正文延迟；并行阶段不可直接相加。旧记录可能为非流式请求。" : "Streaming traces separate headers, first event, first text, and full output. Header latency is not time to first text. Overlapping stages must not be added together. Older traces may be non-streaming."}</p>
       <a className="secondary-button" href="/api/traces?format=chrome">{zh ? "导出全部 Chrome / Perfetto trace" : "Export all Chrome / Perfetto traces"}</a>
       {error && <p role="alert">{zh ? "无法刷新记录，将自动重试。" : "Unable to refresh traces. Retrying automatically."}</p>}
       {!trace ? <p>{zh ? "还没有记录；开始翻译后会自动显示。" : "No traces yet. Start a translation to see its timings."}</p> : <div className="trace-grid">

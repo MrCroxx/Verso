@@ -560,3 +560,12 @@ body, .topbar, .sidebar, .reader-toolbar, .page-spread, .page-surface, .settings
 .trace-track i.trace-provider { background: #ad7942; }
 .trace-track i.trace-failed { background: #c14c4c; }
 @media (max-width: 760px) { .trace-grid { grid-template-columns: 1fr; } .trace-list { max-height: 220px; } }
+
+.translation-live { margin: 8px 0 20px; min-width: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+.translation-live .ai-working { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0; font-size: 12px; }
+.translation-live .ai-working > span { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.translation-live-line { display: flex; justify-content: flex-end; margin-top: 8px; overflow: hidden; white-space: nowrap; color: var(--muted); font-size: 13px; line-height: 1.7; }
+
+.translation-live-line > span { flex: none; min-width: 100%; }
+
+.translation-live + .translation-skeleton { padding-top: 12px; }

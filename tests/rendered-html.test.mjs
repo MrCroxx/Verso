@@ -1644,3 +1644,144 @@ test("bounds persisted traces and reads them after a process restart", async () 
     assert.ok(traces.every(trace => trace.status === 'ok' && trace.spans[0].durationMs >= 0));
   `);
 });
+
+test("parses fragmented SSE and previews text across escaped JSON boundaries", async () => {
+  const { readEventStream } = await import("../lib/event-stream.ts");
+  const { createTranslationPreview } = await import("../lib/translation-progress.ts");
+  const bytes = new TextEncoder().encode(': keep-alive\r\nevent: delta\r\ndata: {"text":\r\ndata: "中文"}\r\n\r\n');
+  const stream = new ReadableStream({ start(controller) { for (const byte of bytes) controller.enqueue(new Uint8Array([byte])); controller.close(); } });
+  const events = [];
+  for await (const event of readEventStream(stream)) events.push(event);
+  assert.deepEqual(events, [{ event: "delta", data: '{"text":\n"中文"}' }]);
+  const preview = createTranslationPreview();
+  assert.equal(preview('{"blocks":[{"text":"第一行\\n最'), "最");
+  assert.equal(preview('后一行\\u4e'), "最后一行");
+  assert.equal(preview('2d\\\"文"'), '最后一行中"文');
+  assert.equal(preview(',"sourceText":"must stay hidden","sourceRect":{"x":0.5}}]}'), '最后一行中"文');
+  const bounded = createTranslationPreview();
+  assert.equal(bounded('{"text":"' + 'x'.repeat(2000)).length, 240);
+});
+
+test("rejects interrupted, truncated, refused, and failed provider streams", async () => {
+  const { readProviderStream } = await import("../lib/server-provider-stream.ts");
+  const { readTranslationResponse } = await import("../lib/translation-progress.ts");
+  const handlers = { event() {}, text() {}, reasoning() {} };
+  for (const [responses, events] of [
+    [false, [{ choices: [{ delta: { content: '{"blocks":[]}' } }] }]],
+    [false, [{ choices: [{ delta: {}, finish_reason: "length" }] }, "[DONE]"]],
+    [false, [{ choices: [{ delta: { refusal: "No" } }] }, "[DONE]"]],
+    [true, [{ type: "response.incomplete", response: {} }]],
+    [true, [{ type: "error", message: "secret error detail" }]],
+  ]) {
+    const body = events.map(event => `data: ${typeof event === "string" ? event : JSON.stringify(event)}\n\n`).join("");
+    await assert.rejects(readProviderStream(new Response(body), responses, handlers));
+  }
+  await assert.rejects(readTranslationResponse(new Response('event: progress\ndata: {"phase":"thinking"}\n\n', { headers: { "Content-Type": "text/event-stream" } }), () => {}), /before the result/);
+});
+
+test("streams live previews to late readers of background work and saves only complete results", async () => {
+  const { readTranslationResponse } = await import("../lib/translation-progress.ts");
+  const calls = [];
+  let providerResponse;
+  let incoming;
+  const provider = createHttpServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    incoming = JSON.parse(Buffer.concat(chunks));
+    calls.push(incoming);
+    providerResponse = response;
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    response.write(': keep-alive\n\n');
+    response.write(`data: ${JSON.stringify(incoming.input
+      ? { type: "response.reasoning_summary_text.delta", delta: "private reasoning" }
+      : { choices: [{ index: 0, delta: { reasoning_content: "private reasoning" } }] })}\n\n`);
+  });
+  await new Promise(resolve => provider.listen(0, "127.0.0.1", resolve));
+  try {
+    for (const [index, format] of ["compatible", "openai"].entries()) {
+      const book = await uploadQueueBook((index ? "7" : "6").repeat(64), 1);
+      const saved = await fetch(`${baseUrl}/api/settings/ai-provider`, { method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: format, endpoint: `http://127.0.0.1:${provider.address().port}/${index ? "responses" : "v1"}`, apiKey: "stream-secret", model: "stream-model", reasoningEffort: "high" }) });
+      assert.equal(saved.status, 200);
+      providerResponse = undefined;
+      await enqueueTestBook(book);
+      await waitFor(() => providerResponse);
+      assert.equal(incoming.stream, true);
+      if (!index) assert.equal(incoming.stream_options.include_usage, true);
+      const progress = [];
+      const connect = (signal) => fetch(`${baseUrl}/api/translate`, { method: "POST", signal, headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+        body: JSON.stringify({ bookId: book.fingerprint, page: 1, totalPages: 1, contextPages: [1], targetLanguage: "English", translationConcurrency: 1 }) });
+      const response = await connect();
+      assert.match(response.headers.get("content-type"), /text\/event-stream/);
+      assert.equal(response.headers.get("x-accel-buffering"), "no");
+      let finished = false;
+      const resultPromise = readTranslationResponse(response, value => progress.push(value)).then(value => { finished = true; return value; });
+      await waitFor(() => progress.some(value => value.phase === "thinking"));
+      const partial = '{"page":1,"blocks":[{"kind":"paragraph","text":"实时译文';
+      const delta = content => index ? { type: "response.output_text.delta", delta: content } : { choices: [{ index: 0, delta: { content } }] };
+      providerResponse.write(`data: ${JSON.stringify(delta(partial))}\n\n`);
+      await waitFor(() => progress.some(value => value.lastLine === "实时译文"));
+      assert.equal(finished, false);
+      assert.equal((await queueStatus(book.fingerprint)).completedPages, 0);
+      assert.equal(calls.length, index + 1);
+      // Disconnecting an observer must not cancel the job or another observer.
+      const controller = new AbortController();
+      const second = await connect(controller.signal);
+      const secondProgress = [];
+      const secondResult = readTranslationResponse(second, value => secondProgress.push(value)).catch(() => undefined);
+      await waitFor(() => secondProgress.some(value => value.lastLine === "实时译文"));
+      controller.abort();
+      await secondResult;
+      const tail = '。"}],"previousPageRevision":null}';
+      providerResponse.write(`data: ${JSON.stringify(delta(tail))}\n\n`);
+      const usage = index ? { input_tokens: 123, output_tokens: 45, output_tokens_details: { reasoning_tokens: 12 } }
+        : { prompt_tokens: 123, completion_tokens: 45, completion_tokens_details: { reasoning_tokens: 12 } };
+      providerResponse.end(index ? `data: ${JSON.stringify({ type: "response.completed", response: { status: "completed", usage } })}\n\n`
+        : `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage })}\n\ndata: [DONE]\n\n`);
+      const result = await resultPromise;
+      assert.equal(result.blocks[0].text, "实时译文。");
+      assert.equal(result.trace.attributes.shared, true);
+      await waitFor(async () => (await queueStatus(book.fingerprint)).status === "completed");
+      const { traces } = await (await fetch(`${baseUrl}/api/traces`)).json();
+      const trace = traces.find(value => value.bookId === book.fingerprint && value.background);
+      assert.equal(trace.attributes.streamed, true);
+      assert.equal(trace.attributes.outputTokens, 45);
+      assert.equal(trace.attributes.reasoningTokens, 12);
+      const span = name => trace.spans.find(value => value.name === name);
+      assert.ok(span("provider.first_text").durationMs > span("provider.wait_headers").durationMs);
+      assert.ok(span("provider.first_event").durationMs <= span("provider.first_text").durationMs);
+      assert.equal(span("provider.stream").status, "ok");
+      assert.doesNotMatch(JSON.stringify(traces), /private reasoning|stream-secret|实时译文/);
+      const cached = await readTestPage(book, 1);
+      assert.equal((await cached.json()).blocks[0].text, "实时译文。");
+    }
+  } finally {
+    provider.closeAllConnections();
+    await new Promise(resolve => provider.close(resolve));
+  }
+});
+
+test("reports streamed failures without saving a partial translation", async () => {
+  const { readTranslationResponse } = await import("../lib/translation-progress.ts");
+  const provider = createHttpServer(async (request, response) => {
+    for await (const chunk of request) void chunk;
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    response.end(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: '{"blocks":[{"text":"Partial"}]}' }, finish_reason: "length" }] })}\n\ndata: [DONE]\n\n`);
+  });
+  await new Promise(resolve => provider.listen(0, "127.0.0.1", resolve));
+  try {
+    const book = await uploadQueueBook("9".repeat(64), 1);
+    await fetch(`${baseUrl}/api/settings/ai-provider`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: "compatible", endpoint: `http://127.0.0.1:${provider.address().port}/v1`, apiKey: "fixture", model: "fixture", reasoningEffort: "none" }) });
+    const response = await fetch(`${baseUrl}/api/translate`, { method: "POST", headers: { "Content-Type": "application/json", Accept: "text/event-stream" }, body: JSON.stringify({ bookId: book.fingerprint, page: 1, totalPages: 1, contextPages: [1], targetLanguage: "English" }) });
+    const result = await readTranslationResponse(response, () => {});
+    assert.match(result.error, /length/);
+    assert.equal(result.trace.status, "error");
+    assert.ok(result.trace.spans.some(span => span.name === "provider.stream" && span.status === "error"));
+    const key = `layout-v3::${book.fingerprint}::1::server-v1::English`;
+    const cached = await (await fetch(`${baseUrl}/api/translations?key=${encodeURIComponent(key)}`)).json();
+    assert.equal(cached.translation, null);
+  } finally {
+    provider.closeAllConnections();
+    await new Promise(resolve => provider.close(resolve));
+  }
+});

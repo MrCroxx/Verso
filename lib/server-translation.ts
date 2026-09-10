@@ -1,3 +1,5 @@
+import { readProviderStream } from "./server-provider-stream";
+import { createTranslationPreview, type TranslationProgress } from "./translation-progress";
 import { traceStep, traceAttributes, startSpan } from "./server-translation-trace";
 import { getAiProviderSettings } from "../db/ai-provider-settings";
 import { findBook, getStorage } from "../db/books";
@@ -203,7 +205,8 @@ export class TranslationProviderError extends Error {
   }
 }
 
-export async function generateTranslation(body: TranslationRequest) {
+export async function generateTranslation(body: TranslationRequest, onProgress?: (progress: TranslationProgress) => void) {
+    onProgress?.({ phase: "preparing" });
     const config = await traceStep("settings.load", () => getAiProviderSettings());
     if (!isConfigured(config)) {
       throw new TranslationProviderError("AI provider is not configured on the server.", 503);
@@ -218,6 +221,7 @@ export async function generateTranslation(body: TranslationRequest) {
     const payload = isResponses
       ? {
           model: config.model,
+          stream: true,
           ...(config.reasoningEffort !== "none" && { reasoning: { effort: config.reasoningEffort } }),
           input: [{
             role: "user",
@@ -233,6 +237,7 @@ export async function generateTranslation(body: TranslationRequest) {
         }
       : {
           model: config.model,
+          stream: true,
           ...(config.reasoningEffort !== "none" && { reasoning_effort: config.reasoningEffort }),
           messages: [{
             role: "user",
@@ -245,6 +250,7 @@ export async function generateTranslation(body: TranslationRequest) {
             ],
           }],
           response_format: { type: "json_object" },
+          stream_options: { include_usage: true },
         };
 
     const encoded = JSON.stringify(payload);
@@ -257,6 +263,8 @@ export async function generateTranslation(body: TranslationRequest) {
           return book ? getSourcePageLayout(book, body.page) : null;
         }).catch(() => { traceAttributes({ alignmentFallback: true }); return null; })
       : Promise.resolve(null);
+    onProgress?.({ phase: "waiting" });
+    const providerStarted = performance.now();
     const response = await traceStep("provider.wait_headers", () => fetch(endpoint, {
       method: "POST",
       headers,
@@ -264,7 +272,25 @@ export async function generateTranslation(body: TranslationRequest) {
       signal: AbortSignal.timeout(180_000),
     }));
     traceAttributes({ httpStatus: response.status });
-    const result = await traceStep("provider.read_body", async () => {
+    const streaming = response.ok && Boolean(response.headers.get("content-type")?.includes("text/event-stream"));
+    traceAttributes({ streamed: streaming });
+    const result = streaming ? await traceStep("provider.stream", async () => {
+      const firstEvent = startSpan("provider.first_event", {}, providerStarted);
+      const firstText = startSpan("provider.first_text", {}, providerStarted);
+      const preview = createTranslationPreview();
+      let reasoningCharacters = 0, textCharacters = 0;
+      return readProviderStream(response, isResponses, {
+        event: () => firstEvent(),
+        text: (delta) => {
+          firstText(); textCharacters += delta.length;
+          onProgress?.({ phase: "generating", lastLine: preview(delta), characters: textCharacters });
+        },
+        reasoning: (characters) => {
+          reasoningCharacters += characters;
+          if (!textCharacters) onProgress?.({ phase: "thinking", characters: reasoningCharacters });
+        },
+      });
+    }) : await traceStep("provider.read_body", async () => {
       try { return await response.json() as Record<string, unknown>; }
       catch { throw new TranslationProviderError(`Provider returned an invalid JSON response (HTTP ${response.status}).`, response.ok ? 502 : response.status); }
     });
@@ -282,6 +308,7 @@ export async function generateTranslation(body: TranslationRequest) {
       throw new TranslationProviderError(providerError || `Provider returned ${response.status}.`, response.status);
     }
 
+    onProgress?.({ phase: "aligning" });
     const normalize = startSpan("response.normalize");
     let text: string | undefined;
     if (isResponses) {
