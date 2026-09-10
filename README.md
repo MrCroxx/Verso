@@ -59,8 +59,12 @@ source.
 
 ### Translation configuration
 
-Open Settings to configure the server provider and tune the target language,
-prefetch behavior, and parallelism for the provider's limits. Provider
+Open the dedicated `/settings` page from the library or reader to configure the
+server provider, translation, reading, and interface preferences. Returning to
+the reader restores the book and page. All settings save automatically. Use
+Test connection to check the configured AI endpoint, credentials, and model
+with a short request. Interface language remains independent of the translation
+target. Provider
 credentials, endpoints, models, and reasoning settings are stored in the
 server-side SQLite database. The API key is never returned by the settings API.
 
@@ -106,7 +110,7 @@ On Debian or Ubuntu, install the optional server renderer with
 `http://localhost:3000` locally or use the machine hostname from another device
 on the same network.
 
-Start Verso, open Settings, and save the AI provider configuration. Verso does
+Start Verso, open Settings, and enter the AI provider configuration. Verso does
 not read provider credentials from environment variables. Translation results,
 uploaded books, and page indexes are not stored in browser caches.
 

@@ -148,6 +148,34 @@ test("resolves an explicit locale before the best supported browser language", (
   assert.equal(resolveUiLocale(undefined, "fr-FR"), "en-US");
 });
 
+test("serves settings as a localized page with a library navigation link", async () => {
+  const home = await (await render()).text();
+  assert.match(home, /href="\/settings"/);
+  for (const [locale, title] of [["en-US", "Settings"], ["zh-CN", "设置"]]) {
+    const response = await render("/settings", { cookie: `${UI_LOCALE_COOKIE}=${locale}` });
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, new RegExp(`<h1>${title}</h1>`));
+    for (const section of ["ai-provider", "translation", "reading", "interface"]) {
+      assert.match(html, new RegExp(`id="${section}"`));
+    }
+    assert.doesNotMatch(html, /role="dialog"|aria-modal="true"/);
+  }
+});
+
+test("settings returns to a book and page while rejecting external return destinations", async () => {
+  const html = await (await render(`/settings?returnTo=${encodeURIComponent("/?book=sample&page=7")}`)).text();
+  assert.match(html, /href="\/\?book=sample&amp;page=7"/);
+  assert.match(html, /Back to reading/);
+  for (const destination of ["https://example.com/?book=sample", "//example.com/?book=sample", "http://[", "/settings"]) {
+    const response = await render(`/settings?returnTo=${encodeURIComponent(destination)}`);
+    assert.equal(response.status, 200);
+    const fallback = await response.text();
+    assert.match(fallback, /Back to library/);
+    assert.doesNotMatch(fallback, /href="https?:\/\/example.com/);
+  }
+});
+
 test("rejects incomplete translation requests", async () => {
   const response = await fetch(`${baseUrl}/api/translate`, {
       method: "POST",
@@ -187,6 +215,12 @@ test("does not use provider credentials from environment variables for translati
   });
   assert.equal(response.status, 503);
   assert.deepEqual(await response.json(), { error: "AI provider is not configured on the server." });
+});
+
+test("connection testing requires stored credentials", async () => {
+  const response = await fetch(`${baseUrl}/api/settings/ai-provider/test`, { method: "POST" });
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: "not_configured" });
 });
 
 test("stores AI provider settings in SQLite without returning the API key", async () => {
@@ -233,6 +267,69 @@ test("stores AI provider settings in SQLite without returning the API key", asyn
 
   const database = await stat(path.join(testDataDirectory, "verso.sqlite"));
   assert.equal(database.mode & 0o777, 0o600);
+});
+
+test("connection testing checks the saved model through both provider protocols without exposing credentials", async () => {
+  const requests = [];
+  let mode = "success";
+  const secret = "connection-test-private-key";
+  const provider = createHttpServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    requests.push({ url: request.url, authorization: request.headers.authorization, body: JSON.parse(Buffer.concat(chunks).toString()) });
+    response.setHeader("content-type", "application/json");
+    if (mode === "unauthorized") {
+      response.statusCode = 401;
+      response.end(JSON.stringify({ error: { message: secret } }));
+    } else if (mode === "invalid") {
+      response.end(JSON.stringify({ status: "healthy" }));
+    } else {
+      response.end(JSON.stringify(request.url.endsWith("/responses")
+        ? { output: [{ content: [{ type: "output_text", text: "OK" }] }] }
+        : { choices: [{ message: { content: "OK" } }] }));
+    }
+  });
+  await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
+  try {
+    for (const [kind, suffix, expectedPath] of [["compatible", "/v1", "/v1/chat/completions"], ["openai", "/v1/responses", "/v1/responses"], ["compatible", "/v1/responses", "/v1/responses"]]) {
+      const settings = { provider: kind, endpoint: `http://127.0.0.1:${provider.address().port}${suffix}`, apiKey: secret, model: "connection-model", reasoningEffort: "high" };
+      assert.equal((await fetch(`${baseUrl}/api/settings/ai-provider`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(settings) })).status, 200);
+      const before = await (await fetch(`${baseUrl}/api/settings/ai-provider`)).json();
+      const response = await fetch(`${baseUrl}/api/settings/ai-provider/test`, { method: "POST" });
+      assert.equal(response.status, 200);
+      assert.match(response.headers.get("cache-control"), /no-store/);
+      const text = await response.text();
+      assert.ok(!text.includes(secret));
+      const result = JSON.parse(text);
+      assert.equal(result.ok, true);
+      assert.ok(result.latencyMs >= 0);
+      assert.deepEqual(await (await fetch(`${baseUrl}/api/settings/ai-provider`)).json(), before);
+      const request = requests.at(-1);
+      assert.equal(request.url, expectedPath);
+      assert.equal(request.authorization, `Bearer ${secret}`);
+      assert.equal(request.body.model, "connection-model");
+      if (expectedPath.endsWith("/responses")) {
+        assert.equal(request.body.reasoning.effort, "high");
+        assert.equal(request.body.input[0].content[0].text, "Reply with exactly OK.");
+      } else {
+        assert.equal(request.body.reasoning_effort, "high");
+        assert.equal(request.body.messages[0].content, "Reply with exactly OK.");
+      }
+    }
+    mode = "unauthorized";
+    const failure = await fetch(`${baseUrl}/api/settings/ai-provider/test`, { method: "POST" });
+    assert.equal(failure.status, 502);
+    assert.deepEqual(await failure.json(), { error: "provider_error", status: 401 });
+    mode = "invalid";
+    const invalid = await fetch(`${baseUrl}/api/settings/ai-provider/test`, { method: "POST" });
+    assert.equal(invalid.status, 502);
+    assert.deepEqual(await invalid.json(), { error: "invalid_response" });
+  } finally {
+    await new Promise((resolve, reject) => provider.close(error => error ? reject(error) : resolve()));
+  }
+  const unreachable = await fetch(`${baseUrl}/api/settings/ai-provider/test`, { method: "POST" });
+  assert.equal(unreachable.status, 502);
+  assert.deepEqual(await unreachable.json(), { error: "connection_failed" });
 });
 
 test("rejects incomplete search requests", async () => {

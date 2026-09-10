@@ -1,6 +1,6 @@
 import { getAiProviderSettings } from "../db/ai-provider-settings";
 import { findBook, getStorage } from "../db/books";
-import type { AiProviderSettings } from "./ai-provider-settings";
+import { aiProviderEndpoint, type AiProviderSettings } from "./ai-provider-settings";
 import { hasLayoutContent, normalizeLayoutBlocks } from "./translation-layout";
 import { alignSourceBlocks } from "./source-alignment";
 import { getSourcePageLayout } from "./server-source-layout";
@@ -192,13 +192,6 @@ async function resolveTranslationImages(body: TranslationRequest): Promise<Trans
   }));
 }
 
-function endpointFor(config: AiProviderSettings) {
-  const raw = config.endpoint.trim().replace(/\/$/, "");
-  if (config.provider === "openai") return raw || "https://api.openai.com/v1/responses";
-  if (/\/(chat\/completions|responses)$/.test(raw)) return raw;
-  return `${raw}/chat/completions`;
-}
-
 export class TranslationProviderError extends Error {
   status: number;
   constructor(message: string, status: number) {
@@ -212,7 +205,7 @@ export async function generateTranslation(body: TranslationRequest) {
     if (!isConfigured(config)) {
       throw new TranslationProviderError("AI provider is not configured on the server.", 503);
     }
-    const endpoint = endpointFor(config);
+    const endpoint = aiProviderEndpoint(config);
     const headers = { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" };
     const images = await resolveTranslationImages(body);
     const instruction = prompt(body, images);

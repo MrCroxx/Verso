@@ -4,6 +4,7 @@ import { cookies, headers } from "next/headers";
 import { UI_LOCALE_COOKIE, resolveUiLocale } from "../lib/ui-locale";
 import "./globals.css";
 import { UiLocaleProvider } from "./ui-locale";
+import { AppSettingsProvider } from "./app-settings";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
@@ -44,7 +45,7 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
   return (
     <html lang={locale}>
       <body className={`${geistSans.variable} ${geistMono.variable}`}>
-        <UiLocaleProvider initialLocale={locale}>{children}</UiLocaleProvider>
+        <UiLocaleProvider initialLocale={locale}><AppSettingsProvider>{children}</AppSettingsProvider></UiLocaleProvider>
       </body>
     </html>
   );

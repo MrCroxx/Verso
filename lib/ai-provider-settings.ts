@@ -82,3 +82,10 @@ export function normalizeAiProviderSettingsUpdate(
     updatedAt: Date.now(),
   };
 }
+
+export function aiProviderEndpoint(config: Pick<AiProviderSettings, "provider" | "endpoint">) {
+  const raw = config.endpoint.trim().replace(/\/$/, "");
+  if (config.provider === "openai") return raw || DEFAULT_AI_PROVIDER_SETTINGS.endpoint;
+  if (/\/(chat\/completions|responses)$/.test(raw)) return raw;
+  return `${raw}/chat/completions`;
+}
