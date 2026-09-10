@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { ensureStorageSchema, getStorage } from "../../../db/books";
 import { normalizeTranslationPayload } from "../../../lib/translation-layout";
 
+import { discardBookTranslationJobs } from "../../../lib/server-translation-queue";
+
 export const runtime = "nodejs";
 
 type TranslationCacheInput = {
@@ -95,6 +97,7 @@ export async function DELETE(request: NextRequest) {
 
     const { db } = getStorage();
     await ensureStorageSchema(db);
+    await discardBookTranslationJobs(documentId);
     const result = await db.prepare("DELETE FROM translations WHERE document_id = ?1")
       .bind(documentId)
       .run();

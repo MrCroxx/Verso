@@ -32,6 +32,12 @@ source.
 - **Local library and caching:** keep uploaded PDFs, page indexes, blank-page
   results, and translations in the Docker data volume so books remain available
   across reading sessions without a cloud storage service.
+- **Whole-book translation queue:** enqueue a book from the library and follow its
+  page progress. Work continues with the browser closed and resumes after a server
+  restart. Reading requests take priority over pending background pages and share
+  in-flight work; existing translations (including blank pages) are reused for the
+  selected target language. Failed jobs can be retried without retranslating saved
+  pages. Discarding a book's translations also removes its queued work.
 - **Automatic contents navigation:** detect translated contents pages, preserve
   printed page references, and calibrate PDF page offsets automatically or
   manually.

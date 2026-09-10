@@ -1284,3 +1284,195 @@ test("preserves uncaptained artwork and rejects incompatible caption bounds", as
   assert.equal(excludeImageCaption(page, estimate, { x: 120, y: 70, width: 60, height: 20 }).crop, estimate);
   assert.equal(excludeImageCaption(page, estimate, { x: 20, y: 40, width: 70, height: 80 }).crop, estimate);
 });
+
+test("prioritizes reader jobs, promotes pending pages, and shares running translations", async () => {
+  const { createPriorityTaskQueue } = await import("../lib/priority-task-queue.ts");
+  const queue = createPriorityTaskQueue();
+  const order = [];
+  let release;
+  const first = queue.run("running", 0, 1, () => new Promise((resolve) => { release = resolve; }));
+  await Promise.resolve();
+  const shared = queue.run("running", 1, 1, async () => { throw new Error("Duplicate running page"); });
+  assert.equal(first, shared);
+  const background = queue.run("background", 0, 1, async () => order.push("background"));
+  const promoted = queue.run("promoted", 0, 1, async () => order.push("promoted"));
+  assert.equal(promoted, queue.run("promoted", 1, 1, async () => { throw new Error("Duplicate pending page"); }));
+  const reader = queue.run("reader", 1, 1, async () => order.push("reader"));
+  release("shared result");
+  assert.equal(await shared, "shared result");
+  await Promise.all([first, background, promoted, reader]);
+  assert.deepEqual(order, ["promoted", "reader", "background"]);
+  await assert.rejects(queue.run("failure", 1, 1, async () => { throw new Error("Provider failed"); }), /Provider failed/);
+  assert.equal(await queue.run("failure", 1, 1, async () => "retry"), "retry");
+});
+
+async function uploadQueueBook(fingerprint, pageCount) {
+  const bytes = new TextEncoder().encode("%PDF-queue-test");
+  const metadata = { fingerprint, name: "Queue test.pdf", size: bytes.length, pageCount, contentType: "application/pdf" };
+  const session = await (await fetch(`${baseUrl}/api/books/uploads`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(metadata),
+  })).json();
+  const part = await (await fetch(`${baseUrl}/api/books/uploads/${session.uploadId}/parts/1`, {
+    method: "PUT", headers: { "x-object-key": session.objectKey }, body: bytes,
+  })).json();
+  const response = await fetch(`${baseUrl}/api/books/uploads/${session.uploadId}/complete`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...metadata, objectKey: session.objectKey, parts: [part] }),
+  });
+  assert.equal(response.status, 200);
+  return (await response.json()).book;
+}
+
+async function waitFor(check) {
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    const result = await check();
+    if (result) return result;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("Timed out waiting for translation work");
+}
+
+async function queueStatus(documentId, language = "English") {
+  const response = await fetch(`${baseUrl}/api/translation-queue?targetLanguage=${encodeURIComponent(language)}`);
+  assert.equal(response.status, 200);
+  return (await response.json()).jobs.find((job) => job.documentId === documentId);
+}
+
+async function enqueueTestBook(book, language = "English") {
+  const response = await fetch(`${baseUrl}/api/translation-queue`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ bookId: book.id, targetLanguage: language, translationConcurrency: 1 }),
+  });
+  assert.equal(response.status, 202);
+}
+
+async function readTestPage(book, page, extra = {}) {
+  return fetch(`${baseUrl}/api/translate`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ bookId: book.fingerprint, targetLanguage: "English", page, totalPages: book.pageCount,
+      contextPages: [page], translationConcurrency: 1, ...extra }),
+  });
+}
+
+test("persists whole-book work, shares reader requests, skips cached blank pages, and retries failures", async () => {
+  const book = await uploadQueueBook("b".repeat(64), 4);
+  const calls = [];
+  const responses = new Map();
+  let failPage = 0;
+  let hold = true;
+  const provider = createHttpServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const input = JSON.parse(Buffer.concat(chunks).toString());
+    const page = Number(input.messages[0].content[0].text.match(/The requested page is (\d+)/)[1]);
+    calls.push(page);
+    const finish = () => {
+      if (response.writableEnded || response.destroyed) return;
+      response.setHeader("Content-Type", "application/json");
+      if (page === failPage) { response.writeHead(429); response.end(JSON.stringify({ error: { message: "Rate limit" } })); return; }
+      response.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ page, blocks: [{ kind: "paragraph", text: `Page ${page}.` }], previousPageRevision: null }) } }] }));
+    };
+    if (hold) responses.set(page, finish);
+    else finish();
+  });
+  await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
+  try {
+    const settings = await fetch(`${baseUrl}/api/settings/ai-provider`, {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+        provider: "compatible", endpoint: `http://127.0.0.1:${provider.address().port}/v1`, apiKey: "test-key", model: "test", reasoningEffort: "none",
+      }),
+    });
+    assert.equal(settings.status, 200);
+    const blank = await fetch(`${baseUrl}/api/translations`, {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+        key: `layout-v3::${book.fingerprint}::1::server-v1::English`, documentId: book.fingerprint, page: 1,
+        translation: { page: 1, blocks: [], isBlank: true, markdown: "" },
+      }),
+    });
+    assert.equal(blank.status, 200);
+    await Promise.all([enqueueTestBook(book), enqueueTestBook(book)]);
+    await waitFor(() => responses.has(2));
+    const samePage = readTestPage(book, 2);
+    const reader = readTestPage(book, 4);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.deepEqual(calls, [2]);
+    responses.get(2)();
+    assert.equal((await samePage).status, 200);
+    await waitFor(() => responses.has(4));
+    assert.deepEqual(calls, [2, 4]);
+    responses.get(4)();
+    assert.equal((await reader).status, 200);
+    await waitFor(() => responses.has(3));
+    responses.get(3)();
+    const completed = await waitFor(async () => { const job = await queueStatus(book.fingerprint); return job?.status === "completed" && job; });
+    assert.equal(completed.completedPages, 4);
+    assert.deepEqual(calls, [2, 4, 3]);
+    hold = false;
+    const cached = await readTestPage(book, 2);
+    assert.equal(cached.status, 200);
+    assert.equal((await cached.json()).serverManaged, true);
+    await enqueueTestBook(book);
+    await waitFor(async () => (await queueStatus(book.fingerprint))?.status === "completed");
+    assert.deepEqual(calls, [2, 4, 3]);
+    assert.equal((await readTestPage(book, 2, { force: true })).status, 200);
+    assert.deepEqual(calls, [2, 4, 3, 2]);
+
+    const retryBook = await uploadQueueBook("c".repeat(64), 2);
+    calls.length = 0;
+    failPage = 2;
+    await enqueueTestBook(retryBook);
+    const failed = await waitFor(async () => { const job = await queueStatus(retryBook.fingerprint); return job?.status === "failed" && job; });
+    assert.equal(failed.completedPages, 1);
+    assert.match(failed.error, /Rate limit/);
+    failPage = 0;
+    await enqueueTestBook(retryBook);
+    await waitFor(async () => (await queueStatus(retryBook.fingerprint))?.status === "completed");
+    assert.deepEqual(calls, [1, 2, 2]);
+    await enqueueTestBook(retryBook, "Japanese");
+    await waitFor(async () => (await queueStatus(retryBook.fingerprint, "Japanese"))?.status === "completed");
+    assert.deepEqual(calls, [1, 2, 2, 1, 2]);
+
+    // Discarding must prevent a still-running provider response from restoring the cache.
+    const discardBook = await uploadQueueBook("d".repeat(64), 2);
+    hold = true;
+    responses.clear();
+    await enqueueTestBook(discardBook);
+    await waitFor(() => responses.has(1));
+    const discard = await fetch(`${baseUrl}/api/translations?documentId=${discardBook.fingerprint}`, { method: "DELETE" });
+    assert.equal(discard.status, 200);
+    responses.get(1)();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.equal(await queueStatus(discardBook.fingerprint), undefined);
+    const query = new URLSearchParams({ documentId: discardBook.fingerprint, cacheKeySuffix: "server-v1::English" });
+    assert.deepEqual((await (await fetch(`${baseUrl}/api/translations?${query}`)).json()).pages, []);
+
+    const restartBook = await uploadQueueBook("e".repeat(64), 2);
+    calls.length = 0;
+    responses.clear();
+    await enqueueTestBook(restartBook);
+    await waitFor(() => responses.has(1));
+    responses.get(1)();
+    await waitFor(() => responses.has(2));
+    hold = false;
+    const stopped = new Promise((resolve) => serverProcess.once("exit", resolve));
+    serverProcess.kill("SIGKILL");
+    await stopped;
+    serverProcess = spawn(process.execPath, [".next/standalone/server.js"], {
+      cwd: process.cwd(),
+      env: { ...process.env, HOSTNAME: "127.0.0.1", PORT: new URL(baseUrl).port,
+        VERSO_DATA_DIR: testDataDirectory, VERSO_PDF_RENDERER_LOG: rendererLogPath,
+        PATH: `${testDataDirectory}:${process.env.PATH || ""}` },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    await waitFor(async () => {
+      try { return (await fetch(`${baseUrl}/api/books`)).ok; } catch { return false; }
+    });
+    await waitFor(async () => (await queueStatus(restartBook.fingerprint))?.status === "completed");
+    assert.deepEqual(calls, [1, 2, 2]);
+  } finally {
+    hold = false;
+    for (const finish of responses.values()) finish();
+    provider.closeAllConnections();
+    await new Promise((resolve) => provider.close(resolve));
+  }
+});

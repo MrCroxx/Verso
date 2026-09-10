@@ -119,6 +119,16 @@ export async function ensureStorageSchema(db: LocalDatabase = getStorage().db) {
         updated_at INTEGER NOT NULL
       )`,
       "CREATE INDEX IF NOT EXISTS translations_document_page_idx ON translations (document_id, page)",
+      `CREATE TABLE IF NOT EXISTS translation_queue (
+        document_id TEXT NOT NULL,
+        target_language TEXT NOT NULL,
+        next_page INTEGER NOT NULL DEFAULT 1,
+        concurrency INTEGER NOT NULL DEFAULT 4,
+        status TEXT NOT NULL DEFAULT 'queued',
+        error TEXT,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (document_id, target_language)
+      )`,
       `CREATE TABLE IF NOT EXISTS navigation_pages (
         document_id TEXT NOT NULL,
         pdf_page INTEGER NOT NULL,

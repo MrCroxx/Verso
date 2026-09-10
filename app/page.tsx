@@ -135,6 +135,9 @@ type Translation = {
 };
 
 type TranslationResponse = {
+  serverManaged?: boolean;
+  cacheVersion?: number;
+  cachedAt?: number;
   page: number;
   blocks: TranslationBlock[];
   isBlank: boolean;
@@ -205,6 +208,10 @@ const UI_MESSAGES = {
     translationAnimation: "渐变打字效果",
     translationAnimationHelp: "仅在 API 生成新译文时播放；缓存译文直接显示。",
     translationAnimationSpeed: (speed: number) => `动画速度 · ${speed} 字/秒`,
+    discardBookTranslations: "清空所有译文",
+    confirmDiscardBookTranslations: "再次点击，确认清空",
+    discardBookTranslationsHelp: "清空本书所有目标语言的译文，并停止后台翻译。",
+    cancelDiscardBookTranslations: "取消",
     discardTranslations: "丢弃本书全部译文",
     discardTranslationsHelp: "删除这本书所有目标语言的本地译文缓存，不影响 PDF、目录和页码索引。",
     discardTranslationsConfirm: (name: string) => `确定丢弃《${name}》的全部译文缓存吗？此操作无法撤销。`,
@@ -213,6 +220,17 @@ const UI_MESSAGES = {
     discardTranslationsFailed: "无法丢弃本书的译文缓存。",
     saveSettings: "保存设置",
     localLibrary: "本地书库",
+    translateBook: "后台翻译整本书",
+    translateBookAction: "翻译整本书",
+    translatingBookAction: "翻译中",
+    translatedBookAction: "已翻译",
+    retryBookAction: "重试翻译",
+    queuePending: "正在加入队列…",
+    queueFailed: "翻译失败，点击重试",
+    queueCompleted: "整本翻译完成",
+    queueProgress: (done: number, total: number) => `后台翻译 · ${done} / ${total} 页`,
+    queueReadFailed: "无法读取翻译队列",
+    queueHelp: (language: string) => `译为 ${language} · 关闭页面后继续，阅读优先`,
     libraryHomeTitle: "你的书库",
     librarySlogan: "对照原文，跨越语言阅读。",
     bookCoverAlt: (name: string) => `${name} 的封面`,
@@ -350,6 +368,10 @@ const UI_MESSAGES = {
     translationAnimation: "Gradient typewriter effect",
     translationAnimationHelp: "Play only for new API translations; show cached translations immediately.",
     translationAnimationSpeed: (speed: number) => `Animation speed · ${speed} chars/s`,
+    discardBookTranslations: "Drop all translations",
+    confirmDiscardBookTranslations: "Click again to confirm",
+    discardBookTranslationsHelp: "Clear translations in every target language and stop background translation for this book.",
+    cancelDiscardBookTranslations: "Cancel",
     discardTranslations: "Discard all translations for this book",
     discardTranslationsHelp: "Delete cached translations in every target language for this book. The PDF, contents, and page index are preserved.",
     discardTranslationsConfirm: (name: string) => `Discard every cached translation for “${name}”? This cannot be undone.`,
@@ -358,6 +380,17 @@ const UI_MESSAGES = {
     discardTranslationsFailed: "Unable to discard translations for this book.",
     saveSettings: "Save settings",
     localLibrary: "Local Library",
+    translateBook: "Translate entire book",
+    translateBookAction: "Translate book",
+    translatingBookAction: "Translating",
+    translatedBookAction: "Translated",
+    retryBookAction: "Retry translation",
+    queuePending: "Adding to queue…",
+    queueFailed: "Translation failed · Retry",
+    queueCompleted: "Book translation complete",
+    queueProgress: (done: number, total: number) => `Translating · ${done} / ${total} pages`,
+    queueReadFailed: "Unable to read translation queue",
+    queueHelp: (language: string) => `Into ${language} · Continues after closing, reading takes priority`,
     libraryHomeTitle: "Your library",
     librarySlogan: "See the original. Read beyond language.",
     bookCoverAlt: (name: string) => `Cover of ${name}`,
@@ -1506,12 +1539,16 @@ function formatFileSize(size: number) {
   return `${(size / 1024 / 1024).toFixed(size < 10 * 1024 * 1024 ? 1 : 0)} MB`;
 }
 
+type BookTranslationJob = { documentId: string; status: string; error: string | null; completedPages: number; totalPages: number };
+
 function LibraryHome({
   books,
   locale,
   messages,
   loading,
   error,
+  translationSettings,
+  onDiscardTranslations,
   onSelect,
   onUpload,
   onRetry,
@@ -1521,10 +1558,12 @@ function LibraryHome({
   theme,
 }: {
   books: LocalBook[];
+  translationSettings: TranslationSettings;
   locale: UiLocale;
   messages: UiMessages;
   loading: boolean;
   error: string;
+  onDiscardTranslations: (book: LocalBook) => Promise<number>;
   onSelect: (book: LocalBook) => void;
   onUpload: () => void;
   onRetry: () => void;
@@ -1533,6 +1572,94 @@ function LibraryHome({
   onToggleTheme: () => void;
   theme: ThemeMode;
 }) {
+  const [jobs, setJobs] = useState<BookTranslationJob[]>([]);
+  const [pending, setPending] = useState<Set<string>>(new Set());
+  const [queueErrors, setQueueErrors] = useState<Record<string, string>>({});
+  const [queueError, setQueueError] = useState("");
+  const [openActionsId, setOpenActionsId] = useState<string | null>(null);
+  const [confirmDiscardId, setConfirmDiscardId] = useState<string | null>(null);
+  const [discarding, setDiscarding] = useState<Set<string>>(new Set());
+  const [discardMessages, setDiscardMessages] = useState<Record<string, string>>({});
+  const [discardErrors, setDiscardErrors] = useState<Record<string, string>>({});
+  const language = translationSettings.targetLanguage;
+  const refreshQueue = useCallback(async (signal?: AbortSignal) => {
+    const response = await fetch(`/api/translation-queue?${new URLSearchParams({ targetLanguage: language })}`, { signal });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || messages.queueReadFailed);
+    if (signal?.aborted) return;
+    setJobs(result.jobs);
+    setQueueError("");
+  }, [language, messages.queueReadFailed]);
+  useEffect(() => {
+    const controller = new AbortController();
+    setJobs([]);
+    const refresh = () => void refreshQueue(controller.signal).catch((error) => {
+      if (!controller.signal.aborted) setQueueError(error instanceof Error ? error.message : messages.queueReadFailed);
+    });
+    refresh();
+    const timer = window.setInterval(refresh, 2000);
+    return () => { controller.abort(); window.clearInterval(timer); };
+  }, [refreshQueue, messages.queueReadFailed]);
+  useEffect(() => {
+    if (confirmDiscardId) document.getElementById(`discard-confirm-${confirmDiscardId}`)?.focus();
+  }, [confirmDiscardId]);
+  useEffect(() => {
+    if (!openActionsId) return;
+    const closeOutside = (event: PointerEvent) => {
+      const actions = document.getElementById(`book-actions-${openActionsId}`)?.parentElement;
+      if (!actions?.contains(event.target as Node)) {
+        setOpenActionsId(null);
+        setConfirmDiscardId(null);
+      }
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    return () => document.removeEventListener("pointerdown", closeOutside);
+  }, [openActionsId]);
+  const discardTranslations = async (book: LocalBook) => {
+    if (discarding.has(book.id) || pending.has(book.id)) return;
+    if (confirmDiscardId !== book.id) {
+      setConfirmDiscardId(book.id);
+      setDiscardMessages((value) => ({ ...value, [book.id]: "" }));
+      setDiscardErrors((value) => ({ ...value, [book.id]: "" }));
+      return;
+    }
+    setConfirmDiscardId(null);
+    setOpenActionsId(null);
+    setDiscarding((value) => new Set(value).add(book.id));
+    try {
+      const deleted = await onDiscardTranslations(book);
+      setJobs((value) => value.filter((job) => job.documentId !== book.fingerprint));
+      setQueueErrors((value) => ({ ...value, [book.id]: "" }));
+      setDiscardMessages((value) => ({ ...value, [book.id]: messages.translationsDiscarded(deleted) }));
+      await refreshQueue().catch((error) => {
+        setQueueError(error instanceof Error ? error.message : messages.queueReadFailed);
+      });
+    } catch (error) {
+      setDiscardErrors((value) => ({ ...value, [book.id]: error instanceof Error ? error.message : messages.discardTranslationsFailed }));
+    } finally {
+      setDiscarding((value) => { const next = new Set(value); next.delete(book.id); return next; });
+    }
+  };
+  const enqueue = async (book: LocalBook) => {
+    setOpenActionsId(null);
+    setConfirmDiscardId(null);
+    setDiscardMessages((value) => ({ ...value, [book.id]: "" }));
+    setPending((value) => new Set(value).add(book.id));
+    setQueueErrors((value) => ({ ...value, [book.id]: "" }));
+    try {
+      const response = await fetch("/api/translation-queue", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bookId: book.id, targetLanguage: language, translationConcurrency: translationSettings.translationConcurrency }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || messages.queueFailed);
+      await refreshQueue();
+    } catch (error) {
+      setQueueErrors((value) => ({ ...value, [book.id]: error instanceof Error ? error.message : messages.queueFailed }));
+    } finally {
+      setPending((value) => { const next = new Set(value); next.delete(book.id); return next; });
+    }
+  };
   return (
     <>
       <header className="topbar library-topbar">
@@ -1553,6 +1680,10 @@ function LibraryHome({
           </div>
           <strong>{messages.bookCount(books.length)}</strong>
         </div>
+        {books.length > 0 && (
+          <p className="library-translation-note"><Languages size={14} /><span>{messages.queueHelp(language)}</span></p>
+        )}
+        {queueError && <p role="alert" className="queue-error">{queueError}</p>}
         {loading ? (
           <div className="library-home-empty"><LoaderCircle className="spin" size={24} /><strong>{messages.loadingLibrary}</strong></div>
         ) : error ? (
@@ -1564,11 +1695,16 @@ function LibraryHome({
           </div>
         ) : books.length ? (
           <div className="library-grid">
-            {books.map((book) => (
+            {books.map((book) => {
+              const job = jobs.find((value) => value.documentId === book.fingerprint);
+              const active = job?.status === "queued" || job?.status === "running";
+              const complete = job?.status === "completed" && job.completedPages === job.totalPages;
+              return (
+              <article className={cn("library-book-card", openActionsId === book.id && "book-actions-open")} key={book.id}>
               <button
-                key={book.id}
                 className="library-book"
-                onClick={() => onSelect(book)}
+                onClick={() => { setOpenActionsId(null); setConfirmDiscardId(null); onSelect(book); }}
+                disabled={discarding.has(book.id)}
                 aria-label={messages.openBook(book.name.replace(/\.pdf$/i, ""))}
               >
                 <span className="library-cover">
@@ -1585,7 +1721,72 @@ function LibraryHome({
                   <small>{messages.bookMeta(book.pageCount, formatFileSize(book.size), new Date(book.uploadedAt).toLocaleDateString(locale))}</small>
                 </span>
               </button>
-            ))}
+              <div className="book-translation">
+                <div className="book-actions" onBlur={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget)) {
+                    setOpenActionsId((value) => value === book.id ? null : value);
+                    setConfirmDiscardId((value) => value === book.id ? null : value);
+                  }
+                }} onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    setOpenActionsId(null);
+                    setConfirmDiscardId(null);
+                    event.currentTarget.querySelector<HTMLButtonElement>(".book-more-action")?.focus();
+                  }
+                }}>
+                  <button type="button" className="book-translate-action"
+                    disabled={pending.has(book.id) || discarding.has(book.id) || active || complete}
+                    title={messages.translateBook} onClick={() => void enqueue(book)}>
+                    {active || pending.has(book.id) ? <LoaderCircle className="spin" size={14} />
+                      : complete ? <CircleCheck size={14} /> : <Languages size={14} />}
+                    <span>{pending.has(book.id) || active ? messages.translatingBookAction
+                      : complete ? messages.translatedBookAction : job?.status === "failed" ? messages.retryBookAction : messages.translateBookAction}</span>
+                  </button>
+                  <button type="button" className="icon-button book-more-action" id={`book-more-${book.id}`}
+                    aria-label={messages.moreOptions} title={messages.moreOptions}
+                    aria-expanded={openActionsId === book.id} aria-controls={`book-actions-${book.id}`}
+                    disabled={pending.has(book.id) || discarding.has(book.id)}
+                    onClick={() => {
+                      setOpenActionsId((value) => value === book.id ? null : book.id);
+                      setConfirmDiscardId(null);
+                    }}>
+                    {discarding.has(book.id) ? <LoaderCircle className="spin" size={16} /> : <MoreHorizontal size={18} />}
+                  </button>
+                  {openActionsId === book.id && (
+                    <div className="book-actions-popover" id={`book-actions-${book.id}`} role="group" aria-label={messages.moreOptions}>
+                      {confirmDiscardId === book.id ? (
+                        <>
+                          <p id={`discard-help-${book.id}`}>{messages.discardBookTranslationsHelp}</p>
+                          <button type="button" className="danger-button book-confirm-discard" id={`discard-confirm-${book.id}`}
+                            aria-describedby={`discard-help-${book.id}`} onClick={() => void discardTranslations(book)}>
+                            <Trash2 size={14} />{messages.confirmDiscardBookTranslations}
+                          </button>
+                          <button type="button" className="book-cancel-discard" onClick={() => {
+                            setConfirmDiscardId(null);
+                            setOpenActionsId(null);
+                            document.getElementById(`book-more-${book.id}`)?.focus();
+                          }}>{messages.cancelDiscardBookTranslations}</button>
+                        </>
+                      ) : (
+                        <button type="button" className="book-discard-action" onClick={() => void discardTranslations(book)}>
+                          <Trash2 size={14} />{messages.discardBookTranslations}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+                {job && !complete && (
+                  <div className="book-translation-progress">
+                    <small>{messages.queueProgress(job.completedPages, job.totalPages)}</small>
+                    <progress max={job.totalPages} value={job.completedPages} aria-label={messages.queueProgress(job.completedPages, job.totalPages)} />
+                  </div>
+                )}
+                {(queueErrors[book.id] || job?.error) && <p className="queue-error" role="alert">{queueErrors[book.id] || job?.error}</p>}
+                {discardMessages[book.id] && <small role="status">{discardMessages[book.id]}</small>}
+                {discardErrors[book.id] && <p className="queue-error" role="alert">{discardErrors[book.id]}</p>}
+              </div>
+              </article>
+            ); })}
           </div>
         ) : (
           <div className="library-home-empty">
@@ -2628,6 +2829,9 @@ export default function Home() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               targetLanguage: translationSettings.targetLanguage,
+              translationConcurrency: translationSettings.translationConcurrency,
+              force,
+              ...(serverBookAvailable ? { bookId: documentId } : {}),
               page,
               totalPages,
               ...source,
@@ -2664,8 +2868,8 @@ export default function Home() {
             blocks: payload.previousPageRevision.blocks,
             isBlank: !hasLayoutContent(payload.previousPageRevision.blocks),
             revised: true,
-            cacheVersion: requestVersion,
-            cachedAt: Date.now(),
+            cacheVersion: payload.cacheVersion ?? requestVersion,
+            cachedAt: payload.cachedAt ?? Date.now(),
           }
         : undefined;
       const translated = reconcilePageBoundary(revision || previousTranslation, {
@@ -2674,8 +2878,8 @@ export default function Home() {
         blocks: payload.blocks,
         isBlank: payload.isBlank,
         sourceSummary: payload.sourceSummary,
-        cacheVersion: requestVersion,
-        cachedAt: Date.now(),
+        cacheVersion: payload.cacheVersion ?? requestVersion,
+        cachedAt: payload.cachedAt ?? Date.now(),
       });
       requireCurrentRun();
       if (translationAnimationEnabledRef.current) {
@@ -2693,7 +2897,7 @@ export default function Home() {
       }));
       recordNavigation(page, translated);
       if (revision) recordNavigation(page - 1, revision);
-      await Promise.all([
+      if (!payload.serverManaged) await Promise.all([
         persistTranslation(
           key,
           documentId,
@@ -2961,11 +3165,15 @@ export default function Home() {
       <main className="app-shell library-shell">
         <LibraryHome
           books={localBooks}
+          translationSettings={translationSettings}
           locale={locale}
           messages={messages}
           loading={localBooksLoading}
           error={libraryError}
           theme={theme}
+          onDiscardTranslations={(book) => book.fingerprint === documentIdRef.current
+            ? discardCurrentBookTranslations()
+            : deleteLocalTranslations(book.fingerprint, messages.localTranslationDiscardFailed)}
           onSelect={(book) => void loadLocalBook(book)}
           onUpload={() => fileInput.current?.click()}
           onRetry={() => void refreshBooks()}
@@ -3002,10 +3210,11 @@ export default function Home() {
         <button className="brand brand-button" onClick={openLibrary} aria-label={messages.openLibrary}><div className="brand-mark">V</div><span>Verso</span><em>AI Reader</em></button>
         <button className="document-title" onClick={openLibrary} title={messages.openLibrary}><FileText size={16} /><span>{fileName}</span><ChevronDown size={14} /></button>
         <div className="top-actions">
-          <div className="cache-status" title={storageMessage}>
-            {uploadProgress !== null && uploadProgress < 100 ? <LoaderCircle className="spin" size={14} /> : uploadProgress === 100 ? <HardDrive size={14} /> : <span />}
-            {uploadProgress !== null && uploadProgress < 100 ? messages.localProgress(uploadProgress) : uploadProgress === 100 ? messages.localCached : messages.localLibrary}
-          </div>
+          {uploadProgress !== null && uploadProgress < 100 && (
+            <div className="cache-status" title={storageMessage}>
+              <LoaderCircle className="spin" size={14} />{messages.localProgress(uploadProgress)}
+            </div>
+          )}
           <button className="icon-button locale-button" title={messages.switchLanguage} aria-label={messages.switchLanguage} onClick={() => setLocale(locale === "zh-CN" ? "en-US" : "zh-CN")}><Globe2 size={16} /><span>{locale === "zh-CN" ? "EN" : "中"}</span></button>
           <button className="icon-button top-search-button" aria-label={messages.searchPages} onClick={() => {
             setSidebarOpen(true);
