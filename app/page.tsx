@@ -55,6 +55,7 @@ import { createLatestTaskRegistry } from "../lib/latest-task-registry";
 import { isDocumentSearchShortcut } from "../lib/keyboard-shortcuts";
 import { deduplicatePageBoundary, hasLayoutContent, normalizeTranslationPayload, type LayoutBlock, type SourceRect } from "../lib/translation-layout";
 import { searchTranslationPayload } from "../lib/translation-search";
+import { groupTranslationMedia, imagePlacement } from "../lib/translation-media";
 import { DEFAULT_TYPEWRITER_CHARACTERS_PER_SECOND, typewriterProgress } from "../lib/translation-typewriter";
 import type { UiLocale } from "../lib/ui-locale";
 import { pageWorkWindow, isPageWorkEnabled, shouldStartTranslationRequest } from "../lib/viewport-work";
@@ -884,8 +885,10 @@ function TranslationText({
   animationSpeed: number;
   onAnimationComplete: () => void;
 }) {
+  const displayBlocks = useMemo(() => groupTranslationMedia(value.blocks ?? []), [value.blocks]);
   const texts = value.blocks?.length
-    ? value.blocks.flatMap((block) => {
+    ? displayBlocks.flatMap(({ block, caption }) => {
+      if (caption) return [caption.text];
       if (block.kind === "spacer" || block.kind === "image") return [];
       if (block.kind === "list_item") return [block.marker, block.text, block.trailing];
       return [block.text];
@@ -919,21 +922,37 @@ function TranslationText({
     return (
       <article className="translation-copy structured-translation">
         <div className="layout-blocks">
-          {value.blocks.map((block, index) => {
+          {displayBlocks.map(({ block, index, caption, captionRect, captionPosition, spaceBefore }) => {
             const className = cn(
               "layout-block",
               `block-${block.kind}`,
               `align-${block.align}`,
               `indent-${Math.min(3, Math.max(0, block.indent))}`,
-              `before-${block.spaceBefore}`,
+              `before-${spaceBefore}`,
               `size-${block.size}`,
             );
             if (block.kind === "spacer") {
               return <div key={index} className={className} aria-hidden="true" />;
             }
             if (block.kind === "image") {
+              const captionIndex = segmentIndex;
+              if (caption) segmentIndex++;
               return block.sourceRect ? (
-                <SourceImageCrop key={index} source={sourceRaster} rect={block.sourceRect} className={className} alt={messages.scannedSourceAlt(value.page)} />
+                <SourceImageCrop
+                  key={index}
+                  source={sourceRaster}
+                  rect={block.sourceRect}
+                  className={className}
+                  alt={messages.scannedSourceAlt(value.page)}
+                  captionPosition={captionPosition}
+                  captionRect={captionRect}
+                  captionSize={caption?.size}
+                  captionFontSize={caption?.fontSize ? caption.fontSize * READER_PAGE_WIDTH : undefined}
+                  placement={imagePlacement(block, Boolean(caption))}
+                  caption={caption && (
+                    <MappedTranslationText block={caption} query={searchQuery} offset={offsets[captionIndex] ?? 0} progress={progress} onHighlight={onHighlight} />
+                  )}
+                />
               ) : null;
             }
             const style = block.fontSize ? { fontSize: block.fontSize * READER_PAGE_WIDTH } : undefined;

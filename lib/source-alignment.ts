@@ -55,6 +55,61 @@ function matchingText(text: string) {
   return text.normalize("NFKC").toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
 }
 
+type TextMatch = { start: number; end: number; distance: number };
+
+function approximateSentence(text: string, needle: string, cursor: number, starts: Set<number>, ends: Set<number>): TextMatch | undefined {
+  // Only repair small transcription errors in long, well-grounded sentences.
+  // Short labels and substantially different text must not acquire guessed boxes.
+  const limit = Math.min(3, Math.floor(needle.length * 0.02));
+  if (!limit) return;
+  const candidates = new Set<number>();
+  for (let part = 0; part <= limit; part++) {
+    const offset = Math.floor(part * needle.length / (limit + 1));
+    const seed = needle.slice(offset, Math.floor((part + 1) * needle.length / (limit + 1)));
+    // With at most k edits, at least one of k + 1 disjoint seeds is unchanged.
+    let found = text.indexOf(seed);
+    while (found >= 0) {
+      for (let delta = -limit; delta <= limit; delta++) {
+        const start = found - offset + delta;
+        if (starts.has(start)) candidates.add(start);
+      }
+      if (candidates.size > 128) return;
+      found = text.indexOf(seed, found + 1);
+    }
+  }
+  const matches: TextMatch[] = [];
+  for (const start of candidates) {
+    const length = Math.min(needle.length + limit, text.length - start);
+    if (length < needle.length - limit) continue;
+    let previous = new Uint16Array(length + 1).fill(limit + 1);
+    let current = new Uint16Array(length + 1);
+    for (let j = 0; j <= Math.min(limit, length); j++) previous[j] = j;
+    for (let i = 1; i <= needle.length; i++) {
+      const first = Math.max(1, i - limit);
+      const last = Math.min(length, i + limit);
+      current.fill(limit + 1, first - 1, Math.min(length + 1, last + 2));
+      current[0] = Math.min(i, limit + 1);
+      for (let j = first; j <= last; j++) {
+        current[j] = Math.min(previous[j] + 1, current[j - 1] + 1,
+          previous[j - 1] + (needle[i - 1] === text[start + j - 1] ? 0 : 1));
+      }
+      [previous, current] = [current, previous];
+    }
+    for (let j = Math.max(1, needle.length - limit); j <= length; j++) {
+      if (previous[j] <= limit && ends.has(start + j)) {
+        matches.push({ start, end: start + j, distance: previous[j] });
+      }
+    }
+  }
+  const bestDistance = Math.min(...matches.map((match) => match.distance));
+  const best = matches.filter((match) => match.distance === bestDistance).sort((a, b) => a.start - b.start);
+  if (!best.length) return;
+  // Identical repeated sentences follow reading order; competing texts are ambiguous.
+  const matchedText = text.slice(best[0].start, best[0].end);
+  if (best.some((match) => text.slice(match.start, match.end) !== matchedText)) return;
+  return best.find((match) => match.start >= cursor) ?? best[0];
+}
+
 export function alignSourceBlocks(blocks: LayoutBlock[], layout: SourcePageLayout): LayoutBlock[] {
   let text = "";
   const ranges = layout.words.map((word) => {
@@ -62,6 +117,8 @@ export function alignSourceBlocks(blocks: LayoutBlock[], layout: SourcePageLayou
     text += matchingText(word.text);
     return { ...word, start, end: text.length };
   });
+  const starts = new Set(ranges.filter((word) => word.end > word.start).map((word) => word.start));
+  const ends = new Set(ranges.filter((word) => word.end > word.start).map((word) => word.end));
   let cursor = 0;
   return blocks.map((block) => {
     if (block.kind === "image" || block.kind === "spacer") return block;
@@ -70,8 +127,10 @@ export function alignSourceBlocks(blocks: LayoutBlock[], layout: SourcePageLayou
       const needle = matchingText(sentence.sourceText);
       let start = needle ? text.indexOf(needle, cursor) : -1;
       if (start < 0 && needle) start = text.indexOf(needle);
-      if (start < 0) return { ...sentence, sourceRects: [] };
-      const end = start + needle.length;
+      const approximate = start < 0 ? approximateSentence(text, needle, cursor, starts, ends) : undefined;
+      if (start < 0 && !approximate) return { ...sentence, sourceRects: [] };
+      const end = approximate?.end ?? start + needle.length;
+      start = approximate?.start ?? start;
       cursor = end;
       const words = ranges.filter((word) => word.end > start && word.start < end);
       matchedWords.push(...words);

@@ -18,6 +18,7 @@ import {
 } from "../lib/document-navigation.ts";
 import { deduplicatePageBoundary, normalizeSourceRect, normalizeTranslationPayload } from "../lib/translation-layout.ts";
 import { searchTranslationPayload } from "../lib/translation-search.ts";
+import { captionSourceRect, groupTranslationMedia, imagePlacement } from "../lib/translation-media.ts";
 import { typewriterDuration, typewriterProgress } from "../lib/translation-typewriter.ts";
 import { resolveUiLocale, UI_LOCALE_COOKIE } from "../lib/ui-locale.ts";
 import { isPageWorkEnabled, pageWorkWindow, shouldStartTranslationRequest } from "../lib/viewport-work.ts";
@@ -819,7 +820,7 @@ test("requests and persists image crops, typography, and sentence positions with
     sentences: [{ text: "译文。", sourceText: "Source sentence.", sourceRects: [rect] }],
   };
   const imageBlock = {
-    ...textBlock, kind: "image", text: "", fontSize: null, sentences: [],
+    ...textBlock, kind: "image", imageRole: "body", text: "", fontSize: null, sentences: [],
     sourceRect: { x: 0.1, y: 0.4, width: 0.8, height: 0.3 },
   };
   let incoming;
@@ -851,6 +852,7 @@ test("requests and persists image crops, typography, and sentence positions with
       assert.deepEqual(translation.blocks[0].sentences, textBlock.sentences);
       assert.equal(translation.blocks[0].fontSize, 0.025);
       assert.deepEqual(translation.blocks[1].sourceRect, imageBlock.sourceRect);
+      assert.equal(translation.blocks[1].imageRole, "body");
       assert.deepEqual(translation.previousPageRevision.blocks, translation.blocks);
       const instruction = (incoming.input || incoming.messages)[0].content[0].text;
       assert.match(instruction, /one rectangle per line fragment/);
@@ -859,6 +861,7 @@ test("requests and persists image crops, typography, and sentence positions with
       if (format === "openai") {
         const blockSchema = incoming.text.format.schema.properties.blocks.items;
         assert.ok(blockSchema.required.includes("sentences"));
+        assert.ok(blockSchema.required.includes("imageRole"));
         assert.ok(blockSchema.properties.kind.enum.includes("image"));
       }
       const key = `layout-v3::aligned-${format}::2::server-v1::Simplified Chinese`;
@@ -953,4 +956,331 @@ test("keeps complete crops stable and bounds corrections to their search region"
   assert.equal(crop.x, 10);
   assert.equal(crop.width, 80);
   assert.ok(crop.y >= 0 && crop.y + crop.height <= height);
+});
+
+test("groups cached table captions above their images and absorbs only internal spacers", () => {
+  const blocks = normalizeTranslationPayload({ blocks: [
+    { kind: "paragraph", text: "Before." },
+    { kind: "image", sourceRect: { x: .1, y: .2, width: .4, height: .2 }, spaceBefore: "sm" },
+    { kind: "spacer", size: "xl" },
+    { kind: "caption", text: "表 1：比较结果", align: "left", indent: 3, spaceBefore: "xl" },
+    { kind: "spacer", size: "sm" },
+    { kind: "paragraph", text: "After." },
+  ] }).blocks;
+  const before = structuredClone(blocks);
+  const display = groupTranslationMedia(blocks);
+  assert.deepEqual(display.map(({ index }) => index), [0, 1, 4, 5]);
+  assert.equal(display[1].captionPosition, "top");
+  assert.equal(display[1].caption, blocks[3]);
+  assert.equal(display[1].spaceBefore, "sm");
+  assert.deepEqual(blocks, before);
+});
+
+test("places figure captions below images using source labels and preserves sentence mappings", () => {
+  const blocks = normalizeTranslationPayload({ blocks: [
+    { kind: "caption", text: "架构图", fontSize: .015, spaceBefore: "md", sentences: [
+      { text: "架构图", sourceText: "Figure 2: Architecture", sourceRects: [{ x: .1, y: .41, width: .4, height: .03 }] },
+    ] },
+    { kind: "image", sourceRect: { x: .1, y: .2, width: .4, height: .2 } },
+    { kind: "paragraph", text: "Body." },
+  ] }).blocks;
+  const display = groupTranslationMedia(blocks);
+  assert.equal(display.length, 2);
+  assert.equal(display[0].captionPosition, "bottom");
+  assert.equal(display[0].caption, blocks[0]);
+  assert.equal(display[0].spaceBefore, "md");
+  assert.equal(display[1].block.text, "Body.");
+});
+
+test("pairs consecutive figures and tables without consuming either caption twice", () => {
+  const image = { kind: "image", sourceRect: { x: .1, y: .2, width: .4, height: .2 } };
+  const blocks = normalizeTranslationPayload({ blocks: [
+    image, { kind: "caption", text: "Fig. 1: First" },
+    { kind: "caption", text: "Table 1: Second" }, image,
+    { kind: "caption", text: "表 2：第三张" }, image,
+  ] }).blocks;
+  const display = groupTranslationMedia(blocks);
+  assert.deepEqual(display.map(({ index }) => index), [0, 3, 5]);
+  assert.deepEqual(display.map(({ captionPosition }) => captionPosition), ["bottom", "top", "top"]);
+  assert.deepEqual(display.map(({ caption }) => caption.text), ["Fig. 1: First", "Table 1: Second", "表 2：第三张"]);
+});
+
+test("uses source geometry to disambiguate captions between images", () => {
+  const blocks = normalizeTranslationPayload({ blocks: [
+    { kind: "image", sourceRect: { x: .1, y: .1, width: .4, height: .15 } },
+    { kind: "caption", text: "Table 2: Results", sourceRect: { x: .1, y: .26, width: .4, height: .02 } },
+    { kind: "image", sourceRect: { x: .1, y: .6, width: .4, height: .15 } },
+  ] }).blocks;
+  const display = groupTranslationMedia(blocks);
+  assert.equal(display[0].caption, blocks[1]);
+  assert.equal(display[0].captionPosition, "top");
+  assert.equal(display[1].caption, undefined);
+});
+
+test("leaves standalone images, unrelated captions, and body text in place", () => {
+  const blocks = normalizeTranslationPayload({ blocks: [
+    { kind: "caption", text: "Table 1", sourceRect: { x: .55, y: .1, width: .35, height: .02 } },
+    { kind: "image", sourceRect: { x: .1, y: .13, width: .35, height: .2 } },
+    { kind: "paragraph", text: "Intervening text." },
+    { kind: "caption", text: "Figure 2" },
+    { kind: "image" },
+  ] }).blocks;
+  assert.deepEqual(groupTranslationMedia(blocks).map(({ block }) => block), blocks);
+  assert.ok(groupTranslationMedia(blocks).every(({ caption }) => caption === undefined));
+});
+
+test("keeps the original side for unlabelled legacy captions", () => {
+  const image = { kind: "image", sourceRect: { x: .1, y: .2, width: .4, height: .2 } };
+  const caption = { kind: "caption", text: "An unnumbered illustration." };
+  for (const [raw, position] of [[[caption, image], "top"], [[image, caption], "bottom"]]) {
+    const display = groupTranslationMedia(normalizeTranslationPayload({ blocks: raw }).blocks);
+    assert.equal(display.length, 1);
+    assert.equal(display[0].captionPosition, position);
+  }
+});
+
+
+test("restores cached header and footer marks to their source position while centering body media", () => {
+  const normalize = (value) => normalizeTranslationPayload({ blocks: [{ kind: "image", ...value }] }).blocks[0];
+  const header = normalize({ sourceRect: { x: .125, y: .038, width: .18, height: .045 } });
+  const footer = normalize({ sourceRect: { x: .7, y: .93, width: .15, height: .04 } });
+  const body = normalize({ sourceRect: { x: .1, y: .3, width: .3, height: .2 } });
+  assert.equal(imagePlacement(header), "source");
+  assert.equal(imagePlacement(footer), "source");
+  assert.equal(imagePlacement(body), "center");
+  assert.equal(imagePlacement(header, true), "center");
+  assert.equal(imagePlacement(normalize({ ...header, imageRole: "body" })), "center");
+  assert.equal(imagePlacement(normalize({ ...body, imageRole: "decoration" })), "source");
+  assert.equal(normalize({ imageRole: "invalid" }).imageRole, undefined);
+  assert.equal(normalize({ imageRole: null }).imageRole, undefined);
+});
+
+test("does not attach a nearby figure caption to a decorative mark", () => {
+  const blocks = normalizeTranslationPayload({ blocks: [
+    { kind: "image", imageRole: "decoration", sourceRect: { x: .1, y: .05, width: .2, height: .04 } },
+    { kind: "caption", text: "Figure 1: Results" },
+    { kind: "image", imageRole: "body", sourceRect: { x: .1, y: .2, width: .4, height: .2 } },
+  ] }).blocks;
+  const display = groupTranslationMedia(blocks);
+  assert.equal(display.length, 2);
+  assert.equal(display[0].caption, undefined);
+  assert.equal(display[1].caption, blocks[1]);
+  assert.equal(display[1].captionPosition, "bottom");
+});
+
+test("recovers clipped wordmarks without letting page rules block crop expansion", async () => {
+  const { expandImageCropToWhitespace } = await import("../lib/image-crop.ts");
+  for (const ruleY of [12, 63]) {
+    const width = 170, height = 100;
+    const data = new Uint8ClampedArray(width * height * 4).fill(255);
+    const paint = (x, y, w, h) => {
+      for (let row = y; row < y + h; row++) for (let col = x; col < x + w; col++) {
+        data.set([80, 90, 220, 255], (row * width + col) * 4);
+      }
+    };
+    paint(20, 25, 60, 30);
+    paint(84, 25, 10, 30);
+    paint(98, 25, 10, 30);
+    paint(112, 25, 10, 30);
+    paint(10, ruleY, 160, 2);
+    paint(10, 85, 150, 5);
+    const estimate = { x: 25, y: 10, width: 78, height: 58 };
+    const crop = expandImageCropToWhitespace({ width, height, data }, estimate, { ignorePageRules: true });
+    assert.ok(crop.x <= 20 && crop.x + crop.width >= 122, JSON.stringify(crop));
+    assert.ok(crop.y <= 25 && crop.y + crop.height >= 55);
+    assert.ok(ruleY < crop.y || ruleY >= crop.y + crop.height);
+    assert.ok(crop.y + crop.height < 85);
+  }
+});
+
+test("keeps contained illustration borders and bounded crop buffers intact", async () => {
+  const { expandImageCropToWhitespace } = await import("../lib/image-crop.ts");
+  const width = 140, height = 100;
+  const data = new Uint8ClampedArray(width * height * 4).fill(255);
+  for (let y = 20; y < 65; y++) for (let x = 20; x < 110; x++) {
+    if (x < 22 || x >= 108 || y < 22 || y >= 63) data.set([0, 0, 0, 255], (y * width + x) * 4);
+  }
+  const crop = expandImageCropToWhitespace({ width, height, data }, { x: 25, y: 20, width: 80, height: 45 }, { ignorePageRules: true });
+  assert.ok(crop.x <= 20 && crop.x + crop.width >= 110);
+  assert.ok(crop.y <= 20 && crop.y + crop.height >= 65);
+  assert.ok(crop.x >= 0 && crop.y >= 0 && crop.x + crop.width <= width && crop.y + crop.height <= height);
+});
+
+test("retries a clipped decorative crop beyond its first probe and stops after finding whitespace", async () => {
+  const { resolveImageCrop } = await import("../lib/image-crop.ts");
+  const page = { width: 1000, height: 1400 };
+  const probes = [];
+  const readPixels = (region) => {
+    probes.push(region);
+    const data = new Uint8ClampedArray(region.width * region.height * 4).fill(255);
+    for (let y = 0; y < region.height; y++) for (let x = 0; x < region.width; x++) {
+      const px = x + region.x, py = y + region.y;
+      const mark = px >= 122 && px < 327 && py >= 60 && py < 105 && (px < 175 || (px - 175) % 14 < 11);
+      const rule = px >= 120 && px < 880 && py >= 110 && py < 112;
+      const heading = px >= 200 && px < 800 && py >= 165 && py < 185;
+      if (mark || rule || heading) data.set([80, 90, 220, 255], (y * region.width + x) * 4);
+    }
+    return { ...region, data };
+  };
+  const estimate = { x: 100, y: 35, width: 150, height: 63 };
+  const crop = resolveImageCrop(page, estimate, readPixels, { ignorePageRules: true });
+  assert.equal(probes.length, 2);
+  assert.ok(probes[0].x + probes[0].width < 327);
+  assert.ok(crop.x <= 122 && crop.x + crop.width >= 327, JSON.stringify(crop));
+  assert.ok(crop.y <= 60 && crop.y + crop.height >= 105);
+  assert.ok(crop.y + crop.height <= 110, JSON.stringify(crop));
+  assert.deepEqual(estimate, { x: 100, y: 35, width: 150, height: 63 });
+});
+
+test("caps crop retries and preserves the single-probe behavior for body illustrations", async () => {
+  const { resolveImageCrop } = await import("../lib/image-crop.ts");
+  const page = { width: 1000, height: 1400 };
+  const estimate = { x: 400, y: 400, width: 150, height: 70 };
+  for (const decoration of [true, false]) {
+    const probes = [];
+    const crop = resolveImageCrop(page, estimate, (region) => {
+      probes.push(region);
+      const data = new Uint8ClampedArray(region.width * region.height * 4).fill(255);
+      for (let y = 0; y < region.height; y++) for (let x = 0; x < region.width; x++) {
+        if (y + region.y >= 410 && y + region.y < 460) data.set([0, 0, 0, 255], (y * region.width + x) * 4);
+      }
+      return { ...region, data };
+    }, { ignorePageRules: decoration });
+    assert.equal(probes.length, decoration ? 3 : 1);
+    for (const region of probes) {
+      assert.ok(region.width <= estimate.width + page.width * .48);
+      assert.ok(region.height <= estimate.height + page.height * .24);
+      assert.ok(region.x >= 0 && region.y >= 0);
+      assert.ok(region.x + region.width <= page.width && region.y + region.height <= page.height);
+    }
+    assert.ok(crop.x >= 0 && crop.x + crop.width <= page.width);
+    if (!decoration) assert.equal(crop.width, estimate.width);
+  }
+});
+
+function alignmentFixture(sources) {
+  return {
+    width: 1000, height: 1400, method: "pdf",
+    words: sources.flatMap((source, sentence) => source.split(/\s+/).map((text, index) => ({
+      text, line: sentence * 10 + Math.floor(index / 10),
+      rect: { x: .05 + index % 10 * .08, y: .05 + sentence * .2 + Math.floor(index / 10) * .02, width: .07, height: .015 },
+    }))),
+  };
+}
+
+const pretrainingSource = "We pretrain DeepSeek-V4.1-Flash on a multimodal corpus comprising 45T tokens and conduct comprehensive post-training, yielding strong performance across diverse text-based and multimodal agentic scenarios.";
+
+test("recovers all source lines after a small spelling error without changing either sentence", async () => {
+  const { alignSourceBlocks } = await import("../lib/source-alignment.ts");
+  const layout = alignmentFixture(["Previous unrelated sentence.", pretrainingSource, "Following unrelated sentence."]);
+  for (const sourceText of [
+    pretrainingSource.replace("comprising", "comprizing"),
+    pretrainingSource.replace("comprehensive", "comprehhensive"),
+    pretrainingSource.replace("comprehensive", "comprehnsive"),
+  ]) {
+    const blocks = normalizeTranslationPayload({ blocks: [{ text: "Translated sentence.", sentences: [
+      { text: "Translated sentence.", sourceText, sourceRects: [] },
+    ] }] }).blocks;
+    const original = structuredClone(blocks);
+    const aligned = alignSourceBlocks(blocks, layout)[0].sentences[0];
+    assert.equal(aligned.sourceText, sourceText);
+    assert.equal(aligned.text, "Translated sentence.");
+    assert.equal(aligned.sourceRects.length, Math.ceil(pretrainingSource.split(/\s+/).length / 10));
+    assert.ok(aligned.sourceRects.every((rect) => rect.y >= .25 && rect.y < .45));
+    assert.deepEqual(blocks, original);
+  }
+});
+
+test("prefers an exact sentence over an earlier approximate match", async () => {
+  const { alignSourceBlocks } = await import("../lib/source-alignment.ts");
+  const sourceText = pretrainingSource.replace("comprising", "comprizing");
+  const blocks = normalizeTranslationPayload({ blocks: [{ text: "Translation.", sentences: [
+    { text: "Translation.", sourceText, sourceRects: [] },
+  ] }] }).blocks;
+  const aligned = alignSourceBlocks(blocks, alignmentFixture([pretrainingSource, sourceText]))[0].sentences[0];
+  assert.ok(aligned.sourceRects.length > 0);
+  assert.ok(aligned.sourceRects.every((rect) => rect.y >= .25));
+});
+
+test("rejects competing approximate sentences instead of guessing a highlight", async () => {
+  const { alignSourceBlocks } = await import("../lib/source-alignment.ts");
+  const blocks = normalizeTranslationPayload({ blocks: [{ text: "Translation.", sentences: [
+    { text: "Translation.", sourceText: pretrainingSource.replace("comprising", "comprizing"), sourceRects: [{ x: .1, y: .1, width: .8, height: .1 }] },
+  ] }] }).blocks;
+  const layout = alignmentFixture([pretrainingSource, pretrainingSource.replace("comprising", "comprixing")]);
+  assert.deepEqual(alignSourceBlocks(blocks, layout)[0].sentences[0].sourceRects, []);
+});
+
+test("keeps approximate repeated sentences in reading order", async () => {
+  const { alignSourceBlocks } = await import("../lib/source-alignment.ts");
+  const blocks = normalizeTranslationPayload({ blocks: [{ text: "First.Second.", sentences: [
+    { text: "First.", sourceText: pretrainingSource.replace("comprising", "comprizing"), sourceRects: [] },
+    { text: "Second.", sourceText: pretrainingSource.replace("comprising", "comprizing"), sourceRects: [] },
+  ] }] }).blocks;
+  const aligned = alignSourceBlocks(blocks, alignmentFixture([pretrainingSource, pretrainingSource]))[0].sentences;
+  assert.ok(aligned[0].sourceRects.every((rect) => rect.y < .25));
+  assert.ok(aligned[1].sourceRects.every((rect) => rect.y >= .25));
+  assert.ok(aligned.every((sentence) => sentence.sourceRects.length > 0));
+});
+
+test("refuses approximate matches for short labels and materially different sentences", async () => {
+  const { alignSourceBlocks } = await import("../lib/source-alignment.ts");
+  for (const [source, sourceText] of [
+    ["Figure 1 Results", "Figure 2 Results"],
+    [pretrainingSource, pretrainingSource.replace("45T", "200B").replace("comprehensive", "limited")],
+  ]) {
+    const blocks = normalizeTranslationPayload({ blocks: [{ text: "Translation.", sentences: [
+      { text: "Translation.", sourceText, sourceRects: [] },
+    ] }] }).blocks;
+    assert.deepEqual(alignSourceBlocks(blocks, alignmentFixture([source]))[0].sentences[0].sourceRects, []);
+  }
+});
+
+test("uses grounded caption lines instead of inaccurate model crop coordinates", () => {
+  const caption = normalizeTranslationPayload({ blocks: [{ kind: "caption", text: "Translated caption.",
+    sourceRect: { x: .17, y: .365, width: .66, height: .05 },
+    sentences: [{ text: "Translated caption.", sourceText: "Figure 2: Caption.", sourceRects: [
+      { x: .12, y: .286, width: .76, height: .013 },
+      { x: .12, y: .302, width: .60, height: .013 },
+    ] }],
+  }] }).blocks[0];
+  const rect = captionSourceRect(caption);
+  assert.equal(rect.y, .286);
+  assert.ok(Math.abs(rect.height - .029) < .00001);
+  const image = normalizeTranslationPayload({ blocks: [{ kind: "image", sourceRect: { x: .22, y: .08, width: .57, height: .29 } }] }).blocks[0];
+  assert.deepEqual(groupTranslationMedia([image, caption])[0].captionRect, rect);
+});
+
+test("excludes captions above and below images and prevents crop expansion from reintroducing them", async () => {
+  const { excludeImageCaption, resolveImageCrop } = await import("../lib/image-crop.ts");
+  const page = { width: 180, height: 160 };
+  for (const caption of [
+    { x: 10, y: 20, width: 160, height: 10 },
+    { x: 10, y: 95, width: 160, height: 20 },
+  ]) {
+    const estimate = { x: 30, y: 10, width: 120, height: 110 };
+    const { crop: initial, bounds } = excludeImageCaption(page, estimate, caption);
+    const above = caption.y < 40;
+    assert.ok(above ? initial.y > caption.y + caption.height : initial.y + initial.height < caption.y);
+    const crop = resolveImageCrop(page, initial, (region) => {
+      assert.ok(above ? region.y > caption.y + caption.height : region.y + region.height < caption.y);
+      const data = new Uint8ClampedArray(region.width * region.height * 4).fill(255);
+      for (let y = 0; y < region.height; y++) for (let x = 0; x < region.width; x++) {
+        const px = x + region.x, py = y + region.y;
+        if (px >= 35 && px < 145 && py >= 40 && py < 85) data.set([0, 0, 0, 255], (y * region.width + x) * 4);
+      }
+      return { ...region, data };
+    }, { bounds });
+    assert.ok(crop.y <= 40 && crop.y + crop.height >= 85);
+    assert.ok(above ? crop.y > caption.y + caption.height : crop.y + crop.height < caption.y);
+  }
+});
+
+test("preserves uncaptained artwork and rejects incompatible caption bounds", async () => {
+  const { excludeImageCaption } = await import("../lib/image-crop.ts");
+  const page = { width: 200, height: 200 };
+  const estimate = { x: 20, y: 40, width: 70, height: 80 };
+  assert.equal(excludeImageCaption(page, estimate).crop, estimate);
+  assert.equal(excludeImageCaption(page, estimate, { x: 120, y: 70, width: 60, height: 20 }).crop, estimate);
+  assert.equal(excludeImageCaption(page, estimate, { x: 20, y: 40, width: 70, height: 80 }).crop, estimate);
 });

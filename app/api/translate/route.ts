@@ -45,6 +45,7 @@ const blockSchema = {
   properties: {
     kind: { type: "string", enum: ["heading", "paragraph", "list_item", "caption", "spacer", "page_number", "image"] },
     sourceRect: { anyOf: [rectSchema, { type: "null" }] },
+    imageRole: { anyOf: [{ type: "string", enum: ["body", "decoration"] }, { type: "null" }] },
     fontSize: { anyOf: [{ type: "number", minimum: 0, maximum: 0.25 }, { type: "null" }] },
     sentences: {
       type: "array",
@@ -67,7 +68,7 @@ const blockSchema = {
     spaceBefore: { type: "string", enum: ["none", "xs", "sm", "md", "lg", "xl"] },
     size: { type: "string", enum: ["xs", "sm", "md", "lg", "xl"] },
   },
-  required: ["kind", "text", "marker", "trailing", "align", "indent", "spaceBefore", "size", "sourceRect", "fontSize", "sentences"],
+  required: ["kind", "text", "marker", "trailing", "align", "indent", "spaceBefore", "size", "sourceRect", "imageRole", "fontSize", "sentences"],
 };
 
 const schema = {
@@ -137,7 +138,7 @@ Instructions:
 - For every block, mark sourceRect around its source region. All coordinates are fractions from 0 to 1 of THAT page image, origin at the top left: x, y, width, height. Use the displayed orientation and full page image, including margins. Never use pixel coordinates or coordinates from an adjacent page.
 - Record fontSize as the approximate source glyph/em height divided by the full page image WIDTH (for example 20px glyphs on a 1000px-wide scan = 0.02). Preserve relative typography; use null for non-text blocks.
 - Extract each source sentence (or the visible fragment of a sentence crossing a page boundary) into sentences, including headings, captions, list contents, and page numbers. Each entry contains its translated text, verbatim sourceText, and sourceRects tightly enclosing the original words, one rectangle per line fragment. Do not include neighboring sentences in these rectangles. The sentence text strings concatenated in order MUST equal block.text exactly, including punctuation and whitespace. List marker/trailing remain separate from block.text.
-- Preserve every illustration, photograph, diagram, and graphical table as an image block at its reading-order position, with sourceRect enclosing the COMPLETE image to crop from the original scan, including its outermost strokes, labels, legends, and panel markers. Allow a small whitespace border; never place a crop edge through visible artwork. Preserve horizontal placement and relative width. Do not replace images with spacers or generate image descriptions. Keep captions as separate translated caption blocks outside the image crop. For image blocks use empty text, marker, trailing, and sentences.
+- Preserve every illustration, photograph, diagram, and graphical table as an image block at its reading-order position, with sourceRect enclosing the COMPLETE image to crop from the original scan, including its outermost strokes, labels, legends, and panel markers. Allow a small whitespace border; never place a crop edge through visible artwork. Preserve relative width using sourceRect; the reader centers body illustrations and graphical tables in the translated column. Set imageRole="body" for these images. Set imageRole="decoration" for logos, header/footer marks, ornaments, and other page-design images that must retain their original horizontal placement. Crop the complete mark, including the last letters of wordmarks, and exclude unrelated page separator rules. For non-image blocks set imageRole=null. Do not replace images with spacers or generate image descriptions. Keep captions as separate translated caption blocks immediately adjacent to their image block, with table captions before the image and figure captions after it. Do not insert spacers between an image and its caption. Exclude the original caption from sourceRect so it is not duplicated inside the crop. Use align="center" and indent=0 for captions; the reader groups each caption with its image. For image blocks use empty text, marker, trailing, and sentences.
 - Preserve meaningful empty vertical whitespace with spacer blocks; reserve spacers for actual blank gaps.
 - Use spaceBefore to approximate smaller gaps before text blocks. Avoid encoding layout with spaces, tabs, or repeated newlines inside text.
 - For fields that do not apply, return an empty string for marker and trailing. For spacer blocks, return empty strings for text, marker, and trailing.

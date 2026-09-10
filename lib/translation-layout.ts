@@ -9,6 +9,7 @@ export type TranslationSentence = {
 export type LayoutBlock = {
   kind: "heading" | "paragraph" | "list_item" | "caption" | "spacer" | "page_number" | "image";
   sourceRect?: SourceRect;
+  imageRole?: "body" | "decoration";
   fontSize?: number;
   sentences?: TranslationSentence[];
   text: string;
@@ -64,11 +65,13 @@ export function normalizeLayoutBlock(value: unknown): LayoutBlock {
   const indent = typeof block.indent === "number" && Number.isFinite(block.indent) ? Math.round(block.indent) : 0;
   const text = typeof block.text === "string" ? block.text : "";
   const sourceRect = normalizeSourceRect(block.sourceRect);
+  const imageRole = block.imageRole === "body" || block.imageRole === "decoration" ? block.imageRole : undefined;
   const sentences = normalizeSentences(block.sentences, text);
   const fontSize = typeof block.fontSize === "number" && Number.isFinite(block.fontSize) && block.fontSize > 0 && block.fontSize <= 0.25
     ? block.fontSize : undefined;
   return {
     ...(sourceRect && { sourceRect }),
+    ...(imageRole && { imageRole }),
     ...(fontSize && { fontSize }),
     ...(sentences && { sentences }),
     kind: enumValue(rawKind, blockKinds, "paragraph"),

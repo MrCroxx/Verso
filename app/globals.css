@@ -201,7 +201,9 @@ button { color: inherit; }
 .source-highlights span { position: absolute; background: rgb(255 207 64 / 38%); box-shadow: inset 0 0 0 1px rgb(192 135 10 / 65%); border-radius: 2px; }
 .translation-sentence { border-radius: 2px; transition: background-color .12s; }
 .translation-sentence:hover, .translation-sentence:focus-visible { background: rgb(255 207 64 / 25%); outline: 1px solid rgb(192 135 10 / 45%); }
-.block-image { margin-bottom: 1em; }
+.layout-block.block-image { display: flex; flex-direction: column; gap: 10px; width: 100%; max-width: 100%; margin-inline: 0; margin-bottom: 24px; break-inside: avoid; }
+.source-image-content { max-width: 100%; margin-inline: auto; }
+.block-image .media-caption { width: 100%; text-align: left; overflow-wrap: anywhere; line-height: 1.5; }
 .block-image canvas { display: block; width: 100%; height: auto; aspect-ratio: 1; background: #ecebe5; }
 .page-label { font-family: var(--font-geist-mono), monospace; color: #98a09b; font-size: 9px; text-transform: uppercase; letter-spacing: .1em; }
 .source-page > .page-label { position: absolute; left: 17px; top: 16px; }
