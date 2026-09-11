@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -57,9 +57,6 @@ function bundle(sourcePath, target, executableDirectory = path.dirname(sourcePat
     edits.push('-change', dependency, `@loader_path/${path.relative(path.dirname(target), bundled)}`);
   }
   if (target.endsWith('.dylib')) edits.push('-id', `@loader_path/${path.basename(target)}`);
-  // Homebrew bottles are already signed; rewriting their load commands invalidates that signature.
-  const unsigned = spawnSync('/usr/bin/codesign', ['--remove-signature', target], { encoding: 'utf8' });
-  if (unsigned.status !== 0 && !unsigned.stderr?.includes('not signed at all')) throw new Error(unsigned.stderr || 'Unable to remove native code signature.');
   // Poppler embeds its data directory. Its children run from Resources/server,
   // so a shorter, NUL-padded relative path remains valid after moving the app.
   if (path.basename(source).includes('poppler')) {
@@ -73,6 +70,8 @@ function bundle(sourcePath, target, executableDirectory = path.dirname(sourcePat
     }
     writeFileSync(target, bytes);
   }
+  // Keep the existing signature's LINKEDIT allocation while rewriting load
+  // commands. Removing it first leaves some Homebrew dylibs uneditable.
   if (edits.length) run('/usr/bin/install_name_tool', [...edits, target]);
   run('/usr/bin/codesign', ['--force', '--sign', '-', target]);
   return target;
