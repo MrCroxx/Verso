@@ -665,8 +665,8 @@ function TranslationText({
   );
 }
 
-function TranslationLiveProgress({ progress, messages }: { progress?: TranslationProgress; messages: UiMessages }) {
-  const phase = progress?.phase ?? "queued";
+function TranslationLiveProgress({ progress, messages }: { progress: TranslationProgress; messages: UiMessages }) {
+  const phase = progress.phase;
   return <div className="translation-live" role="status" aria-live="polite" aria-atomic="true" title={messages.translationStatsHelp}>
     <span className="translation-live-phase"><LoaderCircle className="spin" size={12} />{messages.translationPhases[phase]}</span>
     <span className="translation-live-counts">
@@ -767,6 +767,7 @@ function PageSpread({
   const [renderError, setRenderError] = useState("");
   const [renderAttempt, setRenderAttempt] = useState(0);
   const cachedTranslation = translationSource === "cache";
+  const translating = loading && Boolean(progress);
   const finishTranslationAnimation = useCallback(
     () => onTranslationAnimationComplete(page, translation?.cacheVersion),
     [onTranslationAnimationComplete, page, translation?.cacheVersion],
@@ -891,15 +892,15 @@ function PageSpread({
         <div className="translation-heading">
           <div className="page-label">{messages.translatedPage(page)}</div>
           <div className="translation-heading-actions">
-            {loading && <TranslationLiveProgress progress={progress} messages={messages} />}
-            {(translation || loading) && (
+            {loading && progress && <TranslationLiveProgress progress={progress} messages={messages} />}
+            {(translation || translating) && (
               <button
                 className="icon-button subtle"
-                aria-label={loading ? messages.restartTranslation : messages.retranslate}
-                title={loading ? messages.restartTranslation : messages.retranslate}
+                aria-label={translating ? messages.restartTranslation : messages.retranslate}
+                title={translating ? messages.restartTranslation : messages.retranslate}
                 onClick={() => requestTranslation(page, true)}
               >
-                <RefreshCw className={cn(loading && "spin")} size={15} />
+                <RefreshCw className={cn(translating && "spin")} size={15} />
               </button>
             )}
           </div>
@@ -924,7 +925,7 @@ function PageSpread({
             <button className="secondary-button" onClick={() => requestTranslation(page, true)}>{messages.retry}</button>
           </div>
         ) : (
-          <TranslationSkeleton page={page} messages={messages} cached={cachedTranslation} />
+          <TranslationSkeleton page={page} messages={messages} cached={cachedTranslation} showStatus={cachedTranslation} />
         )}
       </div>
       {page < totalPages && <div className="spread-divider"><span>{messages.pageDivider(page + 1)}</span></div>}
@@ -2091,7 +2092,6 @@ export default function Home() {
       }
     };
     setLoadingPages((existing) => new Set(existing).add(page));
-    setTranslationProgress((existing) => ({ ...existing, [page]: { phase: "queued" } }));
     setErrors((existing) => ({ ...existing, [page]: "" }));
     try {
       if (!force) {
@@ -2131,7 +2131,10 @@ export default function Home() {
           });
         }
       }
+      requireCurrentRun();
       if (!translationService.configured) throw new Error(currentMessages.apiKeyRequired);
+      // Cache reads must not appear as queued model requests.
+      setTranslationProgress((existing) => ({ ...existing, [page]: { phase: "queued" } }));
       previousTranslation = await readPreviousTranslation();
       requireCurrentRun();
 
