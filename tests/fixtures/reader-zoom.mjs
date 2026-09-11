@@ -9,10 +9,10 @@ app.setPath('userData', path.join(process.env.VERSO_TEST_DIRECTORY, 'profile'));
 let backend;
 let window;
 let exitCode = 0;
-const waitFor = async (check) => {
+const waitFor = async (check, message = 'Timed out waiting for reader zoom') => {
   const deadline = performance.now() + 15_000;
   while (!await check()) {
-    assert.ok(performance.now() < deadline, 'Timed out waiting for reader zoom');
+    assert.ok(performance.now() < deadline, message);
     await new Promise(resolve => setTimeout(resolve, 25));
   }
 };
@@ -198,12 +198,16 @@ async function run() {
       edgeResults.push({ side, ...edge });
     }
     window.setSize(1000, 900);
-    await act('await nextFrames(6)');
-    assert.ok(await js(`Math.abs(document.querySelector('.reader-canvas').getBoundingClientRect().width
+    // ResizeObserver and React commits can take more than a fixed number of frames on CI.
+    await waitFor(() => js(`window.outerWidth === 1000 && Math.abs(document.querySelector('.reader-canvas').getBoundingClientRect().width
       - document.querySelector('.reader-viewport').clientWidth + 16) < 1`), 'Fit width must track viewport resizing');
-    await act(`document.querySelector('[data-page="80"]').style.minHeight = '1800px'; await nextFrames(6);`);
-    assert.ok(await js(`Math.abs(document.querySelector('.reader-canvas').getBoundingClientRect().height
-      - document.querySelector('.spreads').getBoundingClientRect().height) < 1`), 'Scroll height must follow newly rendered content');
+    const previousHeight = await js(`document.querySelector('.spreads').getBoundingClientRect().height`);
+    await act(`const page = document.querySelector('[data-page="80"]'); page.style.minHeight = (page.offsetHeight + 1000) + 'px';`);
+    await waitFor(() => js(`(() => {
+      const height = document.querySelector('.reader-canvas').getBoundingClientRect().height;
+      return height > ${previousHeight} + 1
+        && Math.abs(height - document.querySelector('.spreads').getBoundingClientRect().height) < 1;
+    })()`), 'Scroll height must follow newly rendered content');
     console.log(JSON.stringify({ pages: 80, burstEvents: 40, scaleWrites: burst.writes,
       pointerDrift: { x: continuous.x - before.anchor.x, y: continuous.y - before.anchor.y },
       intrinsicLayoutUnchanged: true, bounds: '50%-300%', controlsAndResize: 'passed', edges: edgeResults }));
