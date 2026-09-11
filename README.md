@@ -30,7 +30,7 @@ source.
   browser. Provider settings are stored in server-side SQLite together with
   the local library metadata.
 - **Local library and caching:** keep uploaded PDFs, page indexes, blank-page
-  results, and translations in the Docker data volume so books remain available
+  results, and translations in the Docker volume or desktop library so books remain available
   across reading sessions without a cloud storage service.
 - **Whole-book translation queue:** enqueue a book from the library and follow its
   page progress. Work continues with the browser closed and resumes after a server
@@ -158,6 +158,26 @@ To update an existing Compose deployment:
 docker compose pull
 docker compose up -d
 ```
+
+## macOS Desktop App
+
+Verso can also run as a standalone macOS app with a local library, using the
+same reader and backend as the Docker deployment. The app bundles Node.js,
+Poppler, Tesseract, and OCR language data; it does not require Docker or a remote
+Verso server. Desktop data lives in `~/Library/Application Support/Verso/library`.
+
+Build an ad-hoc signed installer on a Mac:
+
+```bash
+brew install poppler tesseract tesseract-lang
+npm ci
+VERSO_MAC_UNSIGNED=1 npm run desktop:package
+```
+
+Installers are written to `dist/desktop`. The **macOS Desktop** Actions workflow
+also builds separate Apple Silicon and Intel artifacts. See
+[desktop development and packaging](docs/desktop.md) for startup behavior,
+validation, signing, and notarization.
 
 ## Translation traces
 

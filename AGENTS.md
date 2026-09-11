@@ -19,6 +19,6 @@
 
 ## Product Constraints
 
-- Keep uploaded books, page indexes, and translation results in Docker volume-backed local storage rather than browser caches or cloud services.
+- Keep uploaded books, page indexes, and translation results in local filesystem storage: a Docker volume for server deployments and the application support directory for the desktop app, rather than browser caches or cloud services.
 - Preserve lazy PDF rendering and bounded translation concurrency for large scanned books.
 - Keep interface locale independent from the translation target language.
