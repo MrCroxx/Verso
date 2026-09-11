@@ -3,6 +3,7 @@ import { cp, mkdir, readFile, rename, rm, symlink } from 'node:fs/promises';
 import path from 'node:path';
 import { packager } from '@electron/packager';
 import { createPackagerOptions } from '../electron-packager.config.mjs';
+import { createMacosDmg } from './create-macos-dmg.mjs';
 
 if (process.platform !== 'darwin') throw new Error('Build the macOS app on a Mac, or use the macOS Desktop workflow.');
 const args = process.argv.slice(2);
@@ -28,7 +29,7 @@ if (!args.includes('--dir')) {
   try {
     await cp(appPath, path.join(staging, 'Verso.app'), { recursive: true, verbatimSymlinks: true });
     await symlink('/Applications', path.join(staging, 'Applications'));
-    run('/usr/bin/hdiutil', ['create', '-ov', '-format', 'UDZO', '-fs', 'HFS+', '-volname', 'Verso', '-srcfolder', staging, `${artifact}.dmg`]);
+    await createMacosDmg({ staging, destination: `${artifact}.dmg`, icon: path.resolve('.desktop/icon.icns') });
     await rm(`${artifact}.zip`, { force: true });
     run('/usr/bin/ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', appPath, `${artifact}.zip`]);
   } finally { await rm(staging, { recursive: true, force: true }); }

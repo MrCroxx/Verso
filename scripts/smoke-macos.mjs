@@ -11,6 +11,15 @@ try {
   const appPath = path.join(temporary, 'Verso.app');
   await cp(path.resolve(process.argv[2]), appPath, { recursive: true, verbatimSymlinks: true });
   const resources = path.join(appPath, 'Contents/Resources');
+  const iconFile = execFileSync('/usr/bin/plutil', [
+    '-extract', 'CFBundleIconFile', 'raw', '-o', '-', path.join(appPath, 'Contents/Info.plist'),
+  ], { encoding: 'utf8' }).trim();
+  assert.equal(path.basename(iconFile), iconFile, 'The bundle icon must be a resource filename');
+  const icon = await readFile(path.join(resources, iconFile.endsWith('.icns') ? iconFile : `${iconFile}.icns`));
+  assert.equal(icon.toString('ascii', 0, 4), 'icns');
+  assert.equal(icon.readUInt32BE(4), icon.length, 'The ICNS must not be truncated');
+  assert.deepEqual(icon, await readFile('.desktop/icon.icns'), 'The app must contain the generated Verso icon');
+  assert.deepEqual(await readFile(path.join(resources, 'icon.png')), await readFile('.desktop/icon.png'));
   const nativeRoot = path.join(resources, 'native');
   const env = {
     HOME: process.env.HOME, TMPDIR: process.env.TMPDIR || tmpdir(), PATH: '/usr/bin:/bin',
