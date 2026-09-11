@@ -206,7 +206,8 @@ export class TranslationProviderError extends Error {
   }
 }
 
-export async function generateTranslation(body: TranslationRequest, onProgress?: (progress: TranslationProgress) => void) {
+export async function generateTranslation(body: TranslationRequest, onProgress?: (progress: TranslationProgress) => void, signal?: AbortSignal) {
+  signal?.throwIfAborted();
     const statistics = createTranslationStatistics();
     onProgress?.({ phase: "preparing" });
     const config = await traceStep("settings.load", () => getAiProviderSettings());
@@ -322,7 +323,7 @@ export async function generateTranslation(body: TranslationRequest, onProgress?:
         throw new TranslationProviderError(providerError || `Provider returned ${response.status}.`, response.status);
       }
       return result;
-    }).catch((error) => {
+    }, undefined, signal).catch((error) => {
       if (error instanceof ProviderTimeoutError) {
         traceAttributes({ timeoutPhase: error.phase });
         throw new TranslationProviderError(error.message, 504);

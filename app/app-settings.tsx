@@ -34,7 +34,7 @@ export function AppSettingsProvider({ children }: { children: ReactNode }) {
           ...DEFAULT_SETTINGS,
           targetLanguage: typeof stored.targetLanguage === "string" && stored.targetLanguage ? stored.targetLanguage : DEFAULT_SETTINGS.targetLanguage,
           nearbyPages: boundedInteger(stored.nearbyPages, 1, 4, DEFAULT_SETTINGS.nearbyPages),
-          translationConcurrency: boundedInteger(stored.translationConcurrency, 1, 6, DEFAULT_SETTINGS.translationConcurrency),
+          translationConcurrency: boundedInteger(stored.translationConcurrency, 1, 10, DEFAULT_SETTINGS.translationConcurrency),
           smoothScrolling: typeof stored.smoothScrolling === "boolean" ? stored.smoothScrolling : DEFAULT_SETTINGS.smoothScrolling,
           translationAnimation: typeof stored.translationAnimation === "boolean" ? stored.translationAnimation : DEFAULT_SETTINGS.translationAnimation,
           translationAnimationSpeed: stored.schemaVersion === DEFAULT_SETTINGS.schemaVersion

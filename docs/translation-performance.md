@@ -174,3 +174,16 @@ text, successful final rendering, late-reader progress, and no added horizontal
 overflow at desktop and narrow widths. The existing Docker service was rebuilt
 and deployed in place and its health check passed. Existing failed whole-book
 queues were not restarted as part of the single-page verification.
+
+## Configurable background concurrency
+
+The queue now supports 1–10 simultaneous pages (default 4), including pages of the
+same book. This supersedes the sequential background behavior described above.
+Its server-persisted setting is independent of reader concurrency, which also
+supports 1–10. Work remains bounded and pending reader requests retain priority.
+Parallel pages use the same adjacent source images; a previous translation tail
+is used only when that page has already completed. Outstanding page state and
+per-page retries survive restarts. Each page gets three automatic retries; the
+book pauses at three distinct pages that remain failed after those retries.
+Recovered pages are removed from that count, and isolated exhausted pages are
+skipped so later pages can continue.

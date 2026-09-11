@@ -157,6 +157,48 @@ export async function ensureStorageSchema(db: LocalDatabase = getStorage().db) {
       )`,
     ];
     for (const statement of statements) await db.prepare(statement).run();
+    // Upgrade existing local databases without resetting queued work.
+    const columns = await db.prepare("PRAGMA table_info(translation_queue)").all<{ name: string }>();
+    for (const [name, definition] of Object.entries({
+      retry_count: "INTEGER NOT NULL DEFAULT 0",
+      retry_at: "INTEGER NOT NULL DEFAULT 0",
+      run_id: "INTEGER NOT NULL DEFAULT 0",
+    })) {
+      if (!columns.results.some((column) => column.name === name)) {
+        await db.prepare(`ALTER TABLE translation_queue ADD COLUMN ${name} ${definition}`).run();
+      }
+    }
+    // The cursor advance and page-state migration must commit together.
+    await db.prepare("BEGIN IMMEDIATE").run();
+    try {
+      const pageQueueExists = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'translation_queue_pages'").first();
+      await db.prepare(`CREATE TABLE IF NOT EXISTS translation_queue_pages (
+        document_id TEXT NOT NULL, target_language TEXT NOT NULL, page INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'queued', retry_count INTEGER NOT NULL DEFAULT 0,
+        retry_at INTEGER NOT NULL DEFAULT 0, error TEXT,
+        PRIMARY KEY (document_id, target_language, page),
+        FOREIGN KEY (document_id, target_language) REFERENCES translation_queue(document_id, target_language) ON DELETE CASCADE
+      )`).run();
+      if (!pageQueueExists) {
+        // Preserve the current page and its retry budget when upgrading sequential jobs.
+        await db.prepare(`INSERT INTO translation_queue_pages (document_id, target_language, page, status, retry_count, retry_at, error)
+          SELECT q.document_id, q.target_language, q.next_page,
+            CASE WHEN q.error IS NOT NULL THEN 'retrying' ELSE 'queued' END, q.retry_count, q.retry_at, q.error
+          FROM translation_queue q JOIN books b ON b.fingerprint = q.document_id
+          WHERE q.status <> 'completed' AND q.next_page <= b.page_count`).run();
+        await db.prepare(`UPDATE translation_queue SET next_page = next_page + 1
+          WHERE EXISTS (SELECT 1 FROM translation_queue_pages p WHERE p.document_id = translation_queue.document_id
+            AND p.target_language = translation_queue.target_language)`).run();
+      }
+      await db.prepare("COMMIT").run();
+    } catch (error) {
+      await db.prepare("ROLLBACK").run();
+      throw error;
+    }
+    await db.prepare(`CREATE TABLE IF NOT EXISTS translation_queue_settings (
+      id INTEGER PRIMARY KEY CHECK (id = 1), concurrency INTEGER NOT NULL DEFAULT 4 CHECK (concurrency BETWEEN 1 AND 10)
+    )`).run();
+    await db.prepare("INSERT OR IGNORE INTO translation_queue_settings (id) VALUES (1)").run();
     db.optimize();
     hardenStoragePermissions();
   })();

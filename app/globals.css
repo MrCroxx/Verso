@@ -521,7 +521,7 @@ body, .topbar, .sidebar, .reader-toolbar, .page-spread, .page-surface, .settings
 
 .settings-shell a, .settings-link { text-decoration: none; color: inherit; }
 .settings-shell .topbar > .secondary-button { display: inline-flex; justify-self: end; }
-.library-topbar .settings-link { display: inline-flex; }
+.library-topbar .settings-link, .library-topbar .queue-link { display: inline-flex; text-decoration: none; }
 .settings-page { width: min(800px, 100%); margin: 0 auto; padding: 108px 32px 64px; }
 .settings-heading h1 { margin: 0; font-family: Georgia, "Songti SC", serif; font-size: 36px; }
 .settings-heading p { margin: 10px 0 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
@@ -570,3 +570,37 @@ body, .topbar, .sidebar, .reader-toolbar, .page-spread, .page-surface, .settings
 .translation-live-phase { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .translation-live-counts { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .translation-heading-actions > button { flex: none; }
+
+.queue-page { width: min(920px, 100%); }
+.queue-page h1 { display: flex; align-items: center; gap: 12px; }
+.queue-card-heading, .queue-card-actions, .queue-progress-copy, .queue-notice { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.queue-card-heading { align-items: flex-start; }
+.queue-card-heading > div { min-width: 0; }
+.queue-card h2 { margin: 0; overflow-wrap: anywhere; line-height: 1.4; }
+.queue-card-heading p, .queue-card-actions small, .queue-progress-copy { color: var(--muted); font-size: 12px; }
+.queue-card-heading p { margin: 6px 0 20px; }
+.queue-status { flex-shrink: 0; border-radius: 20px; padding: 6px 10px; background: var(--canvas); color: var(--muted); font-size: 11px; }
+.queue-status-running, .queue-status-completed { color: var(--green); }
+.queue-status-failed { color: #b44b42; }
+.queue-status-retrying { color: #ad7942; }
+.queue-card progress { display: block; width: 100%; height: 5px; margin: 10px 0 16px; accent-color: var(--green); }
+.queue-card .queue-error { margin-top: 16px; white-space: pre-wrap; line-height: 1.7; }
+.queue-notice { margin: 24px 0 0; padding: 16px; border: 1px solid var(--line); border-radius: 12px; font-size: 13px; overflow-wrap: anywhere; }
+.queue-notice > div { min-width: 0; }
+.queue-notice .queue-error { margin-top: 8px; }
+.queue-empty { display: flex; align-items: center; gap: 10px; margin-top: 32px; color: var(--muted); font-size: 13px; }
+@media (max-width: 700px) {
+  .queue-card-heading, .queue-card-actions { flex-wrap: wrap; }
+  .library-topbar .queue-link { min-width: 36px; padding: 0 8px; }
+}
+
+.queue-concurrency { display: flex; align-items: center; gap: 20px; margin-top: 24px; flex-wrap: wrap; }
+.queue-concurrency > div { flex: 1; min-width: 200px; }
+.queue-concurrency label { font-size: 14px; font-weight: 600; }
+.queue-concurrency p { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
+.queue-concurrency select { width: 80px; padding: 8px; background: var(--paper); color: inherit; border: 1px solid var(--line); border-radius: 8px; }
+
+.queue-page-errors { list-style: none; margin: 18px 0 0; padding: 0; display: grid; gap: 14px; }
+.queue-page-errors strong { font-size: 12px; color: var(--muted); font-weight: 500; }
+.queue-page-errors .queue-error { margin-top: 4px; }
+.queue-status-partial { color: #ad7942; }

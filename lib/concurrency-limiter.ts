@@ -28,7 +28,7 @@ export function createConcurrencyLimiter() {
   return {
     async run<T>(requestedLimit: number, task: () => Promise<T>, signal?: AbortSignal): Promise<T> {
       const normalizedLimit = Number.isFinite(requestedLimit) ? Math.round(requestedLimit) : 4;
-      const limit = Math.min(6, Math.max(1, normalizedLimit));
+      const limit = Math.min(10, Math.max(1, normalizedLimit));
       if (signal?.aborted) throw cancellationReason(signal);
       if (queue.length > 0 || active >= limit) {
         await new Promise<void>((resolve, reject) => {

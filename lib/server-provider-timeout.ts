@@ -26,8 +26,12 @@ export async function withProviderResponse<T>(
   request: (signal: AbortSignal) => Promise<Response>,
   consume: (response: Response) => Promise<T>,
   limits = PROVIDER_TIMEOUTS,
+  signal?: AbortSignal,
 ): Promise<T> {
+  signal?.throwIfAborted();
   const controller = new AbortController();
+  const abort = () => controller.abort(signal?.reason);
+  signal?.addEventListener("abort", abort, { once: true });
   let timeout: ProviderTimeoutError | undefined;
   const expire = (phase: ProviderTimeoutPhase, milliseconds: number) => {
     timeout ??= new ProviderTimeoutError(phase, milliseconds);
@@ -57,10 +61,11 @@ export async function withProviderResponse<T>(
     return result;
   } catch (error) {
     // Fetch/body readers can replace the abort reason with a generic AbortError.
-    throw timeout ?? error;
+    throw timeout ?? (signal?.aborted ? signal.reason : error);
   } finally {
     clearTimeout(activityTimer);
     clearTimeout(totalTimer);
+    signal?.removeEventListener("abort", abort);
     controller.abort();
     await response?.body?.cancel().catch(() => undefined);
   }

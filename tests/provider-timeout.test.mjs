@@ -164,3 +164,27 @@ test('preserves provider failures and releases unread response bodies and timers
   assert.equal(source.signal.reason.name, 'AbortError');
   await assert.rejects(withProviderResponse(async () => { throw failure; }, response => response.json()), error => error === failure);
 });
+
+for (const streaming of [false, true]) {
+  test(`cancels a background provider while waiting for ${streaming ? 'stream data' : 'headers'}`, async () => {
+    const controller = new AbortController();
+    const reason = new Error('Background translation stopped.');
+    const source = provider();
+    let requestSignal;
+    const result = withProviderResponse(streaming ? source.request : signal => {
+      requestSignal = signal;
+      return new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+    }, response => response.text(), undefined, controller.signal);
+    const rejected = assert.rejects(result, error => error === reason);
+    await flush();
+    controller.abort(reason);
+    await rejected;
+    assert.equal((streaming ? source.signal : requestSignal).aborted, true);
+  });
+}
+
+test('does not start a provider request when background work is already stopped', async () => {
+  await assert.rejects(withProviderResponse(() => {
+    assert.fail('A cancelled task must not contact the provider');
+  }, response => response.text(), undefined, AbortSignal.abort(new Error('Stopped'))), /Stopped/);
+});

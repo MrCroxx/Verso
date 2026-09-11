@@ -1,6 +1,8 @@
 "use client";
 /* eslint-disable @next/next/no-img-element */
 
+import { useQueueFeedback } from "./queue-feedback";
+import { isTranslationActive, type BookTranslationJob } from "../lib/translation-queue";
 import { readTranslationResponse, type TranslationProgress } from "../lib/translation-progress";
 import { recordClientTiming, recordTranslationTrace, type TranslationTrace } from "../lib/translation-trace";
 import {
@@ -14,6 +16,7 @@ import {
   Globe2,
   Languages,
   ListTree,
+  ListOrdered,
   LoaderCircle,
   Menu,
   Minus,
@@ -938,7 +941,6 @@ function formatFileSize(size: number) {
   return `${(size / 1024 / 1024).toFixed(size < 10 * 1024 * 1024 ? 1 : 0)} MB`;
 }
 
-type BookTranslationJob = { documentId: string; status: string; error: string | null; completedPages: number; totalPages: number };
 
 function LibraryHome({
   books,
@@ -966,6 +968,7 @@ function LibraryHome({
   onToggleLocale: () => void;
 }) {
   const [jobs, setJobs] = useState<BookTranslationJob[]>([]);
+  const { setNotice } = useQueueFeedback();
   const [pending, setPending] = useState<Set<string>>(new Set());
   const [queueErrors, setQueueErrors] = useState<Record<string, string>>({});
   const [queueError, setQueueError] = useState("");
@@ -976,13 +979,13 @@ function LibraryHome({
   const [discardErrors, setDiscardErrors] = useState<Record<string, string>>({});
   const language = translationSettings.targetLanguage;
   const refreshQueue = useCallback(async (signal?: AbortSignal) => {
-    const response = await fetch(`/api/translation-queue?${new URLSearchParams({ targetLanguage: language })}`, { signal });
+    const response = await fetch("/api/translation-queue", { signal });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || messages.queueReadFailed);
     if (signal?.aborted) return;
     setJobs(result.jobs);
     setQueueError("");
-  }, [language, messages.queueReadFailed]);
+  }, [messages.queueReadFailed]);
   useEffect(() => {
     const controller = new AbortController();
     setJobs([]);
@@ -1034,6 +1037,7 @@ function LibraryHome({
     }
   };
   const enqueue = async (book: LocalBook) => {
+    setNotice(null);
     setOpenActionsId(null);
     setConfirmDiscardId(null);
     setDiscardMessages((value) => ({ ...value, [book.id]: "" }));
@@ -1042,13 +1046,15 @@ function LibraryHome({
     try {
       const response = await fetch("/api/translation-queue", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ bookId: book.id, targetLanguage: language, translationConcurrency: translationSettings.translationConcurrency }),
+        body: JSON.stringify({ bookId: book.id, targetLanguage: language }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || messages.queueFailed);
       await refreshQueue();
     } catch (error) {
-      setQueueErrors((value) => ({ ...value, [book.id]: error instanceof Error ? error.message : messages.queueFailed }));
+      const detail = error instanceof Error ? error.message : messages.queueFailed;
+      setQueueErrors((value) => ({ ...value, [book.id]: detail }));
+      setNotice({ bookName: book.name, error: detail });
     } finally {
       setPending((value) => { const next = new Set(value); next.delete(book.id); return next; });
     }
@@ -1058,6 +1064,7 @@ function LibraryHome({
       <header className="topbar library-topbar">
         <div className="brand"><Brand /></div>
         <div className="top-actions">
+          <Link className="secondary-button queue-link" href="/queue" title={messages.queueTitle} aria-label={messages.queueTitle}><ListOrdered size={16} /><span className="action-label">{messages.queueTitle}</span><span>{jobs.filter((job) => isTranslationActive(job.status)).length || ""}</span></Link>
           <button className="icon-button locale-button" title={messages.switchLanguage} aria-label={messages.switchLanguage} onClick={onToggleLocale}><Globe2 size={16} /><span>{locale === "zh-CN" ? "EN" : "中"}</span></button>
           <ThemeSelect compact />
           <Link className="secondary-button settings-link" href="/settings"><Settings2 size={16} /> {messages.settings}</Link>
@@ -1076,7 +1083,7 @@ function LibraryHome({
         {books.length > 0 && (
           <p className="library-translation-note"><Languages size={14} /><span>{messages.queueHelp(language)}</span></p>
         )}
-        {queueError && <p role="alert" className="queue-error">{queueError}</p>}
+        {queueError && <Link href="/queue" className="book-translate-action">{messages.queueNeedsAttention}</Link>}
         {loading ? (
           <div className="library-home-empty"><LoaderCircle className="spin" size={24} /><strong>{messages.loadingLibrary}</strong></div>
         ) : error ? (
@@ -1089,8 +1096,8 @@ function LibraryHome({
         ) : books.length ? (
           <div className="library-grid">
             {books.map((book) => {
-              const job = jobs.find((value) => value.documentId === book.fingerprint);
-              const active = job?.status === "queued" || job?.status === "running";
+              const job = jobs.find((value) => value.documentId === book.fingerprint && value.targetLanguage === language);
+              const active = isTranslationActive(job?.status);
               const complete = job?.status === "completed" && job.completedPages === job.totalPages;
               return (
               <article className={cn("library-book-card", openActionsId === book.id && "book-actions-open")} key={book.id}>
@@ -1133,7 +1140,7 @@ function LibraryHome({
                     {active || pending.has(book.id) ? <LoaderCircle className="spin" size={14} />
                       : complete ? <CircleCheck size={14} /> : <Languages size={14} />}
                     <span>{pending.has(book.id) || active ? messages.translatingBookAction
-                      : complete ? messages.translatedBookAction : job?.status === "failed" ? messages.retryBookAction : messages.translateBookAction}</span>
+                      : complete ? messages.translatedBookAction : (job?.status === "failed" || job?.status === "partial") ? messages.retryBookAction : job?.status === "stopped" ? messages.queueResume : messages.translateBookAction}</span>
                   </button>
                   <button type="button" className="icon-button book-more-action" id={`book-more-${book.id}`}
                     aria-label={messages.moreOptions} title={messages.moreOptions}
@@ -1170,11 +1177,11 @@ function LibraryHome({
                 </div>
                 {job && !complete && (
                   <div className="book-translation-progress">
-                    <small>{messages.queueProgress(job.completedPages, job.totalPages)}</small>
+                    <small>{messages.queueStatuses[job.status]} · {job.completedPages} / {job.totalPages}</small>
                     <progress max={job.totalPages} value={job.completedPages} aria-label={messages.queueProgress(job.completedPages, job.totalPages)} />
                   </div>
                 )}
-                {(queueErrors[book.id] || job?.error) && <p className="queue-error" role="alert">{queueErrors[book.id] || job?.error}</p>}
+                {(job || queueErrors[book.id]) && <Link href="/queue" className="book-translate-action">{queueErrors[book.id] || job?.status === "failed" || job?.status === "partial" ? messages.queueNeedsAttention : messages.queueView}</Link>}
                 {discardMessages[book.id] && <small role="status">{discardMessages[book.id]}</small>}
                 {discardErrors[book.id] && <p className="queue-error" role="alert">{discardErrors[book.id]}</p>}
               </div>

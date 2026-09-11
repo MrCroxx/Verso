@@ -5,6 +5,7 @@ import { UI_LOCALE_COOKIE, resolveUiLocale } from "../lib/ui-locale";
 import "./globals.css";
 import { UiLocaleProvider } from "./ui-locale";
 import { AppSettingsProvider } from "./app-settings";
+import { QueueFeedbackProvider } from "./queue-feedback";
 import { THEME_INIT_SCRIPT } from "../lib/theme";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
@@ -47,7 +48,7 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
     <html lang={locale} suppressHydrationWarning>
       <head><script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} /></head>
       <body className={`${geistSans.variable} ${geistMono.variable}`}>
-        <UiLocaleProvider initialLocale={locale}><AppSettingsProvider>{children}</AppSettingsProvider></UiLocaleProvider>
+        <UiLocaleProvider initialLocale={locale}><AppSettingsProvider><QueueFeedbackProvider>{children}</QueueFeedbackProvider></AppSettingsProvider></UiLocaleProvider>
       </body>
     </html>
   );

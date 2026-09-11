@@ -68,7 +68,7 @@ export function SettingsScreen({ backHref }: { backHref: string }) {
             <input id="nearby" className="range" type="range" min="1" max="4" value={settings.nearbyPages} onChange={(event) => update("nearbyPages", Number(event.target.value))} />
 
             <label className="field-label" htmlFor="concurrency">{messages.parallelTranslation(settings.translationConcurrency)}</label>
-            <input id="concurrency" className="range" type="range" min="1" max="6" value={settings.translationConcurrency} onChange={(event) => update("translationConcurrency", Number(event.target.value))} />
+            <input id="concurrency" className="range" type="range" min="1" max="10" value={settings.translationConcurrency} onChange={(event) => update("translationConcurrency", Number(event.target.value))} />
             <p className="field-help">{messages.concurrencyHelp}</p>
 
             <div className="context-note">

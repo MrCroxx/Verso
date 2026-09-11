@@ -17,7 +17,7 @@ export async function POST(request: NextRequest) {
       || !body.targetLanguage.trim()
       || body.targetLanguage.length > 80
       || body.targetLanguage.includes("::")
-      || (body.translationConcurrency !== undefined && (!Number.isInteger(body.translationConcurrency) || body.translationConcurrency < 1 || body.translationConcurrency > 6))
+      || (body.translationConcurrency !== undefined && (!Number.isInteger(body.translationConcurrency) || body.translationConcurrency < 1 || body.translationConcurrency > 10))
       || (body.force !== undefined && typeof body.force !== "boolean")
       || !Number.isSafeInteger(body.page)
       || body.page < 1

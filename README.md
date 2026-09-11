@@ -58,6 +58,40 @@ source.
   theme, and configure animated page navigation without altering the source
   scan.
 
+## Background translation queue
+
+Open **Translation queue** from the library to see jobs in every target language,
+page progress, retry counts, and provider errors. The library cards show concise
+status and a queue link; raw background errors appear only in the queue view.
+
+The queue has its own **Background concurrency** selector (1–10, default 4),
+saved in local SQLite and shared across books and target languages. It translates
+multiple pages of the same book concurrently and applies changes to existing
+jobs. Lowering the setting lets active pages finish before filling fewer slots.
+Reader concurrency is configured separately in Settings (also 1–10, default 4).
+Both use the shared provider scheduler, which keeps pending reader work first.
+Only a bounded number of pages are materialized; adjacent source images remain
+available as context even if a previous page's translation is still running.
+
+Each page has its own allowance of three automatic retries, after 1, 2, and 4
+seconds (four total attempts). A page that exhausts its retries is skipped so
+other pages can continue. A book pauses only when **three distinct pages** remain
+failed after exhausting their own retries. This tolerates isolated bad pages
+while stopping a persistently failing job. Successful pages do not consume this
+limit; pages recovered through the reader are removed from the failure count.
+
+If the queue reaches the end with one or two failed pages, it shows **Finished
+with failed pages**, rather than claiming the book is fully translated. Choose
+**Retry translation** to retry unfinished pages with fresh per-page allowances.
+Retry counts, exhausted pages, and pause state survive application restarts in
+local SQLite storage.
+
+Use **Stop translation** in the queue to stop pending work and cancel its active
+provider request. Completed translations are retained. **Resume translation**
+continues unfinished pages and skips pages already translated. Stopping is
+scoped to the selected book and target language; an independent reader request
+that the background worker joined may still finish and save its page.
+
 ## Screenshots
 
 ### Translation configuration

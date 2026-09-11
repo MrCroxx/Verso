@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-test('desktop Settings opens while all six translation streams remain active', {
+test('queue UI confines errors to the queue and supports stop, retry, resume, and mobile layouts', {
   timeout: 90_000,
   skip: process.platform !== 'darwin' && !process.env.DISPLAY,
 }, async (t) => {
@@ -16,7 +16,7 @@ test('desktop Settings opens while all six translation streams remain active', {
     t.skip('Electron binary is not installed; the macOS packaging job runs this test.');
     return;
   }
-  const directory = await mkdtemp(path.join(tmpdir(), 'verso-navigation-'));
+  const directory = await mkdtemp(path.join(tmpdir(), 'verso-queue-ui-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const server = path.join(directory, 'server');
   await cp('.next/standalone', server, { recursive: true });
@@ -24,8 +24,7 @@ test('desktop Settings opens while all six translation streams remain active', {
   await cp('public', path.join(server, 'public'), { recursive: true });
   const env = { ...process.env, VERSO_TEST_DIRECTORY: directory, VERSO_TEST_NODE: process.execPath, VERSO_TEST_SERVER: server };
   delete env.ELECTRON_RUN_AS_NODE;
-  const child = spawn(electron, ['tests/fixtures/desktop-navigation.mjs',
-    ...(process.env.VERSO_TEST_CHROMIUM_REFERENCE ? ['--chromium-reference'] : [])], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(electron, ['tests/fixtures/queue-ui.mjs'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   t.after(() => { if (child.exitCode === null) child.kill('SIGKILL'); });
   let output = '';
   child.stdout.on('data', chunk => { output += chunk; });
@@ -35,6 +34,6 @@ test('desktop Settings opens while all six translation streams remain active', {
     child.once('exit', resolve);
   });
   assert.equal(code, 0, output);
-  assert.match(output, /"translationResults":6/, output);
+  assert.match(output, /"queueUi":"passed"/, output);
   t.diagnostic(output.trim());
 });

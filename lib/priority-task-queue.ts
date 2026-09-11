@@ -40,7 +40,7 @@ export function createPriorityTaskQueue<T>() {
       let resolve!: Job<T>["resolve"];
       let reject!: Job<T>["reject"];
       const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
-      const job = { key, priority, limit: Math.max(1, Math.min(6, limit)), run, resolve, reject, promise };
+      const job = { key, priority, limit: Math.max(1, Math.min(10, limit)), run, resolve, reject, promise };
       jobs.set(key, job);
       pending.push(job);
       drain();
