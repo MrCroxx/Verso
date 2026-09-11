@@ -2,45 +2,46 @@ import { readEventStream } from "./event-stream.ts";
 
 export type TranslationProgress = {
   phase: "queued" | "preparing" | "waiting" | "thinking" | "generating" | "aligning";
-  lastLine?: string;
   characters?: number;
+  tokens?: number;
+  tokensEstimated?: boolean;
+  tokensPerSecond?: number;
 };
 
-// The model writes structured JSON. Preview only text values, never layout syntax.
-export function createTranslationPreview() {
-  let inString = false, escaped = false, unicode = "", token = "", key = "", afterString = false;
-  let capturing = false, line = "", previousLine = "";
-  const append = (value: string) => {
-    for (const character of value) {
-      if (character === "\n" || character === "\r") { if (line.trim()) previousLine = line; line = ""; }
-      else line = (line + character).slice(-240);
-    }
-  };
-  return (delta: string) => {
-    for (const character of delta) {
-      if (inString) {
-        let decoded = character;
-        if (unicode) {
-          unicode += character;
-          if (unicode.length < 5) continue;
-          decoded = /^[u][\da-f]{4}$/i.test(unicode) ? String.fromCharCode(parseInt(unicode.slice(1), 16)) : "";
-          unicode = "";
-        } else if (escaped) {
-          escaped = false;
-          if (character === "u") { unicode = "u"; continue; }
-          decoded = ({ n: "\n", r: "\r", t: "\t", b: "", f: "" } as Record<string, string>)[character] ?? character;
-        } else if (character === "\\") { escaped = true; continue; }
-        else if (character === '"') { inString = false; afterString = true; capturing = false; continue; }
-        token = (token + decoded).slice(-80);
-        if (capturing) append(decoded);
-      } else if (character === '"') {
-        inString = true; token = ""; afterString = false; capturing = key === "text";
-        if (capturing) { if (line.trim()) previousLine = line; line = ""; }
-        key = "";
-      } else if (character === ":" && afterString) { key = token; afterString = false; }
-      else if (!/\s/.test(character)) { key = ""; afterString = false; }
-    }
-    return line.trim() || previousLine.trim();
+// Providers usually report usage only at completion. Never count SSE chunks as tokens.
+export function createTranslationStatistics(now = () => performance.now()) {
+  let characters = 0, bytes = 0, firstOutputAt: number | undefined, reportedTokens: number | undefined;
+  let trailingHighSurrogate = false;
+  const encoder = new TextEncoder();
+  return {
+    receive(delta: string) {
+      if (!delta) return;
+      firstOutputAt ??= now();
+      characters += Array.from(delta).length;
+      bytes += encoder.encode(delta).length;
+      // JSON deltas can split a surrogate pair even when SSE UTF-8 decoding is correct.
+      if (trailingHighSurrogate && /^[\uDC00-\uDFFF]/.test(delta)) { characters--; bytes -= 2; }
+      trailingHighSurrogate = /[\uD800-\uDBFF]$/.test(delta);
+    },
+    reportUsage(usage: unknown) {
+      if (!usage || typeof usage !== "object") return false;
+      const value = usage as Record<string, unknown>;
+      const output = value.output_tokens ?? value.completion_tokens;
+      const details = (value.output_tokens_details ?? value.completion_tokens_details) as Record<string, unknown> | undefined;
+      const reasoning = details?.reasoning_tokens;
+      // A gateway can synthesize content-only totals but retain larger reasoning counts.
+      // Such usage cannot calibrate a combined reasoning + text counter.
+      if (!Number.isSafeInteger(output) || (output as number) < 0
+        || (typeof reasoning === "number" && reasoning > (output as number))) return false;
+      reportedTokens = output as number;
+      return true;
+    },
+    snapshot() {
+      const elapsed = firstOutputAt === undefined ? 0 : (now() - firstOutputAt) / 1000;
+      const tokens = reportedTokens ?? Math.ceil(bytes / 4);
+      return { characters, tokens, tokensEstimated: reportedTokens === undefined,
+        tokensPerSecond: elapsed >= 1 ? tokens / elapsed : undefined };
+    },
   };
 }
 

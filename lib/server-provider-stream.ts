@@ -1,7 +1,7 @@
 import { readEventStream } from "./event-stream.ts";
 
 export async function readProviderStream(response: Response, isResponses: boolean, handlers: {
-  event: () => void; text: (delta: string) => void; reasoning: (characters: number) => void;
+  event: () => void; text: (delta: string) => void; reasoning: (delta: string) => void; usage?: (usage: unknown) => void;
 }): Promise<Record<string, unknown>> {
   if (!response.body) throw new Error("Provider stream is unavailable.");
   let text = "";
@@ -24,7 +24,7 @@ export async function readProviderStream(response: Response, isResponses: boolea
       if (data.type === "response.output_text.delta") append(data.delta);
       if (data.type === "response.refusal.delta") throw new Error("The provider declined to translate this page.");
       if (data.type === "response.reasoning_text.delta" || data.type === "response.reasoning_summary_text.delta") {
-        if (typeof data.delta === "string") handlers.reasoning(data.delta.length);
+        if (typeof data.delta === "string" && data.delta) handlers.reasoning(data.delta);
       }
       if (data.type === "response.completed") {
         if (data.response?.status && data.response.status !== "completed") throw new Error("The provider returned an incomplete translation.");
@@ -35,16 +35,17 @@ export async function readProviderStream(response: Response, isResponses: boolea
             ? output.flatMap((item: { content?: Array<{ type?: string; text?: string }> }) => item.content ?? []).filter((part: { type?: string }) => part.type === "output_text").map((part: { text?: string }) => part.text ?? "").join("") : "");
           append(finalText);
         }
+        handlers.usage?.(usage);
         completed = true;
         break;
       }
     } else {
-      if (data.usage) usage = data.usage;
       const choice = data.choices?.find((item: { index?: number }) => item.index === 0 || item.index === undefined);
       if (choice?.finish_reason && choice.finish_reason !== "stop") throw new Error(`Provider translation stopped: ${choice.finish_reason}.`);
       if (choice?.delta?.refusal) throw new Error("The provider declined to translate this page.");
-      if (typeof choice?.delta?.reasoning_content === "string") handlers.reasoning(choice.delta.reasoning_content.length);
+      if (typeof choice?.delta?.reasoning_content === "string" && choice.delta.reasoning_content) handlers.reasoning(choice.delta.reasoning_content);
       append(choice?.delta?.content);
+      if (data.usage) { usage = data.usage; handlers.usage?.(usage); }
     }
   }
   if (!completed) throw new Error("Provider stream ended before completion.");

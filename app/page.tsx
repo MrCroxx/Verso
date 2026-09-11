@@ -667,11 +667,14 @@ function TranslationText({
 
 function TranslationLiveProgress({ progress, messages }: { progress?: TranslationProgress; messages: UiMessages }) {
   const phase = progress?.phase ?? "queued";
-  return <div className="translation-live" role="status" aria-live="polite" aria-atomic="true">
-    <div className="ai-working"><LoaderCircle className="spin" size={14} />{messages.translationPhases[phase]}
-      {Boolean(progress?.characters) && <span>{messages.receivedCharacters(progress!.characters!)}</span>}
-    </div>
-    {progress?.lastLine && <div className="translation-live-line"><span dir="auto">{progress.lastLine}</span></div>}
+  const approximate = progress?.tokensEstimated !== false ? "≈" : "";
+  return <div className="translation-live" role="status" aria-live="polite" aria-atomic="true" title={messages.translationStatsHelp}>
+    <span className="translation-live-phase"><LoaderCircle className="spin" size={12} />{messages.translationPhases[phase]}</span>
+    <span className="translation-live-counts">
+      {approximate}{(progress?.tokens ?? 0).toLocaleString()} tok
+      <span aria-hidden="true"> · </span>{(progress?.characters ?? 0).toLocaleString()} char
+      <span aria-hidden="true"> · </span>{progress?.tokensPerSecond === undefined ? "—" : `${approximate}${progress.tokensPerSecond.toFixed(1)}`} TPS
+    </span>
   </div>;
 }
 
@@ -888,18 +891,20 @@ function PageSpread({
       <div className="translated-page page-surface">
         <div className="translation-heading">
           <div className="page-label">{messages.translatedPage(page)}</div>
-          {(translation || loading) && (
-            <button
-              className="icon-button subtle"
-              aria-label={loading ? messages.restartTranslation : messages.retranslate}
-              title={loading ? messages.restartTranslation : messages.retranslate}
-              onClick={() => requestTranslation(page, true)}
-            >
-              <RefreshCw className={cn(loading && "spin")} size={15} />
-            </button>
-          )}
+          <div className="translation-heading-actions">
+            {loading && <TranslationLiveProgress progress={progress} messages={messages} />}
+            {(translation || loading) && (
+              <button
+                className="icon-button subtle"
+                aria-label={loading ? messages.restartTranslation : messages.retranslate}
+                title={loading ? messages.restartTranslation : messages.retranslate}
+                onClick={() => requestTranslation(page, true)}
+              >
+                <RefreshCw className={cn(loading && "spin")} size={15} />
+              </button>
+            )}
+          </div>
         </div>
-        {loading && <TranslationLiveProgress progress={progress} messages={messages} />}
         {translation ? (
           <TranslationText
             value={alignedTranslation!}

@@ -1,5 +1,5 @@
 import { readProviderStream } from "./server-provider-stream";
-import { createTranslationPreview, type TranslationProgress } from "./translation-progress";
+import { createTranslationStatistics, type TranslationProgress } from "./translation-progress";
 import { traceStep, traceAttributes, startSpan } from "./server-translation-trace";
 import { getAiProviderSettings } from "../db/ai-provider-settings";
 import { findBook, getStorage } from "../db/books";
@@ -206,6 +206,7 @@ export class TranslationProviderError extends Error {
 }
 
 export async function generateTranslation(body: TranslationRequest, onProgress?: (progress: TranslationProgress) => void) {
+    const statistics = createTranslationStatistics();
     onProgress?.({ phase: "preparing" });
     const config = await traceStep("settings.load", () => getAiProviderSettings());
     if (!isConfigured(config)) {
@@ -277,17 +278,24 @@ export async function generateTranslation(body: TranslationRequest, onProgress?:
     const result = streaming ? await traceStep("provider.stream", async () => {
       const firstEvent = startSpan("provider.first_event", {}, providerStarted);
       const firstText = startSpan("provider.first_text", {}, providerStarted);
-      const preview = createTranslationPreview();
-      let reasoningCharacters = 0, textCharacters = 0;
+      const firstOutput = startSpan("provider.first_output", {}, providerStarted);
+      let hasText = false, hasReasoning = false;
       return readProviderStream(response, isResponses, {
         event: () => firstEvent(),
         text: (delta) => {
-          firstText(); textCharacters += delta.length;
-          onProgress?.({ phase: "generating", lastLine: preview(delta), characters: textCharacters });
+          firstText(); firstOutput(); hasText = true;
+          statistics.receive(delta);
+          onProgress?.({ phase: "generating", ...statistics.snapshot() });
         },
-        reasoning: (characters) => {
-          reasoningCharacters += characters;
-          if (!textCharacters) onProgress?.({ phase: "thinking", characters: reasoningCharacters });
+        reasoning: (delta) => {
+          firstOutput();
+          if (!hasReasoning) { startSpan("provider.first_reasoning", {}, providerStarted)(); hasReasoning = true; }
+          statistics.receive(delta);
+          if (!hasText) onProgress?.({ phase: "thinking", ...statistics.snapshot() });
+        },
+        usage: (usage) => {
+          traceAttributes({ outputUsageConsistent: statistics.reportUsage(usage) });
+          onProgress?.({ phase: hasText ? "generating" : "thinking", ...statistics.snapshot() });
         },
       });
     }) : await traceStep("provider.read_body", async () => {
@@ -308,7 +316,7 @@ export async function generateTranslation(body: TranslationRequest, onProgress?:
       throw new TranslationProviderError(providerError || `Provider returned ${response.status}.`, response.status);
     }
 
-    onProgress?.({ phase: "aligning" });
+    onProgress?.({ phase: "aligning", ...statistics.snapshot() });
     const normalize = startSpan("response.normalize");
     let text: string | undefined;
     if (isResponses) {

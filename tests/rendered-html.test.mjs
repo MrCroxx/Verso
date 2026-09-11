@@ -1645,21 +1645,38 @@ test("bounds persisted traces and reads them after a process restart", async () 
   `);
 });
 
-test("parses fragmented SSE and previews text across escaped JSON boundaries", async () => {
+test("parses fragmented SSE without splitting Unicode", async () => {
   const { readEventStream } = await import("../lib/event-stream.ts");
-  const { createTranslationPreview } = await import("../lib/translation-progress.ts");
   const bytes = new TextEncoder().encode(': keep-alive\r\nevent: delta\r\ndata: {"text":\r\ndata: "中文"}\r\n\r\n');
   const stream = new ReadableStream({ start(controller) { for (const byte of bytes) controller.enqueue(new Uint8Array([byte])); controller.close(); } });
   const events = [];
   for await (const event of readEventStream(stream)) events.push(event);
   assert.deepEqual(events, [{ event: "delta", data: '{"text":\n"中文"}' }]);
-  const preview = createTranslationPreview();
-  assert.equal(preview('{"blocks":[{"text":"第一行\\n最'), "最");
-  assert.equal(preview('后一行\\u4e'), "最后一行");
-  assert.equal(preview('2d\\\"文"'), '最后一行中"文');
-  assert.equal(preview(',"sourceText":"must stay hidden","sourceRect":{"x":0.5}}]}'), '最后一行中"文');
-  const bounded = createTranslationPreview();
-  assert.equal(bounded('{"text":"' + 'x'.repeat(2000)).length, 240);
+});
+
+test("counts received output independently of chunks and calibrates TPS only with consistent usage", async () => {
+  const { createTranslationStatistics } = await import("../lib/translation-progress.ts");
+  let now = 0;
+  const stats = createTranslationStatistics(() => now);
+  assert.equal(stats.snapshot().tokensPerSecond, undefined);
+  stats.receive("thinking ");
+  now = 2000;
+  stats.receive("中文");
+  stats.receive("\uD83D");
+  stats.receive("\uDE00");
+  const whole = createTranslationStatistics(() => now);
+  whole.receive("thinking 中文😀");
+  assert.equal(stats.snapshot().characters, 12);
+  assert.equal(stats.snapshot().tokens, whole.snapshot().tokens);
+  assert.equal(stats.snapshot().tokensEstimated, true);
+  assert.equal(stats.snapshot().tokensPerSecond, stats.snapshot().tokens / 2);
+  assert.equal(stats.reportUsage({ completion_tokens: 3, completion_tokens_details: { reasoning_tokens: 30 } }), false);
+  assert.equal(stats.snapshot().tokensEstimated, true);
+  assert.equal(stats.reportUsage({ completion_tokens: -1 }), false);
+  assert.equal(stats.reportUsage({ completion_tokens: 12, completion_tokens_details: { reasoning_tokens: 8 } }), true);
+  assert.deepEqual(stats.snapshot(), { characters: 12, tokens: 12, tokensEstimated: false, tokensPerSecond: 6 });
+  assert.equal(stats.reportUsage({ output_tokens: 10, output_tokens_details: { reasoning_tokens: 6 } }), true);
+  assert.equal(stats.snapshot().tokens, 10);
 });
 
 test("rejects interrupted, truncated, refused, and failed provider streams", async () => {
@@ -1679,7 +1696,7 @@ test("rejects interrupted, truncated, refused, and failed provider streams", asy
   await assert.rejects(readTranslationResponse(new Response('event: progress\ndata: {"phase":"thinking"}\n\n', { headers: { "Content-Type": "text/event-stream" } }), () => {}), /before the result/);
 });
 
-test("streams live previews to late readers of background work and saves only complete results", async () => {
+test("streams numeric progress to late readers of background work and saves only complete results", async () => {
   const { readTranslationResponse } = await import("../lib/translation-progress.ts");
   const calls = [];
   let providerResponse;
@@ -1720,7 +1737,7 @@ test("streams live previews to late readers of background work and saves only co
       const partial = '{"page":1,"blocks":[{"kind":"paragraph","text":"实时译文';
       const delta = content => index ? { type: "response.output_text.delta", delta: content } : { choices: [{ index: 0, delta: { content } }] };
       providerResponse.write(`data: ${JSON.stringify(delta(partial))}\n\n`);
-      await waitFor(() => progress.some(value => value.lastLine === "实时译文"));
+      await waitFor(() => progress.some(value => value.phase === "generating" && value.characters === 17 + Array.from(partial).length));
       assert.equal(finished, false);
       assert.equal((await queueStatus(book.fingerprint)).completedPages, 0);
       assert.equal(calls.length, index + 1);
@@ -1729,7 +1746,7 @@ test("streams live previews to late readers of background work and saves only co
       const second = await connect(controller.signal);
       const secondProgress = [];
       const secondResult = readTranslationResponse(second, value => secondProgress.push(value)).catch(() => undefined);
-      await waitFor(() => secondProgress.some(value => value.lastLine === "实时译文"));
+      await waitFor(() => secondProgress.some(value => value.phase === "generating" && value.characters === 17 + Array.from(partial).length));
       controller.abort();
       await secondResult;
       const tail = '。"}],"previousPageRevision":null}';
@@ -1740,6 +1757,11 @@ test("streams live previews to late readers of background work and saves only co
         : `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage })}\n\ndata: [DONE]\n\n`);
       const result = await resultPromise;
       assert.equal(result.blocks[0].text, "实时译文。");
+      assert.doesNotMatch(JSON.stringify(progress), /private reasoning|实时译文|lastLine/);
+      const aligned = progress.find(value => value.phase === "aligning");
+      assert.equal(aligned.characters, 17 + Array.from(partial + tail).length);
+      assert.equal(aligned.tokens, 45);
+      assert.equal(aligned.tokensEstimated, false);
       assert.equal(result.trace.attributes.shared, true);
       await waitFor(async () => (await queueStatus(book.fingerprint)).status === "completed");
       const { traces } = await (await fetch(`${baseUrl}/api/traces`)).json();
@@ -1747,9 +1769,12 @@ test("streams live previews to late readers of background work and saves only co
       assert.equal(trace.attributes.streamed, true);
       assert.equal(trace.attributes.outputTokens, 45);
       assert.equal(trace.attributes.reasoningTokens, 12);
+      assert.equal(trace.attributes.outputUsageConsistent, true);
       const span = name => trace.spans.find(value => value.name === name);
       assert.ok(span("provider.first_text").durationMs > span("provider.wait_headers").durationMs);
       assert.ok(span("provider.first_event").durationMs <= span("provider.first_text").durationMs);
+      assert.ok(span("provider.first_output").durationMs <= span("provider.first_text").durationMs);
+      assert.ok(span("provider.first_reasoning").durationMs <= span("provider.first_text").durationMs);
       assert.equal(span("provider.stream").status, "ok");
       assert.doesNotMatch(JSON.stringify(traces), /private reasoning|stream-secret|实时译文/);
       const cached = await readTestPage(book, 1);

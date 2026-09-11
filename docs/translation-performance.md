@@ -85,3 +85,92 @@ Chrome's tracing protocol was also used to record the actual browser timing
 helpers: Chrome 153 emitted 36 timing events with the `Verso translation`
 custom-track metadata. The trace screen was checked in desktop and mobile
 viewports with no JavaScript errors or horizontal overflow.
+
+
+## Streaming TTFT and the local LiteLLM route
+
+A follow-up investigation on September 11 used deployed streaming traces and
+local LiteLLM v1.100.0 spend logs. Verso was configured to send requests to
+`https://ai.mrcroxx.com/v1`, through Cloudflare Tunnel and the public Nginx
+proxy back to LiteLLM on this same host. LiteLLM then calls the configured
+third-party upstream. Nginx already disables response buffering and caching;
+LiteLLM was idle outside requests, with no CPU saturation observed.
+
+Matching request timestamps and prompt/completion counts gives:
+
+| Translation | Verso request to LiteLLM start | LiteLLM start to first processed chunk | Verso response headers | Verso first text |
+| --- | ---: | ---: | ---: | ---: |
+| Most recent page 1 | 45.305 s | 2.032 s | 47.532 s | 86.448 s |
+| Page 69 | 22.598 s | 4.972 s | 27.795 s | 113.629 s |
+| Page 68 | 4.149 s | 3.895 s | 8.279 s | 46.416 s |
+| Page 66 | 28.655 s | 4.215 s | 33.094 s | 96.954 s |
+
+These timestamps share the host clock. LiteLLM's `completionStartTime` marks
+its first processed stream chunk, which can be a role-only event; it is not
+necessarily the first meaningful token. None of these requests reported a
+retry. The pre-LiteLLM interval includes the public network path, connection
+setup, and image upload/request buffering before application processing. These
+measurements locate the delay before LiteLLM, without isolating a particular
+Cloudflare hop or attributing the whole interval to model processing.
+
+A sequential local/public/local probe from the Verso container sent identical
+2,852,671-byte requests with three existing page images, the same model and
+high reasoning, and a short readability-check prompt. Each successful probe
+was cancelled after its first meaningful reasoning/text delta:
+
+| Route | Response headers | First nonempty output |
+| --- | ---: | ---: |
+| Local host port 4000, run 1 | 3.542 s | 4.123 s |
+| Public hostname | No headers before 90 s timeout | Not observed |
+| Local host port 4000, run 2 | 3.688 s | 4.544 s |
+
+This is a route probe, not a controlled end-to-end translation benchmark.
+Together with the spend logs, it supports removing the public loop from local
+Verso requests. The deployment override adds
+`host.docker.internal:host-gateway`, and the saved provider endpoint uses
+`http://host.docker.internal:4000/v1`. Credentials, model, high reasoning,
+prompts, image detail, and translation concurrency are unchanged. The public
+LiteLLM entrypoint remains available to other clients.
+
+A second substantial interval remains between early streamed output and the
+first answer text: reasoning. Historical `first_text` traces exclude reasoning
+and therefore overstate time to first model output. New `provider.first_output`
+and `provider.first_reasoning` spans separate those events. Reducing reasoning
+strength could change translation quality and was not part of this fix.
+
+Some streaming usage records are internally inconsistent: one request reports
+4,860 completion tokens but 10,584 reasoning tokens; another reports 3,848 and
+23,820 respectively. Those totals cannot describe combined reasoning and text.
+Live counters therefore mark approximate token/TPS values and reject such
+usage for calibration. They never count SSE chunks as tokens. Reasoning text
+is consumed for numeric statistics only and is neither sent to the browser nor
+persisted in traces. See the README for the estimation method and its limits.
+
+### Deployed verification
+
+A complete translation of page 69 through the new local route succeeded with
+six validated blocks saved to the existing volume. Trace
+`68fc4e7e-fadc-4e20-aa76-96fb33f5d1bf` records:
+
+| Stage | Duration from provider request start |
+| --- | ---: |
+| Response headers | 3.968 s |
+| First nonempty output (reasoning) | 4.612 s |
+| First answer text | 58.758 s |
+| Total server translation, including preparation and persistence | 77.217 s |
+
+The matching LiteLLM request started at `2026-09-11T03:36:35.046Z`, about
+18 ms after Verso submitted the provider request, compared with 22.598 s for
+the earlier public-route page 69 request. Output length and reasoning duration
+varied between runs, so the difference in whole-page time is not a controlled
+route-only speedup. The direct measurement does confirm removal of the long
+pre-gateway wait. The client received 449 numeric progress events with no text
+preview. Final usage again reported fewer completion tokens (6,774) than
+reasoning tokens (14,462), and the counters correctly retained their estimate.
+
+Final validation: lint passed; the production build and all 80 tests passed.
+Browser fixtures verified statistics beside the refresh button, absent partial
+text, successful final rendering, late-reader progress, and no added horizontal
+overflow at desktop and narrow widths. The existing Docker service was rebuilt
+and deployed in place and its health check passed. Existing failed whole-book
+queues were not restarted as part of the single-page verification.

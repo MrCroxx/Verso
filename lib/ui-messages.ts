@@ -3,7 +3,7 @@ import type { UiLocale } from "./ui-locale";
 export const UI_MESSAGES = {
   "zh-CN": {
     translationPhases: { queued: "等待翻译", preparing: "正在准备页面", waiting: "等待模型响应", thinking: "模型正在思考", generating: "正在生成译文", aligning: "正在整理译文" },
-    receivedCharacters: (count: number) => `已接收 ${count.toLocaleString()} 字符`,
+    translationStatsHelp: "已接收的推理和正文。≈ 表示 token/TPS 估算；收到有效 usage 后校准。TPS 为首个输出以来的平均速度。",
     blankPage: "此页没有可翻译文本",
     blankCached: "空白页已保存到本机",
     boundaryFixed: "跨页重复已校正 · 已保存到本机",
@@ -169,7 +169,7 @@ export const UI_MESSAGES = {
   },
   "en-US": {
     translationPhases: { queued: "Waiting to translate", preparing: "Preparing page", waiting: "Waiting for the model", thinking: "The model is thinking", generating: "Generating translation", aligning: "Finishing translation" },
-    receivedCharacters: (count: number) => `${count.toLocaleString()} characters received`,
+    translationStatsHelp: "Received reasoning and text. ≈ marks estimated tokens/TPS, calibrated when valid usage arrives. TPS is the average since the first output.",
     blankPage: "No translatable text on this page",
     blankCached: "Blank page saved locally",
     boundaryFixed: "Cross-page overlap fixed · Saved locally",

@@ -171,14 +171,24 @@ are held in memory and disappear on restart. No credentials, prompts, page
 images, translation text, or provider response bodies are recorded.
 
 Translation uses streaming for both Responses and Chat Completions providers.
-While a page is translating, the reader shows the current phase and the latest
-line of generated translation text, refreshed at most every 150 ms. JSON layout
-syntax is filtered out; the preview retains at most 240 characters. During
-reasoning, it shows a thinking indicator and the received character count.
-Reasoning text is not forwarded to the reader. A reader joining an existing
-background job receives its latest progress without a second model request.
+While a page is translating, the header beside its refresh button shows the
+current phase, received tokens, Unicode characters, and average tokens per
+second (TPS), refreshed at most every 150 ms. Counts include received reasoning
+and output text, including JSON structure. No partial text or reasoning is
+forwarded to the reader. A reader joining an existing background job receives
+its latest counters without a second model request.
 
-Previews stay in memory and are removed when the request finishes or the reader
+Providers usually report token usage only at completion. Until consistent
+usage arrives, tokens are estimated as received UTF-8 bytes divided by four,
+rounded up, and marked `≈`; this is a rough estimate, not model tokenization.
+TPS uses the same token count divided by time since the first nonempty output
+delta, including pauses, and appears after one second of output. Final reported
+usage calibrates tokens and TPS only when internally consistent (for example,
+reasoning tokens must not exceed output tokens). Character counts remain exact
+for received Unicode code points. Providers that omit hidden reasoning cannot
+expose it through these live counters.
+
+Counters stay in memory and are removed when the request finishes or the reader
 switches documents. The complete model output is still validated, aligned, and
 saved before it replaces the page. An interrupted or incomplete stream is an
 error, never a partially saved translation. Providers that return ordinary JSON
@@ -203,9 +213,12 @@ For Chrome debugging:
    `/api/traces?format=chrome` exports all retained traces; add `&id=TRACE_ID`
    for one request.
 
-`provider.wait_headers` ends at HTTP response headers. `provider.first_event`
-and `provider.first_text` measure from request start to the first parsed SSE
-event and the first nonempty output-text delta, respectively. `provider.stream`
+`provider.wait_headers` ends at HTTP response headers. All `provider.first_*`
+spans start at request submission: `first_event` ends at the first parsed SSE
+event, `first_output` at the first nonempty reasoning or text delta,
+`first_reasoning` at the first nonempty reasoning delta, and `first_text` at the
+first nonempty output-text delta. A role-only event is not a token. For reasoning
+models, `first_text` includes thinking time and is not time to first output. `provider.stream`
 measures from headers until the completed output has been received. The first
 text delta can contain JSON structure before any translated words. Old traces
 and JSON-only provider responses may include full generation in header latency.
