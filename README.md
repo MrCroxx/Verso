@@ -43,6 +43,9 @@ source.
   manually.
 - **Translation search:** search locally cached translations, jump directly to a
   result, and highlight matches without scanning or retranslating the book.
+  Open search with Cmd + F or Ctrl + F in both the browser and desktop app.
+  Additional modifiers are left to the system, including Ctrl + Cmd + F for
+  macOS fullscreen.
 - **Large-book performance:** lazily rasterize requested pages on the server,
   persist display and vision derivatives in the local volume, and bound both
   page rendering and background translation work.

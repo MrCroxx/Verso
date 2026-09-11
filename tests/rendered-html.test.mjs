@@ -479,10 +479,22 @@ test("searches translated blocks without matching source text", () => {
 });
 
 test("recognizes browser find shortcuts without hijacking modified keys", () => {
-  assert.equal(isDocumentSearchShortcut({ key: "f", ctrlKey: true, metaKey: false, altKey: false }), true);
-  assert.equal(isDocumentSearchShortcut({ key: "F", ctrlKey: false, metaKey: true, altKey: false }), true);
-  assert.equal(isDocumentSearchShortcut({ key: "f", ctrlKey: true, metaKey: false, altKey: true }), false);
-  assert.equal(isDocumentSearchShortcut({ key: "g", ctrlKey: true, metaKey: false, altKey: false }), false);
+  const plainKey = { key: "f", ctrlKey: false, metaKey: false, altKey: false, shiftKey: false };
+  assert.equal(isDocumentSearchShortcut({ ...plainKey, ctrlKey: true }), true);
+  assert.equal(isDocumentSearchShortcut({ ...plainKey, key: "F", metaKey: true }), true);
+  assert.equal(isDocumentSearchShortcut(plainKey), false);
+  assert.equal(isDocumentSearchShortcut({ ...plainKey, key: "g", ctrlKey: true }), false);
+
+  for (const modifier of ["ctrlKey", "metaKey"]) {
+    assert.equal(isDocumentSearchShortcut({ ...plainKey, [modifier]: true, altKey: true }), false);
+    assert.equal(isDocumentSearchShortcut({ ...plainKey, [modifier]: true, shiftKey: true }), false);
+  }
+});
+
+test("leaves the macOS fullscreen shortcut to the system", () => {
+  assert.equal(isDocumentSearchShortcut({
+    key: "f", ctrlKey: true, metaKey: true, altKey: false, shiftKey: false,
+  }), false);
 });
 
 test("reveals translations at a stable characters-per-second rate", () => {
