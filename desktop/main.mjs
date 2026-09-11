@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, Menu, net, protocol, session } from 'electron';
+import { app, BrowserWindow, dialog, Menu, protocol, session } from 'electron';
 import { mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { launchBackend } from './backend.mjs';
@@ -135,7 +135,7 @@ if (!app.requestSingleInstanceLock()) {
     session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
     session.defaultSession.setPermissionCheckHandler(() => false);
     protocol.handle('https', createProtocolHandler({
-      ...ready, fetch: net.fetch, getCookies: (url) => session.defaultSession.cookies.get({ url }),
+      ...ready, getCookies: (url) => session.defaultSession.cookies.get({ url }),
     }));
     await openWindow();
   }).catch(fail);

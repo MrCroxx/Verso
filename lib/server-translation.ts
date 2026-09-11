@@ -1,3 +1,4 @@
+import { ProviderTimeoutError, withProviderResponse } from "./server-provider-timeout";
 import { readProviderStream } from "./server-provider-stream";
 import { createTranslationStatistics, type TranslationProgress } from "./translation-progress";
 import { traceStep, traceAttributes, startSpan } from "./server-translation-trace";
@@ -266,60 +267,68 @@ export async function generateTranslation(body: TranslationRequest, onProgress?:
       : Promise.resolve(null);
     onProgress?.({ phase: "waiting" });
     const providerStarted = performance.now();
-    const response = await traceStep("provider.wait_headers", () => fetch(endpoint, {
+    const result = await withProviderResponse((signal) => traceStep("provider.wait_headers", () => fetch(endpoint, {
       method: "POST",
       headers,
       body: encoded,
-      signal: AbortSignal.timeout(180_000),
+      signal,
       redirect: "manual",
-    }));
-    traceAttributes({ httpStatus: response.status });
-    if (response.status >= 300 && response.status < 400) {
-      await response.body?.cancel();
-      throw new TranslationProviderError(`AI endpoint redirected (HTTP ${response.status}). Configure the final API URL in Settings and test the connection.`, 502);
-    }
-    const streaming = response.ok && Boolean(response.headers.get("content-type")?.includes("text/event-stream"));
-    traceAttributes({ streamed: streaming });
-    const result = streaming ? await traceStep("provider.stream", async () => {
-      const firstEvent = startSpan("provider.first_event", {}, providerStarted);
-      const firstText = startSpan("provider.first_text", {}, providerStarted);
-      const firstOutput = startSpan("provider.first_output", {}, providerStarted);
-      let hasText = false, hasReasoning = false;
-      return readProviderStream(response, isResponses, {
-        event: () => firstEvent(),
-        text: (delta) => {
-          firstText(); firstOutput(); hasText = true;
-          statistics.receive(delta);
-          onProgress?.({ phase: "generating", ...statistics.snapshot() });
-        },
-        reasoning: (delta) => {
-          firstOutput();
-          if (!hasReasoning) { startSpan("provider.first_reasoning", {}, providerStarted)(); hasReasoning = true; }
-          statistics.receive(delta);
-          if (!hasText) onProgress?.({ phase: "thinking", ...statistics.snapshot() });
-        },
-        usage: (usage) => {
-          traceAttributes({ outputUsageConsistent: statistics.reportUsage(usage) });
-          onProgress?.({ phase: hasText ? "generating" : "thinking", ...statistics.snapshot() });
-        },
-      });
-    }) : await traceStep("provider.read_body", async () => {
-      try { return await response.json() as Record<string, unknown>; }
-      catch { throw new TranslationProviderError(`Provider returned an invalid JSON response (HTTP ${response.status}).`, response.ok ? 502 : response.status); }
-    });
-    const usage = result.usage as Record<string, unknown> | undefined;
-    if (usage) {
-      const details = (usage.output_tokens_details || usage.completion_tokens_details) as Record<string, unknown> | undefined;
-      const inputDetails = usage.input_tokens_details as Record<string, unknown> | undefined;
-      for (const [key, value] of Object.entries({ inputTokens: usage.input_tokens ?? usage.prompt_tokens, outputTokens: usage.output_tokens ?? usage.completion_tokens,
-        reasoningTokens: details?.reasoning_tokens, cachedInputTokens: inputDetails?.cached_tokens ?? usage.prompt_cache_hit_tokens })) {
-        if (typeof value === "number" && Number.isFinite(value)) traceAttributes({ [key]: value });
+    })), async (response) => {
+      traceAttributes({ httpStatus: response.status });
+      if (response.status >= 300 && response.status < 400) {
+        await response.body?.cancel();
+        throw new TranslationProviderError(`AI endpoint redirected (HTTP ${response.status}). Configure the final API URL in Settings and test the connection.`, 502);
       }
-    }
-    if (!response.ok) {
-      const providerError = (result.error as { message?: string } | undefined)?.message;
-      throw new TranslationProviderError(providerError || `Provider returned ${response.status}.`, response.status);
-    }
+      const streaming = response.ok && Boolean(response.headers.get("content-type")?.includes("text/event-stream"));
+      traceAttributes({ streamed: streaming });
+      const result = streaming ? await traceStep("provider.stream", async () => {
+        const firstEvent = startSpan("provider.first_event", {}, providerStarted);
+        const firstText = startSpan("provider.first_text", {}, providerStarted);
+        const firstOutput = startSpan("provider.first_output", {}, providerStarted);
+        let hasText = false, hasReasoning = false;
+        return readProviderStream(response, isResponses, {
+          event: () => firstEvent(),
+          text: (delta) => {
+            firstText(); firstOutput(); hasText = true;
+            statistics.receive(delta);
+            onProgress?.({ phase: "generating", ...statistics.snapshot() });
+          },
+          reasoning: (delta) => {
+            firstOutput();
+            if (!hasReasoning) { startSpan("provider.first_reasoning", {}, providerStarted)(); hasReasoning = true; }
+            statistics.receive(delta);
+            if (!hasText) onProgress?.({ phase: "thinking", ...statistics.snapshot() });
+          },
+          usage: (usage) => {
+            traceAttributes({ outputUsageConsistent: statistics.reportUsage(usage) });
+            onProgress?.({ phase: hasText ? "generating" : "thinking", ...statistics.snapshot() });
+          },
+        });
+      }) : await traceStep("provider.read_body", async () => {
+        try { return await response.json() as Record<string, unknown>; }
+        catch { throw new TranslationProviderError(`Provider returned an invalid JSON response (HTTP ${response.status}).`, response.ok ? 502 : response.status); }
+      });
+      const usage = result.usage as Record<string, unknown> | undefined;
+      if (usage) {
+        const details = (usage.output_tokens_details || usage.completion_tokens_details) as Record<string, unknown> | undefined;
+        const inputDetails = usage.input_tokens_details as Record<string, unknown> | undefined;
+        for (const [key, value] of Object.entries({ inputTokens: usage.input_tokens ?? usage.prompt_tokens, outputTokens: usage.output_tokens ?? usage.completion_tokens,
+          reasoningTokens: details?.reasoning_tokens, cachedInputTokens: inputDetails?.cached_tokens ?? usage.prompt_cache_hit_tokens })) {
+          if (typeof value === "number" && Number.isFinite(value)) traceAttributes({ [key]: value });
+        }
+      }
+      if (!response.ok) {
+        const providerError = (result.error as { message?: string } | undefined)?.message;
+        throw new TranslationProviderError(providerError || `Provider returned ${response.status}.`, response.status);
+      }
+      return result;
+    }).catch((error) => {
+      if (error instanceof ProviderTimeoutError) {
+        traceAttributes({ timeoutPhase: error.phase });
+        throw new TranslationProviderError(error.message, 504);
+      }
+      throw error;
+    });
 
     onProgress?.({ phase: "aligning", ...statistics.snapshot() });
     const normalize = startSpan("response.normalize");

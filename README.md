@@ -195,6 +195,16 @@ are held in memory and disappear on restart. No credentials, prompts, page
 images, translation text, or provider response bodies are recorded.
 
 Translation uses streaming for both Responses and Chat Completions providers.
+Provider requests allow five minutes for response headers, then five minutes
+without response data. Every nonempty network chunk resets the idle deadline,
+including reasoning, SSE heartbeats, and fragmented events. Active translations
+can run for up to 30 minutes in total; this final limit also stops endless
+reasoning or heartbeat-only streams. Timeout errors distinguish initial waiting,
+idle connections, and the total limit, and traces record `timeoutPhase`.
+These limits apply to both the desktop app and Docker, including providers that
+return ordinary JSON. The short Settings connection test retains its 30-second
+limit.
+
 While a page is translating, the header beside its refresh button shows the
 current phase, received tokens, Unicode characters, and average tokens per
 second (TPS), refreshed at most every 150 ms. Counts include received reasoning

@@ -7,7 +7,9 @@ export function isAppUrl(value) {
   } catch { return false; }
 }
 
-export function createProtocolHandler({ origin, token, fetch: fetchRequest, getCookies }) {
+// Keep long-lived translation streams out of Chromium's six-connection HTTP pool.
+// This transport only forwards validated app URLs to the private loopback backend.
+export function createProtocolHandler({ origin, token, fetch: fetchRequest = globalThis.fetch, getCookies }) {
   return async (request) => {
     if (!isAppUrl(request.url)) return new Response('Forbidden', { status: 403 });
     const url = new URL(request.url);

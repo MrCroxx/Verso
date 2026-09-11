@@ -23,6 +23,11 @@ backend and its PDF/OCR children. Saved queue progress resumes on the next
 launch; an interrupted page may be requested again. System sleep pauses work.
 Only one instance can use the desktop library at a time.
 
+Translation allows five minutes for provider response headers and five minutes
+of inactivity while reading the response. Incoming data, including reasoning
+and stream heartbeats, resets the inactivity timer. A separate 30-minute total
+limit prevents stalled work from holding a translation slot indefinitely.
+
 ## Develop
 
 On a Mac with Node.js 22.13 or newer and npm:
@@ -93,6 +98,13 @@ main-process protocol handler; unauthenticated requests are rejected before
 Next.js handles them. The renderer has no Node integration, uses context
 isolation and sandboxing, and cannot navigate to remote servers.
 
+The protocol handler uses Node's streaming fetch for the loopback hop. Using
+Electron's `net.fetch` here would share Chromium's six HTTP/1.1 connections:
+six active translation streams could prevent Settings, PDF reads, and other
+requests from starting until a stream ends. The translation queue retains its
+separate concurrency limit. This does not change the external provider transport
+or the server-side token-rate calculation.
+
 The desktop launcher uses Next's internal `getRequestHandlers` from the pinned
 Next version, with the generated standalone configuration. Re-run desktop
 integration and packaged smoke tests when updating Next. It disables on-disk
@@ -115,7 +127,11 @@ node scripts/smoke-macos.mjs dist/desktop/mac-arm64/Verso.app
 ```
 
 The integration tests cover authenticated access, host validation, settings
-persistence, process shutdown, startup failure, and startup timeout. The macOS
+persistence, process shutdown, startup failure, and startup timeout. With an
+Electron binary and a display available, they also open Settings through the
+real Next router while six translations stream from a local test provider, then
+verify all six results arrive. That test is skipped in environments without an
+Electron binary or display and runs in macOS validation and packaging. The macOS
 smoke test relocates the app to a directory containing spaces, clears Homebrew
 from PATH, verifies signatures, exercises bundled SQLite, renders and extracts
 a PDF, loads all four OCR languages, and opens the actual Electron window with
