@@ -177,8 +177,9 @@ npm ci
 VERSO_MAC_UNSIGNED=1 npm run desktop:package
 ```
 
-Installers are written to `dist/desktop`. The **macOS Desktop** Actions workflow
-also builds separate Apple Silicon and Intel artifacts. See
+Installers are written to `dist/desktop`. The **CI** Actions workflow also builds
+separate Apple Silicon and Intel artifacts after Linux and macOS validation
+passes on main pushes, version tags, and manual dispatch. See
 [desktop development and packaging](docs/desktop.md) for startup behavior,
 validation, signing, and notarization.
 

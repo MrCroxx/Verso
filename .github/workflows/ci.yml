@@ -1,9 +1,12 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
+    tags:
+      - 'v*'
   pull_request:
 
 permissions:
@@ -90,3 +93,41 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  package-macos:
+    name: Package macOS
+    if: github.event_name != 'pull_request'
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      VERSO_MAC_UNSIGNED: '1'
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          architecture: ${{ matrix.arch }}
+          cache: npm
+      - name: Install build dependencies
+        run: brew install poppler tesseract tesseract-lang
+      - name: Install JavaScript dependencies
+        run: npm ci
+      - name: Validate and package
+        run: npm run desktop:package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Verso-macOS-${{ matrix.arch }}
+          path: |
+            dist/desktop/*.dmg
+            dist/desktop/*.zip
+          if-no-files-found: error

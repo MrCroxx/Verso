@@ -72,14 +72,16 @@ for DMG and ZIP files. Dependencies are locked to patched versions. npm's
 unrelated install scripts are not blanket-approved.
 
 The **CI** GitHub Actions workflow runs lint, the production build, and tests on
-Linux and macOS for pull requests and pushes to `main`. Pull requests do not
-package installers or publish Docker images; both jobs appear as skipped checks.
+Linux and macOS for pull requests, pushes to `main`, version tags, and manual
+dispatch. Pull requests do not package installers or publish Docker images;
+both jobs appear as skipped checks.
 
-The **macOS Desktop** workflow produces ad-hoc signed arm64 and x64 artifacts on
-every push to `main`, manual dispatch, and version tags. Download the DMG and ZIP
-installers from the successful run's `Verso-macOS-arm64` or `Verso-macOS-x64` artifacts. It does
-not upload GitHub Releases. Docker image publishing continues through the
-existing CI workflow.
+After both validation jobs pass, the same workflow produces ad-hoc signed arm64
+and x64 artifacts on pushes to `main`, version tags, and manual dispatch. Docker
+image publishing also waits for both validation jobs and runs only on pushes to
+`main`. Download the DMG and ZIP installers from the successful CI run's
+`Verso-macOS-arm64` or `Verso-macOS-x64` artifacts. The workflow does not upload
+GitHub Releases.
 
 ## Packaging and validation
 
