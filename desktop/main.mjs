@@ -124,6 +124,7 @@ if (!app.requestSingleInstanceLock()) {
     const dataDirectory = path.join(app.getPath('userData'), 'library');
     mkdirSync(dataDirectory, { recursive: true, mode: 0o700 });
     const resourceRoot = app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), '.desktop');
+    app.dock?.setIcon(path.join(resourceRoot, 'icon.png'));
     const nativeRoot = app.isPackaged ? path.join(resourceRoot, 'native') : undefined;
     backend = launchBackend({
       nodePath: nativeRoot ? path.join(nativeRoot, 'bin/node') : process.env.VERSO_DESKTOP_NODE,

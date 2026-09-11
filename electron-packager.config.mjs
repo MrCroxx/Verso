@@ -20,7 +20,7 @@ export function createPackagerOptions({ platform = 'darwin', arch = process.arch
     electronVersion: devDependencies.electron,
     platform, arch, overwrite: true, asar: true, prune: false,
     ignore: [/^\/node_modules(?:\/|$)/, /^\/desktop\/(?:server\.mjs|entitlements\.mac\.plist)$/],
-    extraResource: ['.desktop/server', '.desktop/native', 'desktop/server.mjs'].map((entry) => path.join(root, entry)),
+    extraResource: ['.desktop/server', '.desktop/native', '.desktop/icon.png', 'desktop/server.mjs'].map((entry) => path.join(root, entry)),
     ...(platform === 'darwin' ? {
       executableName: 'Verso',
       icon: path.join(root, '.desktop/icon.icns'),

@@ -23,7 +23,7 @@ await writeFile(path.join(appRoot, 'package.json'), JSON.stringify({
   description: 'A local AI parallel reader for PDF books', author: 'mrcroxx',
 }, null, 2) + '\n');
 console.log(`Prepared desktop server: ${destination}`);
-await sharp(path.join(root, 'public/favicon.svg'), { density: 3072 })
+await sharp(path.join(root, 'desktop/icon.svg'))
   .resize(1024, 1024).png().toFile(path.join(root, '.desktop/icon.png'));
 if (process.platform === 'darwin') {
   const iconset = path.join(root, '.desktop/Verso.iconset');

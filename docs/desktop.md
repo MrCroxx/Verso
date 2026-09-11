@@ -43,6 +43,11 @@ Node installation and native tools. Run it again after changing the web app.
 For frontend hot reload, use the existing `npm run dev` web workflow, which
 continues to bind to `0.0.0.0`.
 
+The application icon comes from `desktop/icon.svg`, matching the reader's green
+V mark. `desktop:prepare` renders the Dock PNG and, on macOS, the multi-resolution
+ICNS used by the app bundle. Run `desktop:dev` or rebuild the installer after
+changing the icon.
+
 ## Build an installer
 
 Build on a Mac matching the desired architecture, with the dependencies above:
