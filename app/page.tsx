@@ -61,7 +61,7 @@ import type { UiLocale } from "../lib/ui-locale";
 import { pageWorkWindow, isPageWorkEnabled, shouldStartTranslationRequest } from "../lib/viewport-work";
 import { useUiLocale } from "./ui-locale";
 import { SourceImageCrop } from "./source-image-crop";
-import { ReaderViewport, READER_PAGE_WIDTH, MIN_READER_ZOOM, MAX_READER_ZOOM } from "./reader-viewport";
+import { ReaderViewport, ReaderZoomProvider, ReaderZoomControls, READER_PAGE_WIDTH } from "./reader-viewport";
 import { alignSourceBlocks, type SourcePageLayout } from "../lib/source-alignment";
 
 type PdfDocument = import("pdfjs-dist").PDFDocumentProxy;
@@ -1339,7 +1339,6 @@ export default function Home() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarDrawerOpen, setSidebarDrawerOpen] = useState(false);
   const [readerMenuOpen, setReaderMenuOpen] = useState(false);
-  const [readerZoom, setReaderZoom] = useState(1);
   const [sidebarView, setSidebarView] = useState<SidebarView>("pages");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchMatches, setSearchMatches] = useState<SearchMatch[]>([]);
@@ -2748,6 +2747,7 @@ export default function Home() {
           )}
         </aside>
 
+        <ReaderZoomProvider>
         <section className="reader">
           <div className="reader-toolbar">
             <div className="reader-toolbar-start">
@@ -2765,12 +2765,7 @@ export default function Home() {
               </div>
             </div>
             <div className="column-labels"><span>{messages.sourceScan}</span><i /><span><Languages size={15} /> {targetLanguageLabel(settings.targetLanguage, locale)}</span></div>
-            <div className="reader-zoom" role="group" aria-label={messages.readerZoom}>
-              <button className="icon-button" aria-label={messages.zoomOut} disabled={readerZoom <= MIN_READER_ZOOM} onClick={() => setReaderZoom((value) => Math.max(MIN_READER_ZOOM, value - 0.1))}><Minus size={16} /></button>
-              <button className="zoom-fit" title={messages.fitWidth} onClick={() => setReaderZoom(1)}>{Math.round(readerZoom * 100)}%</button>
-              <button className="icon-button" aria-label={messages.zoomIn} disabled={readerZoom >= MAX_READER_ZOOM} onClick={() => setReaderZoom((value) => Math.min(MAX_READER_ZOOM, value + 0.1))}><Plus size={16} /></button>
-              <button className="zoom-fit" onClick={() => setReaderZoom(1)}>{messages.fitWidth}</button>
-            </div>
+            <ReaderZoomControls messages={messages} />
             <div className="reader-menu-anchor" ref={readerMenu}>
               <button
                 className="icon-button reader-menu-button"
@@ -2834,7 +2829,7 @@ export default function Home() {
               <p>{messages.rendererFailedHelp}</p>
             </div>
           ) : (
-            <ReaderViewport zoom={readerZoom} onZoom={setReaderZoom} currentPage={currentPage}>
+            <ReaderViewport currentPage={currentPage}>
               {pageNumbers.map((page) => (
                 <PageSpread
                   key={`${documentId}-${page}-${serverBookAvailable ? "server" : "local"}`}
@@ -2867,6 +2862,7 @@ export default function Home() {
             </ReaderViewport>
           )}
         </section>
+        </ReaderZoomProvider>
       </div>
 
       <div className="floating-status"><Sparkles size={15} /><span>{messages.contextWindow}</span><strong>{messages.pageRange(Math.max(1, currentPage - 1), Math.min(totalPages, currentPage + 1))}</strong></div>

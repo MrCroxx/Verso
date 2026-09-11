@@ -189,8 +189,9 @@ button { color: inherit; }
 .column-labels { height: 100%; display: grid; grid-template-columns: 1fr 1px 1fr; align-items: center; color: #7c8781; font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .column-labels span { text-align: center; display: flex; align-items: center; justify-content: center; gap: 7px; }
 .column-labels i { height: 22px; background: var(--line); }
-.reader-viewport { width: 100%; overflow-x: auto; padding: 8px; }
-.spreads { margin: 0 auto 60px; transform-origin: top left; }
+.reader-viewport { width: 100%; overflow-x: auto; padding: 8px; overflow-anchor: none; }
+.reader-canvas { position: relative; margin: 0; overflow: clip; }
+.spreads { display: flow-root; margin: 0; padding-bottom: 60px; transform-origin: top left; }
 .reader-zoom { display: flex; align-items: center; gap: 2px; white-space: nowrap; }
 .zoom-fit { border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 11px; padding: 6px; cursor: pointer; font-variant-numeric: tabular-nums; }
 .zoom-fit:hover { background: var(--green-soft); }
