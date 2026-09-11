@@ -180,7 +180,8 @@ its latest counters without a second model request.
 
 Providers usually report token usage only at completion. Until consistent
 usage arrives, tokens are estimated as received UTF-8 bytes divided by four,
-rounded up, and marked `≈`; this is a rough estimate, not model tokenization.
+rounded up; this is a rough estimate, not model tokenization. The header tooltip
+explains the estimate without adding a symbol to each counter.
 TPS uses the same token count divided by time since the first nonempty output
 delta, including pauses, and appears after one second of output. Final reported
 usage calibrates tokens and TPS only when internally consistent (for example,

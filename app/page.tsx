@@ -667,13 +667,12 @@ function TranslationText({
 
 function TranslationLiveProgress({ progress, messages }: { progress?: TranslationProgress; messages: UiMessages }) {
   const phase = progress?.phase ?? "queued";
-  const approximate = progress?.tokensEstimated !== false ? "≈" : "";
   return <div className="translation-live" role="status" aria-live="polite" aria-atomic="true" title={messages.translationStatsHelp}>
     <span className="translation-live-phase"><LoaderCircle className="spin" size={12} />{messages.translationPhases[phase]}</span>
     <span className="translation-live-counts">
-      {approximate}{(progress?.tokens ?? 0).toLocaleString()} tok
+      {(progress?.tokens ?? 0).toLocaleString()} tok
       <span aria-hidden="true"> · </span>{(progress?.characters ?? 0).toLocaleString()} char
-      <span aria-hidden="true"> · </span>{progress?.tokensPerSecond === undefined ? "—" : `${approximate}${progress.tokensPerSecond.toFixed(1)}`} TPS
+      <span aria-hidden="true"> · </span>{progress?.tokensPerSecond === undefined ? "—" : progress.tokensPerSecond.toFixed(1)} TPS
     </span>
   </div>;
 }
