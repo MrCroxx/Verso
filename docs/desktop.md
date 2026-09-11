@@ -72,9 +72,11 @@ for DMG and ZIP files. Dependencies are locked to patched versions. npm's
 unrelated install scripts are not blanket-approved.
 
 The **macOS Desktop** GitHub Actions workflow produces ad-hoc signed arm64 and
-x64 artifacts on manual dispatch, version tags, and pull requests affecting the
-desktop build. It does not upload GitHub Releases. Docker image publishing
-continues through the existing CI workflow.
+x64 artifacts on every push to `main`, manual dispatch, version tags, and pull
+requests affecting the desktop build. Download the DMG and ZIP installers from
+the successful run's `Verso-macOS-arm64` or `Verso-macOS-x64` artifacts. It does
+not upload GitHub Releases. Docker image publishing continues through the
+existing CI workflow.
 
 ## Packaging and validation
 

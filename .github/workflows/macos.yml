@@ -14,6 +14,8 @@ on:
       - 'next.config.ts'
       - '.github/workflows/macos.yml'
   push:
+    branches:
+      - main
     tags:
       - 'v*'
 
