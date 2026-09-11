@@ -73,7 +73,7 @@ unrelated install scripts are not blanket-approved.
 
 The **CI** GitHub Actions workflow runs lint, the production build, and tests on
 Linux and macOS for pull requests and pushes to `main`. Pull requests do not
-package installers or publish Docker images.
+package installers or publish Docker images; both jobs appear as skipped checks.
 
 The **macOS Desktop** workflow produces ad-hoc signed arm64 and x64 artifacts on
 every push to `main`, manual dispatch, and version tags. Download the DMG and ZIP
