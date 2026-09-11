@@ -9,7 +9,7 @@ on:
       - 'scripts/*macos*'
       - 'scripts/smoke-*'
       - 'tests/desktop.test.mjs'
-      - 'electron-builder.config.cjs'
+      - 'electron-packager.config.mjs'
       - 'package*.json'
       - 'next.config.ts'
       - '.github/workflows/macos.yml'

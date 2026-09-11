@@ -58,12 +58,18 @@ validated.
 `VERSO_MAC_UNSIGNED=1` creates an ad-hoc signed build for local testing, without
 Apple notarization. It is not a Developer ID release and Gatekeeper may require
 an explicit local override. For Developer ID builds, omit that variable and
-configure electron-builder's `CSC_LINK` / `CSC_KEY_PASSWORD`, or an installed
-signing identity. For notarization, supply `APPLE_ID`,
+install a Developer ID signing identity in the macOS keychain. Set
+`VERSO_MAC_SIGN_IDENTITY` to select a specific identity, or leave it unset for
+automatic discovery. For notarization, supply `APPLE_ID`,
 `APPLE_APP_SPECIFIC_PASSWORD`, and `APPLE_TEAM_ID`, or `APPLE_API_KEY`,
 `APPLE_API_KEY_ID`, and `APPLE_API_ISSUER`. No credentials are stored in the repo.
-See [electron-builder signing](https://www.electron.build/code-signing-mac.html)
-and [notarization](https://www.electron.build/notarization/).
+See [Electron signing](https://github.com/electron/osx-sign)
+and [notarization](https://github.com/electron/notarize).
+
+Packaging uses the official `@electron/packager` with macOS `hdiutil` and `ditto`
+for DMG and ZIP files. Dependencies are locked to patched versions. npm's
+`allowScripts` policy explicitly approves the reviewed native resolver setup;
+unrelated install scripts are not blanket-approved.
 
 The **macOS Desktop** GitHub Actions workflow produces ad-hoc signed arm64 and
 x64 artifacts on manual dispatch, version tags, and pull requests affecting the

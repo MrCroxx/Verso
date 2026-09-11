@@ -1,6 +1,7 @@
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import sharp from 'sharp';
+import { execFileSync } from 'node:child_process';
 
 const root = process.cwd();
 const destination = path.join(root, '.desktop/server');
@@ -24,3 +25,14 @@ await writeFile(path.join(appRoot, 'package.json'), JSON.stringify({
 console.log(`Prepared desktop server: ${destination}`);
 await sharp(path.join(root, 'public/favicon.svg'), { density: 3072 })
   .resize(1024, 1024).png().toFile(path.join(root, '.desktop/icon.png'));
+if (process.platform === 'darwin') {
+  const iconset = path.join(root, '.desktop/Verso.iconset');
+  await mkdir(iconset, { recursive: true });
+  for (const size of [16, 32, 128, 256, 512]) {
+    for (const scale of [1, 2]) {
+      await sharp(path.join(root, '.desktop/icon.png')).resize(size * scale, size * scale)
+        .toFile(path.join(iconset, `icon_${size}x${size}${scale === 2 ? '@2x' : ''}.png`));
+    }
+  }
+  execFileSync('/usr/bin/iconutil', ['-c', 'icns', iconset, '-o', path.join(root, '.desktop/icon.icns')], { stdio: 'inherit' });
+}

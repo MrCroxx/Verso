@@ -21,24 +21,27 @@
   "dependencies": {
     "clsx": "^2.1.1",
     "lucide-react": "^1.31.0",
-    "next": "16.2.6",
+    "next": "16.3.4",
     "pdfjs-dist": "^6.2.108",
     "react": "19.2.6",
     "react-dom": "19.2.6",
     "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {
+    "@electron/packager": "20.3.0",
     "@tailwindcss/postcss": "4.2.1",
     "@types/node": "22.19.19",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "electron": "44.3.0",
-    "electron-builder": "26.15.3",
     "eslint": "9.39.4",
-    "eslint-config-next": "16.2.6",
+    "eslint-config-next": "16.3.4",
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3"
   },
   "type": "module",
-  "main": "desktop/main.mjs"
+  "main": "desktop/main.mjs",
+  "allowScripts": {
+    "unrs-resolver@1.11.1": true
+  }
 }
