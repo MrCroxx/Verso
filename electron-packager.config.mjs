@@ -26,6 +26,7 @@ export function createPackagerOptions({ platform = 'darwin', arch = process.arch
       icon: path.join(root, '.desktop/icon.icns'),
       darwinDarkModeSupport: true,
       osxSign: {
+        continueOnError: false,
         identity: unsigned ? '-' : env.VERSO_MAC_SIGN_IDENTITY,
         identityValidation: !unsigned,
         optionsForFile: () => ({

@@ -64,8 +64,34 @@ async function run() {
     await act(`
       window.nextFrames = async (count = 3) => { for (let i = 0; i < count; i++) await new Promise(requestAnimationFrame); };
       window.zoomLabel = () => document.querySelector('.reader-zoom .zoom-fit').textContent;
-      window.zoomWheel = (deltaY, extra = {}) => document.querySelector('.reader-viewport').dispatchEvent(
-        new WheelEvent('wheel', { bubbles: true, cancelable: true, ctrlKey: true, deltaY, clientX: 800, clientY: 450, ...extra }));
+      // Control only timers scheduled synchronously by wheel handling. Rendering,
+      // network activity, and the settling animation keep their real clocks.
+      const nativeSetTimeout = window.setTimeout.bind(window);
+      const nativeClearTimeout = window.clearTimeout.bind(window);
+      const timers = new Map();
+      let time = 0;
+      let timerId = 0;
+      window.clearTimeout = id => timers.delete(id) || nativeClearTimeout(id);
+      window.advanceZoomTime = elapsed => {
+        time += elapsed;
+        for (const [id, timer] of timers) {
+          if (timer.deadline > time) continue;
+          timers.delete(id);
+          timer.callback(...timer.args);
+        }
+        return timers.size;
+      };
+      window.zoomWheel = (deltaY, extra = {}) => {
+        window.setTimeout = (callback, delay = 0, ...args) => {
+          const id = --timerId;
+          timers.set(id, { callback, args, deadline: time + delay });
+          return id;
+        };
+        try {
+          return document.querySelector('.reader-viewport').dispatchEvent(
+            new WheelEvent('wheel', { bubbles: true, cancelable: true, ctrlKey: true, deltaY, clientX: 800, clientY: 450, ...extra }));
+        } finally { window.setTimeout = nativeSetTimeout; }
+      };
       window.rect = () => document.querySelector('[data-page="10"]').getBoundingClientRect();
       window.measureAnchor = () => { const r = rect(); return { x: (800 - r.left) / r.width, y: (450 - r.top) / r.height }; };
       window.key = key => document.body.dispatchEvent(new KeyboardEvent('keydown', { key, ctrlKey: true, bubbles: true, cancelable: true }));
@@ -96,7 +122,7 @@ async function run() {
     }
     // Continuous gestures must keep the same content under the pointer without accumulated drift.
     const continuous = await js(`(async () => {
-      for (let i = 0; i < 24; i++) { zoomWheel(i < 12 ? -8 : 8); await nextFrames(2); }
+      for (let i = 0; i < 24; i++) { zoomWheel(i < 12 ? -8 : 8); await nextFrames(2); advanceZoomTime(32); }
       return measureAnchor();
     })()`);
     assert.ok(Math.abs(continuous.x - before.anchor.x) < 0.003);
@@ -136,19 +162,36 @@ async function run() {
         const fixedPoint = (clientX - canvas.getBoundingClientRect().left) / canvas.getBoundingClientRect().width;
         let maxAnchorError = 0;
         for (let i = 0; i < 105; i++) {
+          // A slow runner must not turn a continuous synthetic gesture into two gestures.
+          if (i === 34 && clientX === 1200) await new Promise(resolve => setTimeout(resolve, 400));
           zoomWheel(i >= 35 && i < 70 ? -4 : 4, { clientX }); await nextFrames(2);
           const r = canvas.getBoundingClientRect();
           maxAnchorError = Math.max(maxAnchorError, Math.abs(r.left + fixedPoint * r.width - clientX));
+          if (i < 104) advanceZoomTime(32);
         }
-        await new Promise(resolve => setTimeout(resolve, 400));
+        const pendingBeforeIdle = advanceZoomTime(179);
         await nextFrames();
+        const active = canvas.getBoundingClientRect();
+        maxAnchorError = Math.max(maxAnchorError, Math.abs(active.left + fixedPoint * active.width - clientX));
+        const pendingAfterIdle = advanceZoomTime(1);
+        const deadline = performance.now() + 15_000;
+        while (true) {
+          await nextFrames();
+          const r = canvas.getBoundingClientRect();
+          const v = viewport.getBoundingClientRect();
+          if (Math.abs(r.left + r.width / 2 - v.left - viewport.clientWidth / 2) < 0.1
+            && viewport.scrollWidth - viewport.clientWidth <= 1) break;
+          if (performance.now() > deadline) throw new Error('Timed out waiting for zoom settling');
+        }
         const r = canvas.getBoundingClientRect();
         const v = viewport.getBoundingClientRect();
         const centeredError = Math.abs(r.left + r.width / 2 - v.left - viewport.clientWidth / 2);
         const overflow = viewport.scrollWidth - viewport.clientWidth;
         key('0'); await nextFrames();
-        return { maxAnchorError, centeredError, overflow };
+        return { maxAnchorError, centeredError, overflow, pendingBeforeIdle, pendingAfterIdle };
       })()`);
+      assert.equal(edge.pendingBeforeIdle, 1, 'The gesture must remain active before its idle deadline');
+      assert.equal(edge.pendingAfterIdle, 0, 'The gesture must settle at its idle deadline');
       assert.ok(edge.maxAnchorError < 1, `${side} edge changed the gesture anchor by ${edge.maxAnchorError}px`);
       assert.ok(edge.centeredError < 1, `${side} edge did not settle back to the center`);
       assert.ok(edge.overflow <= 1, `${side} edge left an empty horizontal scroll area after settling`);
