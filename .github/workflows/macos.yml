@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   package:
-    name: Package macOS ${{ matrix.arch }}
+    name: Package macOS
     if: github.event_name != 'pull_request'
     strategy:
       fail-fast: false
