@@ -32,9 +32,7 @@ export function useAiProviderAutosave(save: (settings: AiProviderSettingsUpdate)
         await save(next);
         savedRevision.current = version;
         if (revision.current === version) {
-          const saved = { ...next, apiKey: "" };
-          pending.current = saved;
-          setDraft(saved);
+          // Keep the masked draft intact so a pause while typing cannot truncate the key.
           setStatus("saved");
         }
       } catch (error) {

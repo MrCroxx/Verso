@@ -5,6 +5,7 @@ import { UI_LOCALE_COOKIE, resolveUiLocale } from "../lib/ui-locale";
 import "./globals.css";
 import { UiLocaleProvider } from "./ui-locale";
 import { AppSettingsProvider } from "./app-settings";
+import { THEME_INIT_SCRIPT } from "../lib/theme";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
@@ -14,14 +15,14 @@ export async function generateMetadata(): Promise<Metadata> {
   const host = requestHeaders.get("x-forwarded-host") || requestHeaders.get("host") || "localhost:3000";
   const protocol = requestHeaders.get("x-forwarded-proto") || (host.startsWith("localhost") ? "http" : "https");
   const origin = `${protocol}://${host}`;
-  const description = "A fast, local-first parallel translator for scanned books.";
+  const description = "Translate books and read the original and translation side by side, with your library stored locally.";
   return {
     metadataBase: new URL(origin),
-    title: "Verso — AI Parallel Reader",
+    title: "Verso — Read beyond language",
     description,
     icons: { icon: "/favicon.svg", shortcut: "/favicon.svg" },
     openGraph: {
-      title: "Verso — AI Parallel Reader",
+      title: "Verso — Read beyond language",
       description,
       type: "website",
       url: origin,
@@ -29,7 +30,7 @@ export async function generateMetadata(): Promise<Metadata> {
     },
     twitter: {
       card: "summary_large_image",
-      title: "Verso — AI Parallel Reader",
+      title: "Verso — Read beyond language",
       description,
       images: [`${origin}/og.png`],
     },
@@ -43,7 +44,8 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
     requestHeaders.get("accept-language"),
   );
   return (
-    <html lang={locale}>
+    <html lang={locale} suppressHydrationWarning>
+      <head><script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} /></head>
       <body className={`${geistSans.variable} ${geistMono.variable}`}>
         <UiLocaleProvider initialLocale={locale}><AppSettingsProvider>{children}</AppSettingsProvider></UiLocaleProvider>
       </body>

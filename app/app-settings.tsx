@@ -5,8 +5,8 @@ import { DEFAULT_SETTINGS, EMPTY_TRANSLATION_SERVICE, type AppSettings, type Tra
 import type { AiProviderSettingsUpdate, PublicAiProviderSettings } from "../lib/ai-provider-settings";
 
 import { useAiProviderAutosave } from "./ai-provider-autosave";
+import { parseTheme, watchTheme, type ThemeMode } from "../lib/theme";
 
-export type ThemeMode = "light" | "dark";
 type AppSettingsContextValue = {
   settings: AppSettings;
   setSettings: (settings: AppSettings) => void;
@@ -21,7 +21,7 @@ const AppSettingsContext = createContext<AppSettingsContextValue | null>(null);
 
 export function AppSettingsProvider({ children }: { children: ReactNode }) {
   const [settings, setSettingsState] = useState(DEFAULT_SETTINGS);
-  const [theme, setTheme] = useState<ThemeMode>("light");
+  const [theme, setTheme] = useState<ThemeMode>("system");
   const [ready, setReady] = useState(false);
   const [translationService, setTranslationService] = useState(EMPTY_TRANSLATION_SERVICE);
   const [providerError, setProviderError] = useState(false);
@@ -44,10 +44,9 @@ export function AppSettingsProvider({ children }: { children: ReactNode }) {
       } catch {
         // Browser preferences are optional; document data remains on the server.
       }
-      let nextTheme: ThemeMode = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      let nextTheme: ThemeMode = "system";
       try {
-        const saved = localStorage.getItem("verso-theme");
-        if (saved === "light" || saved === "dark") nextTheme = saved;
+        nextTheme = parseTheme(localStorage.getItem("verso-theme"));
       } catch { /* Use the system theme when browser storage is unavailable. */ }
       setTheme(nextTheme);
       setReady(true);
@@ -61,12 +60,14 @@ export function AppSettingsProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    document.documentElement.dataset.theme = theme;
     document.documentElement.dataset.smoothScroll = settings.smoothScrolling ? "true" : "false";
-    if (ready) {
-      try { localStorage.setItem("verso-theme", theme); } catch { /* Keep the theme for this session. */ }
-    }
-  }, [ready, settings.smoothScrolling, theme]);
+  }, [settings.smoothScrolling]);
+
+  useEffect(() => {
+    if (!ready) return;
+    try { localStorage.setItem("verso-theme", theme); } catch { /* Keep the theme for this session. */ }
+    return watchTheme(theme);
+  }, [ready, theme]);
 
   const reloadProvider = useCallback(async () => {
     try {

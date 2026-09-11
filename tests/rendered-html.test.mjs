@@ -6,6 +6,8 @@ import { createServer as createHttpServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test, { after, before } from "node:test";
+import { runInNewContext } from "node:vm";
+import { applyTheme, watchTheme } from "../lib/theme.ts";
 import { createLocalPdfRangeTransport } from "../lib/local-pdf-range-transport.ts";
 import { createConcurrencyLimiter } from "../lib/concurrency-limiter.ts";
 import { isDocumentSearchShortcut } from "../lib/keyboard-shortcuts.ts";
@@ -126,14 +128,16 @@ test("server-renders the Verso library home", async () => {
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /<title>Verso — AI Parallel Reader<\/title>/i);
+  assert.match(html, /<title>Verso — Read beyond language<\/title>/i);
   assert.match(html, /<html lang="en-US">/i);
   assert.match(html, /Verso/);
-  assert.match(html, /AI Reader/);
+  assert.match(html, /Read beyond language/);
   assert.match(html, /Your library/);
   assert.match(html, /Upload a new PDF/);
-  assert.match(html, /Local Library/);
-  assert.match(html, /Toggle light or dark mode/);
+  assert.match(html, />Library</);
+  assert.doesNotMatch(html, /Local Library|AI Reader/);
+  assert.match(html, /aria-label="Appearance"/);
+  assert.match(html, /<option value="system" selected="">System<\/option>/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
 });
 
@@ -152,6 +156,60 @@ test("server-renders the preferred interface locale without a hydration switch",
   assert.match(savedEnglishHtml, /Upload a new PDF/);
 });
 
+test("initializes the theme before rendering, respecting saved preferences and blocked storage", async () => {
+  const html = await (await render()).text();
+  const script = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)]
+    .find((match) => match[1].includes("verso-theme"))?.[1];
+  assert.ok(script);
+  assert.ok(html.indexOf(script) < html.indexOf("<body"));
+  for (const saved of [null, "system", "light", "dark", "invalid"]) {
+    for (const prefersDark of [false, true]) {
+      for (const blocked of [false, true]) {
+        const root = { dataset: {} };
+        runInNewContext(script, {
+          document: { documentElement: root },
+          window: { matchMedia: () => ({ matches: prefersDark }) },
+          localStorage: { getItem: () => { if (blocked) throw new Error("Storage blocked"); return saved; } },
+        });
+        const expected = !blocked && ["light", "dark"].includes(saved) ? saved : prefersDark ? "dark" : "light";
+        assert.equal(root.dataset.theme, expected, `${saved}, dark=${prefersDark}, blocked=${blocked}`);
+      }
+    }
+  }
+});
+
+test("follows live system theme changes and stops following when an explicit theme is chosen", () => {
+  const root = { dataset: {} };
+  const media = new EventTarget();
+  media.matches = false;
+  const context = {
+    document: { documentElement: root },
+    window: { matchMedia: () => media },
+  };
+  const watch = (theme) => runInNewContext(`${applyTheme.toString()}; (${watchTheme.toString()})(${JSON.stringify(theme)})`, context);
+  const stop = watch("system");
+  assert.equal(root.dataset.theme, "light");
+  media.matches = true;
+  media.dispatchEvent(new Event("change"));
+  assert.equal(root.dataset.theme, "dark");
+  media.matches = false;
+  media.dispatchEvent(new Event("change"));
+  assert.equal(root.dataset.theme, "light");
+  stop();
+  media.matches = true;
+  media.dispatchEvent(new Event("change"));
+  assert.equal(root.dataset.theme, "light");
+  for (const theme of ["dark", "light"]) {
+    assert.equal(watch(theme), undefined);
+    media.matches = theme !== "dark";
+    media.dispatchEvent(new Event("change"));
+    assert.equal(root.dataset.theme, theme);
+  }
+  const stopAgain = watch("system");
+  assert.equal(root.dataset.theme, "dark");
+  stopAgain();
+});
+
 test("resolves an explicit locale before the best supported browser language", () => {
   assert.equal(resolveUiLocale("en-US", "zh-CN,zh;q=0.9"), "en-US");
   assert.equal(resolveUiLocale(undefined, "fr-FR,zh-CN;q=0.8,en-US;q=0.6"), "zh-CN");
@@ -166,6 +224,7 @@ test("serves settings as a localized page with a library navigation link", async
     assert.equal(response.status, 200);
     const html = await response.text();
     assert.match(html, new RegExp(`<h1>${title}</h1>`));
+    assert.match(html, new RegExp(`<option value="system" selected="">${locale === "zh-CN" ? "跟随系统" : "System"}</option>`));
     for (const section of ["ai-provider", "translation", "reading", "interface"]) {
       assert.match(html, new RegExp(`id="${section}"`));
     }
@@ -309,7 +368,7 @@ test("connection testing checks the saved model through both provider protocols 
   });
   await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
   try {
-    for (const [kind, suffix, expectedPath] of [["compatible", "/v1", "/v1/chat/completions"], ["openai", "/v1/responses", "/v1/responses"], ["compatible", "/v1/responses", "/v1/responses"]]) {
+    for (const [kind, suffix, expectedPath] of [["compatible", "/v1", "/v1/chat/completions"], ["openai", "/v1", "/v1/responses"], ["openai", "/v1/responses", "/v1/responses"], ["compatible", "/v1/responses", "/v1/responses"]]) {
       const settings = { provider: kind, endpoint: `http://127.0.0.1:${provider.address().port}${suffix}`, apiKey: secret, model: "connection-model", reasoningEffort: "high" };
       assert.equal((await fetch(`${baseUrl}/api/settings/ai-provider`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(settings) })).status, 200);
       const before = await (await fetch(`${baseUrl}/api/settings/ai-provider`)).json();

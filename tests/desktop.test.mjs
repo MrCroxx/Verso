@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { cp, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
-import { get } from 'node:http';
+import { createServer, get } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -41,9 +41,30 @@ test('desktop serves an isolated library, rejects outside requests, and preserve
   assert.equal((await fetch(new URL(script, origin), { headers })).status, 200);
   const library = await fetch(`${origin}/api/books`, { headers });
   assert.deepEqual(await library.json(), { books: [] });
+  const requests = [];
+  let redirect = false;
+  const provider = createServer(async (request, response) => {
+    let raw = '';
+    for await (const chunk of request) raw += chunk;
+    const payload = raw ? JSON.parse(raw) : {};
+    requests.push({ path: request.url, authorization: request.headers.authorization, payload });
+    if (redirect) {
+      response.writeHead(307, { Location: `http://localhost:${provider.address().port}/redirected` }).end();
+      return;
+    }
+    const text = payload.stream ? JSON.stringify({ page: 1, blocks: [], sourceSummary: '', previousPageRevision: null }) : 'OK';
+    response.writeHead(200, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify(request.url.endsWith('/responses')
+      ? { output: [{ content: [{ type: 'output_text', text }] }] }
+      : { choices: [{ message: { content: text } }] }));
+  });
+  await new Promise(resolve => provider.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => provider.close(resolve)));
+  const endpoint = `http://127.0.0.1:${provider.address().port}/v1`;
+  const fixtureKey = 'sk-desktop-test-only';
   const settings = await handle(new Request(`${APP_URL}/api/settings/ai-provider`, {
     method: 'PUT', headers: { ...headers, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ provider: 'openai', endpoint: 'https://api.openai.com/v1', apiKey: 'desktop-test-key', model: 'desktop-test-model', reasoningEffort: 'medium' }),
+    body: JSON.stringify({ provider: 'openai', endpoint, apiKey: fixtureKey, model: 'desktop-test-model', reasoningEffort: 'medium' }),
   }));
   assert.equal(settings.status, 200, await settings.text());
   const trace = await handle(new Request(`${APP_URL}/api/traces?format=chrome`));
@@ -63,7 +84,38 @@ test('desktop serves an isolated library, rejects outside requests, and preserve
   const body = await saved.json();
   assert.equal(body.model, 'desktop-test-model');
   assert.equal(body.apiKeyConfigured, true);
-  assert.ok(!JSON.stringify(body).includes('desktop-test-key'));
+  assert.ok(!JSON.stringify(body).includes(fixtureKey));
+  const restartedHandle = createProtocolHandler({ ...next, fetch });
+  for (const kind of ['openai', 'compatible']) {
+    const update = await restartedHandle(new Request(`${APP_URL}/api/settings/ai-provider`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: kind, endpoint, apiKey: '', model: 'desktop-test-model', reasoningEffort: 'medium' }),
+    }));
+    assert.equal(update.status, 200);
+    const connection = await restartedHandle(new Request(`${APP_URL}/api/settings/ai-provider/test`, { method: 'POST' }));
+    assert.equal(connection.status, 200, await connection.text());
+    const translation = await restartedHandle(new Request(`${APP_URL}/api/translate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      body: JSON.stringify({ targetLanguage: 'English', page: 1, totalPages: 1, images: [{ page: 1, dataUrl: 'data:image/png;base64,AA==' }] }),
+    }));
+    const events = await translation.text();
+    assert.match(events, /event: result/);
+    assert.ok(!events.includes(fixtureKey));
+    for (const request of requests.slice(-2)) {
+      assert.equal(request.authorization, `Bearer ${fixtureKey}`);
+      assert.equal(request.path, kind === 'openai' ? '/v1/responses' : '/v1/chat/completions');
+    }
+    assert.equal(requests.at(-1).payload.stream, true);
+  }
+  const count = requests.length;
+  redirect = true;
+  const redirected = await restartedHandle(new Request(`${APP_URL}/api/translate`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ targetLanguage: 'English', page: 1, totalPages: 1, images: [{ page: 1, dataUrl: 'data:image/png;base64,AA==' }] }),
+  }));
+  assert.equal(redirected.status, 502);
+  assert.match((await redirected.json()).error, /endpoint redirected.*final API URL/);
+  assert.equal(requests.length, count + 1, 'Never follow a redirect that could strip the API key');
 });
 
 test('desktop rejects remote protocol hosts and malformed navigation targets', async () => {

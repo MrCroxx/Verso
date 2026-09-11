@@ -18,7 +18,6 @@ import {
   Menu,
   Minus,
   MoreHorizontal,
-  Moon,
   PanelLeftClose,
   Plus,
   RefreshCw,
@@ -26,7 +25,6 @@ import {
   Search,
   Settings2,
   Sparkles,
-  Sun,
   Trash2,
   Upload,
   X,
@@ -36,7 +34,9 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { DEFAULT_SETTINGS, type TranslationSettings } from "../lib/app-settings";
 import { UI_MESSAGES, targetLanguageLabel, type UiMessages } from "../lib/ui-messages";
-import { useAppSettings, type ThemeMode } from "./app-settings";
+import { useAppSettings } from "./app-settings";
+import { Brand } from "./brand";
+import { ThemeSelect } from "./theme-select";
 import { LOCAL_PDF_RANGE_CHUNK_SIZE, createLocalPdfRangeTransport } from "../lib/local-pdf-range-transport";
 import { createConcurrencyLimiter } from "../lib/concurrency-limiter";
 import {
@@ -952,8 +952,6 @@ function LibraryHome({
   onUpload,
   onRetry,
   onToggleLocale,
-  onToggleTheme,
-  theme,
 }: {
   books: LocalBook[];
   translationSettings: TranslationSettings;
@@ -966,8 +964,6 @@ function LibraryHome({
   onUpload: () => void;
   onRetry: () => void;
   onToggleLocale: () => void;
-  onToggleTheme: () => void;
-  theme: ThemeMode;
 }) {
   const [jobs, setJobs] = useState<BookTranslationJob[]>([]);
   const [pending, setPending] = useState<Set<string>>(new Set());
@@ -1060,10 +1056,10 @@ function LibraryHome({
   return (
     <>
       <header className="topbar library-topbar">
-        <div className="brand"><div className="brand-mark">V</div><span>Verso</span><em>AI Reader</em></div>
+        <div className="brand"><Brand /></div>
         <div className="top-actions">
           <button className="icon-button locale-button" title={messages.switchLanguage} aria-label={messages.switchLanguage} onClick={onToggleLocale}><Globe2 size={16} /><span>{locale === "zh-CN" ? "EN" : "中"}</span></button>
-          <button className="icon-button" title={messages.switchTheme} aria-label={messages.switchTheme} aria-pressed={theme === "dark"} onClick={onToggleTheme}>{theme === "light" ? <Moon size={17} /> : <Sun size={17} />}</button>
+          <ThemeSelect compact />
           <Link className="secondary-button settings-link" href="/settings"><Settings2 size={16} /> {messages.settings}</Link>
           <button className="primary-button" onClick={onUpload}><Plus size={16} /><span className="action-label">{messages.uploadPdf}</span></button>
         </div>
@@ -1071,7 +1067,7 @@ function LibraryHome({
       <section className="library-home" aria-labelledby="library-title">
         <div className="library-hero">
           <div>
-            <p>{messages.localLibrary}</p>
+            <p>{messages.library}</p>
             <h1 id="library-title">{messages.libraryHomeTitle}</h1>
             <span>{messages.librarySlogan}</span>
           </div>
@@ -1351,7 +1347,7 @@ export default function Home() {
   const [searchError, setSearchError] = useState("");
   const { locale, setLocale } = useUiLocale();
   const router = useRouter();
-  const { settings, theme, setTheme, translationService } = useAppSettings();
+  const { settings, translationService } = useAppSettings();
   const messages = UI_MESSAGES[locale];
   const messagesRef = useRef(messages);
   const translationSettings = useMemo<TranslationSettings>(() => ({
@@ -2528,7 +2524,6 @@ export default function Home() {
           messages={messages}
           loading={localBooksLoading}
           error={libraryError}
-          theme={theme}
           onDiscardTranslations={(book) => book.fingerprint === documentIdRef.current
             ? discardCurrentBookTranslations()
             : deleteLocalTranslations(book.fingerprint, messages.localTranslationDiscardFailed)}
@@ -2536,7 +2531,6 @@ export default function Home() {
           onUpload={() => fileInput.current?.click()}
           onRetry={() => void refreshBooks()}
           onToggleLocale={() => setLocale(locale === "zh-CN" ? "en-US" : "zh-CN")}
-          onToggleTheme={() => setTheme((value) => value === "light" ? "dark" : "light")}
         />
         <input ref={fileInput} type="file" accept="application/pdf" hidden onChange={(event) => {
           const file = event.currentTarget.files?.[0];
@@ -2550,7 +2544,7 @@ export default function Home() {
   return (
     <main className={cn("app-shell", sidebarDrawerOpen && "sidebar-drawer-open")}>
       <header className="topbar">
-        <button className="brand brand-button" onClick={openLibrary} aria-label={messages.openLibrary}><div className="brand-mark">V</div><span>Verso</span><em>AI Reader</em></button>
+        <button className="brand brand-button" onClick={openLibrary} aria-label={messages.openLibrary}><Brand /></button>
         <button className="document-title" onClick={openLibrary} title={messages.openLibrary}><FileText size={16} /><span>{fileName}</span><ChevronDown size={14} /></button>
         <div className="top-actions">
           {uploadProgress !== null && uploadProgress < 100 && (
@@ -2568,8 +2562,8 @@ export default function Home() {
               searchInput.current?.select();
             });
           }}><Search size={17} /></button>
-          <button className="icon-button" title={messages.switchTheme} aria-label={messages.switchTheme} aria-pressed={theme === "dark"} onClick={() => setTheme((value) => value === "light" ? "dark" : "light")}>{theme === "light" ? <Moon size={17} /> : <Sun size={17} />}</button>
-          <button className="secondary-button library-button" onClick={openLibrary}><BookOpen size={16} /> {messages.localLibrary}</button>
+          <ThemeSelect compact />
+          <button className="secondary-button library-button" onClick={openLibrary}><BookOpen size={16} /> {messages.library}</button>
           <button className="secondary-button" onClick={() => openSettings()}><Settings2 size={16} /> {messages.settings}</button>
           <button className="primary-button" onClick={() => fileInput.current?.click()}><Upload size={16} /><span className="action-label">{messages.openPdf}</span></button>
           <input ref={fileInput} type="file" accept="application/pdf" hidden onChange={(event) => {
@@ -2796,7 +2790,7 @@ export default function Home() {
                   <button role="menuitem" onClick={() => {
                     setReaderMenuOpen(false);
                     openLibrary();
-                  }}><BookOpen size={17} /><span>{messages.localLibrary}</span></button>
+                  }}><BookOpen size={17} /><span>{messages.library}</span></button>
                   <button role="menuitem" onClick={() => {
                     setReaderMenuOpen(false);
                     openSettings();

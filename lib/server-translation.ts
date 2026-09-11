@@ -271,8 +271,13 @@ export async function generateTranslation(body: TranslationRequest, onProgress?:
       headers,
       body: encoded,
       signal: AbortSignal.timeout(180_000),
+      redirect: "manual",
     }));
     traceAttributes({ httpStatus: response.status });
+    if (response.status >= 300 && response.status < 400) {
+      await response.body?.cancel();
+      throw new TranslationProviderError(`AI endpoint redirected (HTTP ${response.status}). Configure the final API URL in Settings and test the connection.`, 502);
+    }
     const streaming = response.ok && Boolean(response.headers.get("content-type")?.includes("text/event-stream"));
     traceAttributes({ streamed: streaming });
     const result = streaming ? await traceStep("provider.stream", async () => {

@@ -2,24 +2,26 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { ArrowLeft, BookOpen, HardDrive, Sparkles } from "lucide-react";
+import { ArrowLeft, HardDrive, Sparkles } from "lucide-react";
 import clsx from "clsx";
 import { DEFAULT_AI_PROVIDER_SETTINGS, type AiProviderSettingsUpdate, type ReasoningEffort } from "../../lib/ai-provider-settings";
 import type { AppSettings, TranslationService } from "../../lib/app-settings";
 import { UI_MESSAGES, targetLanguageLabel, type UiMessages } from "../../lib/ui-messages";
 import { useAppSettings } from "../app-settings";
 import { useUiLocale } from "../ui-locale";
+import { Brand } from "../brand";
+import { ThemeSelect } from "../theme-select";
 
 const COPY = {
   "zh-CN": {
     back: "返回阅读", library: "返回书库", appearance: "界面", reading: "阅读体验", translation: "翻译",
-    language: "界面语言", languageHelp: "界面语言与翻译目标语言独立设置。", theme: "外观", light: "浅色", dark: "深色",
+    language: "界面语言", languageHelp: "界面语言与翻译目标语言独立设置。",
     autosave: "阅读、翻译和界面偏好修改后自动保存。AI 服务配置也会自动保存。",
     loading: "正在读取 AI 配置…", loadFailed: "无法读取 AI 配置，请重试。", retry: "重试",
   },
   "en-US": {
     back: "Back to reading", library: "Back to library", appearance: "Interface", reading: "Reading", translation: "Translation",
-    language: "Interface language", languageHelp: "Interface language is independent of the translation target.", theme: "Appearance", light: "Light", dark: "Dark",
+    language: "Interface language", languageHelp: "Interface language is independent of the translation target.",
     autosave: "Reading, translation, and interface preferences save automatically. AI provider changes also save automatically.",
     loading: "Loading AI settings…", loadFailed: "Unable to load AI settings. Please retry.", retry: "Retry",
   },
@@ -27,7 +29,7 @@ const COPY = {
 
 export function SettingsScreen({ backHref }: { backHref: string }) {
   const { locale, setLocale } = useUiLocale();
-  const { settings, setSettings, theme, setTheme, translationService, providerError, reloadProvider } = useAppSettings();
+  const { settings, setSettings, translationService, providerError, reloadProvider } = useAppSettings();
   const messages = UI_MESSAGES[locale];
   const copy = COPY[locale];
   function update<K extends keyof AppSettings>(key: K, value: AppSettings[K]) {
@@ -36,7 +38,7 @@ export function SettingsScreen({ backHref }: { backHref: string }) {
   return (
     <main className="app-shell settings-shell">
       <header className="topbar library-topbar">
-        <Link href="/" className="brand"><span className="brand-mark"><BookOpen size={19} /></span><span>Verso</span><em>AI Reader</em></Link>
+        <Link href="/" className="brand"><Brand /></Link>
         <Link href={backHref} className="secondary-button"><ArrowLeft size={16} />{backHref === "/" ? copy.library : copy.back}</Link>
       </header>
       <div className="settings-page">
@@ -121,10 +123,8 @@ export function SettingsScreen({ backHref }: { backHref: string }) {
               <option value="zh-CN">简体中文</option><option value="en-US">English</option>
             </select>
             <p className="field-help">{copy.languageHelp}</p>
-            <label className="field-label" htmlFor="theme">{copy.theme}</label>
-            <select id="theme" value={theme} onChange={(event) => setTheme(event.target.value as typeof theme)}>
-              <option value="light">{copy.light}</option><option value="dark">{copy.dark}</option>
-            </select>
+            <label className="field-label" htmlFor="theme">{messages.theme}</label>
+            <ThemeSelect id="theme" />
           </section>
         </div>
       </div>
