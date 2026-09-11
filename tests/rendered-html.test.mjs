@@ -100,8 +100,19 @@ if (process.env.VERSO_PDF_RENDERER_LOG) {
 });
 
 after(async () => {
-  serverProcess?.kill("SIGTERM");
-  await rm(testDataDirectory, { recursive: true, force: true });
+  if (serverProcess && serverProcess.exitCode === null && serverProcess.signalCode === null) {
+    // Sending a signal is asynchronous; the server can still write render caches
+    // until it exits. Wait for its stdio to close before removing the library.
+    const closed = new Promise(resolve => serverProcess.once("close", resolve));
+    const timeout = setTimeout(() => serverProcess.kill("SIGKILL"), 5000);
+    try {
+      serverProcess.kill("SIGTERM");
+      await closed;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  if (testDataDirectory) await rm(testDataDirectory, { recursive: true, force: true });
 });
 
 async function render(path = "/", headers = {}) {
