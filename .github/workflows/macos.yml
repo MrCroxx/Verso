@@ -2,17 +2,6 @@ name: macOS Desktop
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - 'desktop/**'
-      - 'scripts/**desktop*'
-      - 'scripts/*macos*'
-      - 'scripts/smoke-*'
-      - 'tests/desktop.test.mjs'
-      - 'electron-packager.config.mjs'
-      - 'package*.json'
-      - 'next.config.ts'
-      - '.github/workflows/macos.yml'
   push:
     branches:
       - main
