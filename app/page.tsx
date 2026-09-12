@@ -66,6 +66,7 @@ import { useUiLocale } from "./ui-locale";
 import { SourceImageCrop } from "./source-image-crop";
 import { ReaderDivider, ReaderViewport, ReaderZoomProvider, ReaderZoomControls, READER_PAGE_WIDTH } from "./reader-viewport";
 import { ReaderFontControls } from "./reader-font-controls";
+import { TranslationTransfer } from "./translation-transfer";
 import { alignSourceBlocks, type SourcePageLayout } from "../lib/source-alignment";
 import { DisplayEquation, MathText } from "./math-content";
 import { translationCacheKey, translationCacheSuffix } from "../lib/translation-cache";
@@ -2811,31 +2812,39 @@ export default function Home() {
               >
                 <MoreHorizontal size={20} />
               </button>
-              {readerMenuOpen && (
-                <div id="reader-overflow-menu" className="reader-overflow-menu" role="menu">
-                  <button role="menuitem" onClick={() => openSidebarView("pages")}><FileText size={17} /><span>{messages.pages}</span></button>
-                  <button role="menuitem" onClick={() => openSidebarView("contents")}><ListTree size={17} /><span>{messages.contents}</span></button>
-                  <button role="menuitem" onClick={() => openSidebarView("search")}><Search size={17} /><span>{messages.searchPages}</span></button>
-                  <i aria-hidden="true" />
-                  <button role="menuitem" onClick={() => {
-                    setReaderMenuOpen(false);
-                    openLibrary();
-                  }}><BookOpen size={17} /><span>{messages.library}</span></button>
-                  <button role="menuitem" onClick={() => {
-                    setReaderMenuOpen(false);
-                    openSettings();
-                  }}><Settings2 size={17} /><span>{messages.settings}</span></button>
-                  {!isDemo && <button role="menuitem" onClick={() => {
-                    setReaderMenuOpen(false);
-                    if (!window.confirm(messages.discardTranslationsConfirm(fileName))) return;
-                    void discardCurrentBookTranslations().catch(() => setDocumentError(messages.discardTranslationsFailed));
-                  }}><Trash2 size={17} /><span>{messages.discardTranslations}</span></button>}
-                  <button role="menuitem" onClick={() => {
-                    setReaderMenuOpen(false);
-                    fileInput.current?.click();
-                  }}><Upload size={17} /><span>{messages.openPdf}</span></button>
-                </div>
-              )}
+              {/* Keep transfers mounted when the menu closes during file selection or import. */}
+              <div id="reader-overflow-menu" className="reader-overflow-menu" role="menu" hidden={!readerMenuOpen}>
+                <button role="menuitem" onClick={() => openSidebarView("pages")}><FileText size={17} /><span>{messages.pages}</span></button>
+                <button role="menuitem" onClick={() => openSidebarView("contents")}><ListTree size={17} /><span>{messages.contents}</span></button>
+                <button role="menuitem" onClick={() => openSidebarView("search")}><Search size={17} /><span>{messages.searchPages}</span></button>
+                <i aria-hidden="true" />
+                <button role="menuitem" onClick={() => {
+                  setReaderMenuOpen(false);
+                  openLibrary();
+                }}><BookOpen size={17} /><span>{messages.library}</span></button>
+                <button role="menuitem" onClick={() => {
+                  setReaderMenuOpen(false);
+                  openSettings();
+                }}><Settings2 size={17} /><span>{messages.settings}</span></button>
+                {!isDemo && <TranslationTransfer key={documentId} documentId={documentId} messages={messages} menu
+                  disabled={!serverBookAvailable || loadingDocument} onImported={async () => {
+                    if (documentIdRef.current !== documentId) return;
+                    cancelTranslationWork();
+                    setErrors({});
+                    setSearchMatches([]);
+                    setSearchQuery("");
+                    await loadNavigation(documentId, documentLoadSequence.current, translationSettings);
+                  }} />}
+                {!isDemo && <button role="menuitem" onClick={() => {
+                  setReaderMenuOpen(false);
+                  if (!window.confirm(messages.discardTranslationsConfirm(fileName))) return;
+                  void discardCurrentBookTranslations().catch(() => setDocumentError(messages.discardTranslationsFailed));
+                }}><Trash2 size={17} /><span>{messages.discardTranslations}</span></button>}
+                <button role="menuitem" onClick={() => {
+                  setReaderMenuOpen(false);
+                  fileInput.current?.click();
+                }}><Upload size={17} /><span>{messages.openPdf}</span></button>
+              </div>
             </div>
           </div>
 

@@ -39,6 +39,10 @@ export class LocalStatement {
   }
 
   async run() {
+    return this.runSync();
+  }
+
+  runSync() {
     return Array.isArray(this.values) ? this.statement.run() : this.statement.run(this.values);
   }
 }
@@ -58,7 +62,8 @@ export class LocalDatabase {
     this.database.exec("BEGIN IMMEDIATE");
     try {
       const results = [];
-      for (const statement of statements) results.push(await statement.run());
+      // Do not yield while a transaction owns the shared connection.
+      for (const statement of statements) results.push(statement.runSync());
       this.database.exec("COMMIT");
       return results;
     } catch (error) {
