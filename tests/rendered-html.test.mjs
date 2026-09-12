@@ -199,7 +199,7 @@ test("server-renders the Verso library home", async () => {
   assert.match(html, /<html lang="en-US">/i);
   assert.match(html, /Verso/);
   assert.match(html, /Read beyond language/);
-  assert.match(html, /Your library/);
+  assert.match(html, /<h1 id="library-title">Library<\/h1>/);
   assert.match(html, /Upload a new PDF/);
   assert.match(html, />Library</);
   assert.doesNotMatch(html, /Local Library|AI Reader/);

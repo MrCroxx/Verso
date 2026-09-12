@@ -7,7 +7,6 @@ import { readTranslationResponse, type TranslationProgress } from "../lib/transl
 import { recordClientTiming, recordTranslationTrace, type TranslationTrace } from "../lib/translation-trace";
 import {
   BookOpen,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
   CircleCheck,
@@ -26,7 +25,7 @@ import {
   RefreshCw,
   RotateCcw,
   Search,
-  Settings2,
+  Settings,
   Sparkles,
   Trash2,
   Upload,
@@ -1085,26 +1084,23 @@ function LibraryHome({
       setPending((value) => { const next = new Set(value); next.delete(book.id); return next; });
     }
   };
+  const activeJobCount = jobs.filter((job) => isTranslationActive(job.status)).length;
   return (
     <>
       <header className="topbar library-topbar">
         <div className="brand"><Brand /></div>
         <div className="top-actions">
-          <Link className="secondary-button queue-link" href="/queue" title={messages.queueTitle} aria-label={messages.queueTitle}><ListOrdered size={16} /><span className="action-label">{messages.queueTitle}</span><span>{jobs.filter((job) => isTranslationActive(job.status)).length || ""}</span></Link>
+          <Link className="icon-button queue-link" href="/queue" title={messages.queueTitle} aria-label={activeJobCount ? `${messages.queueTitle} (${activeJobCount})` : messages.queueTitle}><ListOrdered size={17} />{activeJobCount > 0 && <span className="queue-count" aria-hidden="true">{activeJobCount}</span>}</Link>
           <button className="icon-button locale-button" title={messages.switchLanguage} aria-label={messages.switchLanguage} onClick={onToggleLocale}><Globe2 size={16} /><span>{locale === "zh-CN" ? "EN" : "中"}</span></button>
           <ThemeSelect compact />
-          <Link className="secondary-button settings-link" href="/settings"><Settings2 size={16} /> {messages.settings}</Link>
-          <button className="primary-button" onClick={onUpload}><Plus size={16} /><span className="action-label">{messages.uploadPdf}</span></button>
+          <Link className="icon-button settings-link" href="/settings" title={messages.settings} aria-label={messages.settings}><Settings size={17} /></Link>
+          <button className="icon-button library-upload-button" onClick={onUpload} title={messages.uploadPdf} aria-label={messages.uploadPdf}><Upload size={17} /></button>
         </div>
       </header>
       <section className="library-home" aria-labelledby="library-title">
-        <div className="library-hero">
-          <div>
-            <p>{messages.library}</p>
-            <h1 id="library-title">{messages.libraryHomeTitle}</h1>
-            <span>{messages.librarySlogan}</span>
-          </div>
-          <strong>{messages.bookCount(books.length)}</strong>
+        <div className="library-heading">
+          <h1 id="library-title">{messages.library}</h1>
+          <span>{messages.bookCount(books.length)}</span>
         </div>
         {books.length > 0 && (
           <p className="library-translation-note"><Languages size={14} /><span>{messages.queueHelp(language)}</span></p>
@@ -1445,7 +1441,7 @@ export default function Home() {
     const pageSpreads = Array.from(spreads.querySelectorAll<HTMLElement>("[data-page]"));
     const isVisible = (node: HTMLElement) => {
       const rect = node.getBoundingClientRect();
-      return rect.bottom > 113 && rect.top < window.innerHeight;
+      return rect.bottom > (document.querySelector(".reader-topbar")?.getBoundingClientRect().bottom ?? 64) && rect.top < window.innerHeight;
     };
     const anchorPage = preferred && isVisible(preferred)
       ? preferred
@@ -2573,10 +2569,38 @@ export default function Home() {
   }
 
   return (
-    <main className={cn("app-shell", sidebarDrawerOpen && "sidebar-drawer-open")}>
-      <header className="topbar">
-        <button className="brand brand-button" onClick={openLibrary} aria-label={messages.openLibrary}><Brand /></button>
-        <button className="document-title" onClick={openLibrary} title={messages.openLibrary}><FileText size={16} /><span>{fileName}</span><ChevronDown size={14} /></button>
+    <ReaderZoomProvider>
+    <main className={cn("app-shell reader-shell", sidebarDrawerOpen && "sidebar-drawer-open")}>
+      <header className="topbar reader-topbar">
+        <div className="reader-identity">
+          <button className="brand brand-button" onClick={openLibrary} title={messages.openLibrary} aria-label={messages.openLibrary}><Brand /></button>
+          <div className="reader-book-info">
+            <div className="document-title" title={fileName}><span>{fileName}</span></div>
+            <div className="reader-language-pair"><span>{messages.sourceScan}</span><span aria-hidden="true">/</span><span>{targetLanguageLabel(settings.targetLanguage, locale)}</span></div>
+          </div>
+        </div>
+        <div className="reader-toolbar">
+          <div className="reader-toolbar-start">
+            <button
+              className={cn("icon-button", "reader-sidebar-button", sidebarOpen && "desktop-hidden")}
+              aria-label={messages.toggleSidebar}
+              onClick={() => openSidebarView("pages")}
+            >
+              <Menu size={19} />
+            </button>
+            <div className="page-stepper">
+              <button className="icon-button" onClick={() => goToPage(currentPage - 1, "adjacent")} aria-label={messages.previousPage}><ChevronLeft size={17} /></button>
+              <span><strong>{currentPage}</strong> / {totalPages}</span>
+              <button className="icon-button" onClick={() => goToPage(currentPage + 1, "adjacent")} aria-label={messages.nextPage}><ChevronRight size={17} /></button>
+            </div>
+          </div>
+          <div className="reader-display-controls">
+            <ReaderFontControls value={{ translationFontSize: settings.translationFontSize, translationFontFamily: settings.translationFontFamily }} messages={messages.readerFont}
+              onChange={(typography) => setSettings({ ...settings, ...typography })} />
+            <ReaderZoomControls messages={messages} />
+          </div>
+
+        </div>
         <div className="top-actions">
           {uploadProgress !== null && uploadProgress < 100 && (
             <div className="cache-status" title={storageMessage}>
@@ -2584,19 +2608,43 @@ export default function Home() {
             </div>
           )}
           <button className="icon-button locale-button" title={messages.switchLanguage} aria-label={messages.switchLanguage} onClick={() => setLocale(locale === "zh-CN" ? "en-US" : "zh-CN")}><Globe2 size={16} /><span>{locale === "zh-CN" ? "EN" : "中"}</span></button>
-          <button className="icon-button top-search-button" aria-label={messages.searchPages} onClick={() => {
-            setSidebarOpen(true);
-            setSidebarDrawerOpen(window.matchMedia("(max-width: 900px)").matches);
-            setSidebarView("search");
-            window.requestAnimationFrame(() => {
-              searchInput.current?.focus();
-              searchInput.current?.select();
-            });
-          }}><Search size={17} /></button>
           <ThemeSelect compact />
-          <button className="secondary-button library-button" onClick={openLibrary}><BookOpen size={16} /> {messages.library}</button>
-          <button className="secondary-button" onClick={() => openSettings()}><Settings2 size={16} /> {messages.settings}</button>
-          <button className="primary-button" onClick={() => fileInput.current?.click()}><Upload size={16} /><span className="action-label">{messages.openPdf}</span></button>
+          <button className="icon-button reader-settings-button" title={messages.settings} aria-label={messages.settings} onClick={() => openSettings()}><Settings size={17} /></button>
+          <button className="icon-button reader-upload-button" title={messages.openPdf} aria-label={messages.openPdf} onClick={() => fileInput.current?.click()}><Upload size={17} /></button>
+          <div className="reader-menu-anchor" ref={readerMenu}>
+            <button
+              className="icon-button reader-menu-button"
+              aria-label={messages.moreOptions}
+              title={messages.moreOptions}
+              aria-haspopup="menu"
+              aria-expanded={readerMenuOpen}
+              aria-controls="reader-overflow-menu"
+              onClick={() => setReaderMenuOpen((open) => !open)}
+            >
+              <MoreHorizontal size={20} />
+            </button>
+            {/* Keep transfers mounted when the menu closes during file selection or import. */}
+            <div id="reader-overflow-menu" className="reader-overflow-menu" role="menu" hidden={!readerMenuOpen}>
+              <button role="menuitem" onClick={() => openSidebarView("pages")}><FileText size={17} /><span>{messages.pages}</span></button>
+              <button role="menuitem" onClick={() => openSidebarView("contents")}><ListTree size={17} /><span>{messages.contents}</span></button>
+              <button role="menuitem" onClick={() => openSidebarView("search")}><Search size={17} /><span>{messages.searchPages}</span></button>
+              {!isDemo && <i aria-hidden="true" />}
+              {!isDemo && <TranslationTransfer key={documentId} documentId={documentId} messages={messages} menu
+                disabled={!serverBookAvailable || loadingDocument} onImported={async () => {
+                  if (documentIdRef.current !== documentId) return;
+                  cancelTranslationWork();
+                  setErrors({});
+                  setSearchMatches([]);
+                  setSearchQuery("");
+                  await loadNavigation(documentId, documentLoadSequence.current, translationSettings);
+                }} />}
+              {!isDemo && <button role="menuitem" onClick={() => {
+                setReaderMenuOpen(false);
+                if (!window.confirm(messages.discardTranslationsConfirm(fileName))) return;
+                void discardCurrentBookTranslations().catch(() => setDocumentError(messages.discardTranslationsFailed));
+              }}><Trash2 size={17} /><span>{messages.discardTranslations}</span></button>}
+            </div>
+          </div>
           <input ref={fileInput} type="file" accept="application/pdf" hidden onChange={(event) => {
             const file = event.currentTarget.files?.[0];
             event.currentTarget.value = "";
@@ -2620,32 +2668,48 @@ export default function Home() {
               <X className="mobile-sidebar-close" size={19} />
             </button>
             {sidebarOpen && (
-              <div className="sidebar-tabs" role="tablist">
+              <div className="sidebar-tabs" role="tablist" onKeyDown={(event) => {
+                const tabs = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+                const index = tabs.indexOf(event.target as HTMLButtonElement);
+                if (index < 0) return;
+                const next = event.key === "ArrowRight" ? (index + 1) % tabs.length
+                  : event.key === "ArrowLeft" ? (index + tabs.length - 1) % tabs.length
+                  : event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : -1;
+                if (next < 0) return;
+                event.preventDefault();
+                tabs[next].focus();
+                setSidebarView((["pages", "contents", "search"] as const)[next]);
+              }}>
                 <button
                   role="tab"
+                  id="sidebar-tab-pages"
+                  tabIndex={sidebarView === "pages" ? 0 : -1}
                   aria-selected={sidebarView === "pages"}
                   aria-controls="sidebar-pages"
                   className={cn(sidebarView === "pages" && "active")}
                   title={messages.pages}
                   onClick={() => setSidebarView("pages")}
                 >
-                  <FileText size={14} />
+                  <FileText size={18} />
                   <span>{messages.pages}</span>
                 </button>
                 <button
                   role="tab"
+                  id="sidebar-tab-contents"
+                  tabIndex={sidebarView === "contents" ? 0 : -1}
                   aria-selected={sidebarView === "contents"}
                   aria-controls="sidebar-contents"
                   className={cn(sidebarView === "contents" && "active")}
                   title={messages.contentsCount(tocEntries.length)}
                   onClick={() => setSidebarView("contents")}
                 >
-                  <ListTree size={14} />
+                  <ListTree size={18} />
                   <span>{messages.contents}</span>
-                  {tocEntries.length > 0 && <strong>{tocEntries.length}</strong>}
                 </button>
                 <button
                   role="tab"
+                  id="sidebar-tab-search"
+                  tabIndex={sidebarView === "search" ? 0 : -1}
                   aria-selected={sidebarView === "search"}
                   aria-controls="sidebar-search"
                   className={cn(sidebarView === "search" && "active")}
@@ -2655,8 +2719,8 @@ export default function Home() {
                     window.requestAnimationFrame(() => searchInput.current?.focus());
                   }}
                 >
-                  <Search size={14} />
-                  <span>{messages.searchPages}</span>
+                  <Search size={18} />
+                  <span>{messages.searchTab}</span>
                 </button>
               </div>
             )}
@@ -2672,7 +2736,7 @@ export default function Home() {
                 <div className="progress-track"><i style={{ width: `${progress}%` }} /></div>
               </div>
               {sidebarView === "pages" ? (
-                <nav id="sidebar-pages" className="page-nav" aria-label={messages.pages}>
+                <nav id="sidebar-pages" role="tabpanel" aria-labelledby="sidebar-tab-pages" className="page-nav" aria-label={messages.pages}>
                   {pageNumbers.map((page) => {
                     const source = translationSources[page];
                     const status = source === "cache"
@@ -2705,7 +2769,7 @@ export default function Home() {
                   })}
                 </nav>
               ) : sidebarView === "contents" ? (
-                <div id="sidebar-contents" className="sidebar-contents">
+                <div id="sidebar-contents" role="tabpanel" aria-labelledby="sidebar-tab-contents" className="sidebar-contents">
                   <ContentsNavigation
                     entries={tocEntries}
                     anchors={pageAnchors}
@@ -2723,12 +2787,11 @@ export default function Home() {
                   />
                 </div>
               ) : (
-                <div id="sidebar-search" className="search-panel">
+                <div id="sidebar-search" role="tabpanel" aria-labelledby="sidebar-tab-search" className="search-panel">
                   <div className="search-field">
                     <Search size={15} />
                     <input
                       ref={searchInput}
-                      autoFocus
                       value={searchQuery}
                       placeholder={messages.searchPlaceholder}
                       aria-label={messages.searchPlaceholder}
@@ -2779,75 +2842,7 @@ export default function Home() {
           )}
         </aside>
 
-        <ReaderZoomProvider>
         <section className="reader">
-          <div className="reader-toolbar">
-            <div className="reader-toolbar-start">
-              <button
-                className={cn("icon-button", "reader-sidebar-button", sidebarOpen && "desktop-hidden")}
-                aria-label={messages.toggleSidebar}
-                onClick={() => openSidebarView("pages")}
-              >
-                <Menu size={19} />
-              </button>
-              <div className="page-stepper">
-                <button className="icon-button" onClick={() => goToPage(currentPage - 1, "adjacent")} aria-label={messages.previousPage}><ChevronLeft size={17} /></button>
-                <span><strong>{currentPage}</strong> / {totalPages}</span>
-                <button className="icon-button" onClick={() => goToPage(currentPage + 1, "adjacent")} aria-label={messages.nextPage}><ChevronRight size={17} /></button>
-              </div>
-            </div>
-            <div className="column-labels"><span>{messages.sourceScan}</span><i /><span><Languages size={15} /> {targetLanguageLabel(settings.targetLanguage, locale)}</span></div>
-            <div className="reader-display-controls">
-              <ReaderFontControls value={{ translationFontSize: settings.translationFontSize, translationFontFamily: settings.translationFontFamily }} messages={messages.readerFont}
-                onChange={(typography) => setSettings({ ...settings, ...typography })} />
-              <ReaderZoomControls messages={messages} />
-            </div>
-            <div className="reader-menu-anchor" ref={readerMenu}>
-              <button
-                className="icon-button reader-menu-button"
-                aria-label={messages.moreOptions}
-                aria-expanded={readerMenuOpen}
-                aria-controls="reader-overflow-menu"
-                onClick={() => setReaderMenuOpen((open) => !open)}
-              >
-                <MoreHorizontal size={20} />
-              </button>
-              {/* Keep transfers mounted when the menu closes during file selection or import. */}
-              <div id="reader-overflow-menu" className="reader-overflow-menu" role="menu" hidden={!readerMenuOpen}>
-                <button role="menuitem" onClick={() => openSidebarView("pages")}><FileText size={17} /><span>{messages.pages}</span></button>
-                <button role="menuitem" onClick={() => openSidebarView("contents")}><ListTree size={17} /><span>{messages.contents}</span></button>
-                <button role="menuitem" onClick={() => openSidebarView("search")}><Search size={17} /><span>{messages.searchPages}</span></button>
-                <i aria-hidden="true" />
-                <button role="menuitem" onClick={() => {
-                  setReaderMenuOpen(false);
-                  openLibrary();
-                }}><BookOpen size={17} /><span>{messages.library}</span></button>
-                <button role="menuitem" onClick={() => {
-                  setReaderMenuOpen(false);
-                  openSettings();
-                }}><Settings2 size={17} /><span>{messages.settings}</span></button>
-                {!isDemo && <TranslationTransfer key={documentId} documentId={documentId} messages={messages} menu
-                  disabled={!serverBookAvailable || loadingDocument} onImported={async () => {
-                    if (documentIdRef.current !== documentId) return;
-                    cancelTranslationWork();
-                    setErrors({});
-                    setSearchMatches([]);
-                    setSearchQuery("");
-                    await loadNavigation(documentId, documentLoadSequence.current, translationSettings);
-                  }} />}
-                {!isDemo && <button role="menuitem" onClick={() => {
-                  setReaderMenuOpen(false);
-                  if (!window.confirm(messages.discardTranslationsConfirm(fileName))) return;
-                  void discardCurrentBookTranslations().catch(() => setDocumentError(messages.discardTranslationsFailed));
-                }}><Trash2 size={17} /><span>{messages.discardTranslations}</span></button>}
-                <button role="menuitem" onClick={() => {
-                  setReaderMenuOpen(false);
-                  fileInput.current?.click();
-                }}><Upload size={17} /><span>{messages.openPdf}</span></button>
-              </div>
-            </div>
-          </div>
-
           {documentError && (
             <div className="reader-notice error-notice">
               <span>{documentError}</span>
@@ -2909,10 +2904,10 @@ export default function Home() {
             </ReaderViewport>
           )}
         </section>
-        </ReaderZoomProvider>
       </div>
 
       <div className="floating-status"><Sparkles size={15} /><span>{messages.contextWindow}</span><strong>{messages.pageRange(Math.max(1, currentPage - 1), Math.min(totalPages, currentPage + 1))}</strong></div>
     </main>
+    </ReaderZoomProvider>
   );
 }
