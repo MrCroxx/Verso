@@ -10,10 +10,15 @@ export const PAGE_RENDER_VERSION = "v1";
 
 export type PageRenderProfile = "display" | "thumbnail" | "vision";
 
-const PROFILE_OPTIONS: Record<PageRenderProfile, { maxDimension: number; quality: number }> = {
+type RenderProfile = PageRenderProfile | "contexttop" | "contextbottom";
+type PageDimensions = { width: number; height: number };
+
+const PROFILE_OPTIONS: Record<RenderProfile, { maxDimension: number; quality: number }> = {
   display: { maxDimension: 1600, quality: 82 },
   thumbnail: { maxDimension: 480, quality: 76 },
   vision: { maxDimension: 2200, quality: 88 },
+  "contexttop": { maxDimension: 2200, quality: 88 },
+  "contextbottom": { maxDimension: 2200, quality: 88 },
 };
 
 const RENDER_CONCURRENCY = 2;
@@ -39,11 +44,11 @@ export function parsePageRenderProfile(value: string | null): PageRenderProfile 
   return value === "display" || value === "thumbnail" || value === "vision" ? value : null;
 }
 
-function pageEtag(book: StoredBook, page: number, profile: PageRenderProfile) {
+function pageEtag(book: StoredBook, page: number, profile: RenderProfile) {
   return `"${book.fingerprint}-${PAGE_RENDER_VERSION}-${profile}-${page}"`;
 }
 
-async function readCachedPage(book: StoredBook, page: number, profile: PageRenderProfile) {
+async function readCachedPage(book: StoredBook, page: number, profile: RenderProfile) {
   const filePath = resolveRenderPath(book.fingerprint, PAGE_RENDER_VERSION, profile, page);
   try {
     const file = await stat(/* turbopackIgnore: true */ filePath);
@@ -59,8 +64,13 @@ async function readCachedPage(book: StoredBook, page: number, profile: PageRende
   }
 }
 
-function runRenderer(inputPath: string, outputPrefix: string, page: number, profile: PageRenderProfile) {
+function runRenderer(inputPath: string, outputPrefix: string, page: number, profile: RenderProfile, dimensions?: PageDimensions) {
   const options = PROFILE_OPTIONS[profile];
+  const scale = dimensions ? options.maxDimension / Math.max(dimensions.width, dimensions.height) : 1;
+  const halfHeight = dimensions ? Math.ceil(dimensions.height * scale / 2) : 0;
+  const crop = dimensions && profile.startsWith("context")
+    ? ["-x", "0", "-y", String(profile === "contextbottom" ? Math.floor(dimensions.height * scale / 2) : 0),
+      "-W", String(Math.ceil(dimensions.width * scale)), "-H", String(halfHeight)] : [];
   const arguments_ = [
     "-jpeg",
     "-jpegopt",
@@ -74,6 +84,7 @@ function runRenderer(inputPath: string, outputPrefix: string, page: number, prof
     "-scale-to",
     String(options.maxDimension),
     "-q",
+    ...crop,
     inputPath,
     outputPrefix,
   ];
@@ -119,7 +130,7 @@ function runRenderer(inputPath: string, outputPrefix: string, page: number, prof
   });
 }
 
-async function renderAndCachePage(book: StoredBook, page: number, profile: PageRenderProfile) {
+async function renderAndCachePage(book: StoredBook, page: number, profile: RenderProfile, dimensions?: PageDimensions) {
   const cached = await readCachedPage(book, page, profile);
   if (cached) return cached;
 
@@ -132,7 +143,7 @@ async function renderAndCachePage(book: StoredBook, page: number, profile: PageR
   const temporaryPath = `${temporaryPrefix}.jpg`;
   await mkdir(outputDirectory, { recursive: true, mode: 0o700 });
   try {
-    await runRenderer(resolveBookPath(book.objectKey), temporaryPrefix, page, profile);
+    await runRenderer(resolveBookPath(book.objectKey), temporaryPrefix, page, profile, dimensions);
     const rendered = await stat(/* turbopackIgnore: true */ temporaryPath);
     if (!rendered.isFile() || rendered.size === 0) {
       throw new Error("PDF page renderer produced an empty image.");
@@ -149,7 +160,7 @@ async function renderAndCachePage(book: StoredBook, page: number, profile: PageR
   }
 }
 
-export async function getRenderedPage(book: StoredBook, page: number, profile: PageRenderProfile) {
+async function getPage(book: StoredBook, page: number, profile: RenderProfile, dimensions?: PageDimensions) {
   if (!Number.isSafeInteger(page) || page < 1 || page > book.pageCount) {
     throw new RangeError("Invalid PDF page number.");
   }
@@ -160,9 +171,17 @@ export async function getRenderedPage(book: StoredBook, page: number, profile: P
 
   let job = renderJobs.get(key);
   if (!job) {
-    job = limiter.run(RENDER_CONCURRENCY, () => renderAndCachePage(book, page, profile));
+    job = limiter.run(RENDER_CONCURRENCY, () => renderAndCachePage(book, page, profile, dimensions));
     renderJobs.set(key, job);
     void job.finally(() => renderJobs.delete(key)).catch(() => undefined);
   }
   return job;
+}
+
+export function getRenderedPage(book: StoredBook, page: number, profile: PageRenderProfile) {
+  return getPage(book, page, profile);
+}
+
+export function getRenderedBoundaryPage(book: StoredBook, page: number, side: "top" | "bottom", dimensions: PageDimensions) {
+  return getPage(book, page, `context${side}`, dimensions);
 }

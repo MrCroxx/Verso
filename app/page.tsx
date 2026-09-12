@@ -1,6 +1,8 @@
 "use client";
 /* eslint-disable @next/next/no-img-element */
 
+import { SourceCodeBlock } from "./source-code-block";
+import { TranslationTable } from "./translation-table";
 import { useQueueFeedback } from "./queue-feedback";
 import { isTranslationActive, type BookTranslationJob } from "../lib/translation-queue";
 import { readTranslationResponse, type TranslationProgress } from "../lib/translation-progress";
@@ -438,8 +440,9 @@ function TypewriterText({ text, query, offset, progress }: { text: string; query
   );
 }
 
-function MappedTranslationText({ block, query, offset, progress, onHighlight }: {
+function MappedTranslationText({ block, query, offset, progress, onHighlight, interactiveContainer = false }: {
   block: TranslationBlock;
+  interactiveContainer?: boolean;
   query: string;
   offset: number;
   progress: number;
@@ -454,7 +457,7 @@ function MappedTranslationText({ block, query, offset, progress, onHighlight }: 
       )}
     />
   );
-  if (!block.sentences?.length) {
+  if (interactiveContainer || !block.sentences?.length) {
     return renderText(block.text, offset);
   }
   const sentences = block.sentences;
@@ -546,9 +549,10 @@ function TranslationText({
 }) {
   const displayBlocks = useMemo(() => groupTranslationMedia(value.blocks ?? []), [value.blocks]);
   const texts = value.blocks?.length
-    ? displayBlocks.flatMap(({ block, caption }) => {
+    ? displayBlocks.flatMap(({ block, caption, tableRows }) => {
+      if (tableRows) return tableRows.flatMap((row) => row.sentences?.map((cell) => cell.text) ?? [row.text]);
       if (caption) return [caption.text];
-      if (block.kind === "spacer" || block.kind === "image" || block.kind === "equation") return [];
+      if (block.kind === "spacer" || block.kind === "image" || block.kind === "equation" || block.kind === "code") return [];
       if (block.kind === "list_item") return [block.marker, block.text, block.trailing];
       return [block.text];
     })
@@ -581,7 +585,7 @@ function TranslationText({
     return (
       <article className="translation-copy structured-translation">
         <div className="layout-blocks">
-          {displayBlocks.map(({ block, index, caption, captionRect, captionPosition, spaceBefore }) => {
+          {displayBlocks.map(({ block, index, caption, captionRect, surroundingTextRects, captionPosition, spaceBefore, tableRows }) => {
             const className = cn(
               "layout-block",
               `block-${block.kind}`,
@@ -600,11 +604,13 @@ function TranslationText({
                 <SourceImageCrop
                   key={index}
                   source={sourceRaster}
+                  onHighlight={onHighlight}
                   rect={block.sourceRect}
                   className={className}
                   alt={messages.scannedSourceAlt(value.page)}
                   captionPosition={captionPosition}
                   captionRect={captionRect}
+                  surroundingTextRects={surroundingTextRects}
                   captionSize={caption?.size}
                   captionFontSize={caption?.fontSize ? caption.fontSize * READER_PAGE_WIDTH : undefined}
                   placement={imagePlacement(block, Boolean(caption))}
@@ -617,6 +623,19 @@ function TranslationText({
             const style = block.fontSize
               ? { "--source-font-size": `${block.fontSize * READER_PAGE_WIDTH}px` } as CSSProperties
               : undefined;
+            if (tableRows) {
+              const activeCells: boolean[] = [];
+              const contents = tableRows.flatMap((row) => (row.sentences ?? [{ text: row.text, sourceText: "", sourceRects: [] }]).map((cell, column) => {
+                const offset = offsets[segmentIndex++] ?? 0;
+                activeCells.push(progress > offset);
+                return <MappedTranslationText interactiveContainer key={column} block={{ ...row, text: cell.text, sentences: [cell] }}
+                  query={searchQuery} offset={offset} progress={progress} onHighlight={onHighlight} />;
+              }));
+              return <TranslationTable key={index} rows={tableRows} className={className} style={style} contents={contents} activeCells={activeCells} onHighlight={onHighlight} />;
+            }
+            if (block.kind === "code") {
+              return <SourceCodeBlock key={index} text={block.text} language={block.marker} className={className} style={style} messages={messages} />;
+            }
             if (block.kind === "equation") {
               return <DisplayEquation key={index} className={className} style={style} text={block.text} number={block.trailing} />;
             }
@@ -770,7 +789,7 @@ function PageSpread({
       ...block, sentences: block.sentences?.map((sentence) => ({ ...sentence, sourceRects: [] })),
     })),
   } : translation, [translation, sourceLayout]);
-  const needsAlignment = Boolean(translation?.blocks?.some((block) => block.text.trim()));
+  const needsAlignment = Boolean(translation?.blocks?.some((block) => block.text.trim() || (block.kind === "image" && block.sourceRect && block.imageRole !== "decoration")));
   useEffect(() => {
     if (!sourceActive || !pageImageUrl || !needsAlignment) return;
     const controller = new AbortController();

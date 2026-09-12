@@ -722,3 +722,29 @@ body, .topbar, .sidebar, .reader-toolbar, .page-spread, .page-surface, .settings
 .queue-page-errors strong { font-size: 12px; color: var(--muted); font-weight: 500; }
 .queue-page-errors .queue-error { margin-top: 4px; }
 .queue-status-partial { color: #ad7942; }
+
+.source-code-block { max-width: 100%; min-width: 0; padding: 14px 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--canvas); text-align: left; }
+.source-code-language { font-family: var(--font-geist-sans), sans-serif; font-size: 11px; color: var(--muted); }
+.source-code-block pre { font-size: inherit; max-width: 100%; margin: 0; padding-bottom: 4px; overflow-x: auto; white-space: pre; tab-size: 4; line-height: 1.6; text-align: left; }
+.source-code-block code { font-family: var(--font-geist-mono), monospace; font-size: inherit; font-weight: 400; letter-spacing: 0; white-space: pre; overflow-wrap: normal; word-break: normal; }
+
+.source-table { max-width: 100%; min-width: 0; overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+.source-table table { width: 100%; border-collapse: collapse; table-layout: fixed; text-align: left; line-height: 1.65; }
+.source-table th, .source-table td { padding: .85em 1em; vertical-align: top; border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); overflow-wrap: anywhere; white-space: normal; }
+.source-table th { font-weight: 650; background: var(--canvas); }
+.source-table th:last-child, .source-table td:last-child { border-right: 0; }
+.source-table tbody tr:last-child td { border-bottom: 0; }
+
+.layout-block.block-code { font-size: calc(clamp(12px, var(--source-font-size, 13px), 16px) * var(--translation-font-scale, 1)); }
+.source-code-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.source-code-copy { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 30px; height: 30px; padding: 0; border: 1px solid var(--line); border-radius: 5px; background: var(--paper); color: var(--ink); cursor: pointer; }
+.source-code-status { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+.source-code-copy:hover { border-color: var(--green); }
+.source-code-copy:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+.source-code-copy:disabled { cursor: wait; opacity: .7; }
+
+.source-table .mapped-table-cell { cursor: pointer; }
+.source-table .mapped-table-cell:hover, .source-table .mapped-table-cell:focus-visible { background: var(--green-soft); outline: 2px solid var(--green); outline-offset: -2px; }
+
+.mapped-source-image { cursor: pointer; }
+.mapped-source-image:hover, .mapped-source-image:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }

@@ -18,6 +18,38 @@ export function excludeImageCaption(page: { width: number; height: number }, est
   return { crop: { ...estimate, y, height }, bounds: { x: 0, y: top, width: page.width, height: bottom - top } };
 }
 
+export function excludeImageText(
+  page: { width: number; height: number }, estimate: PixelRect, textRects: PixelRect[],
+  initialBounds: PixelRect = { x: 0, y: 0, ...page },
+) {
+  let left = initialBounds.x;
+  let top = initialBounds.y;
+  let right = left + initialBounds.width;
+  let bottom = top + initialBounds.height;
+  for (const text of textRects) {
+    const overlapX = Math.min(estimate.x + estimate.width, text.x + text.width) - Math.max(estimate.x, text.x);
+    const overlapY = Math.min(estimate.y + estimate.height, text.y + text.height) - Math.max(estimate.y, text.y);
+    // Keep the central artwork intact when source boxes overlap ambiguously.
+    if (overlapX > 0 && text.y + text.height <= estimate.y + estimate.height * 0.35) {
+      top = Math.max(top, Math.ceil(text.y + text.height) + 2);
+    } else if (overlapX > 0 && text.y >= estimate.y + estimate.height * 0.65) {
+      bottom = Math.min(bottom, Math.floor(text.y) - 2);
+    } else if (overlapY > 0 && text.x + text.width <= estimate.x + estimate.width * 0.35) {
+      left = Math.max(left, Math.ceil(text.x + text.width) + 2);
+    } else if (overlapY > 0 && text.x >= estimate.x + estimate.width * 0.65) {
+      right = Math.min(right, Math.floor(text.x) - 2);
+    }
+  }
+  const x = Math.max(estimate.x, left);
+  const y = Math.max(estimate.y, top);
+  const width = Math.min(estimate.x + estimate.width, right) - x;
+  const height = Math.min(estimate.y + estimate.height, bottom) - y;
+  if (width < Math.max(4, estimate.width * 0.5) || height < Math.max(4, estimate.height * 0.5)) {
+    return { crop: estimate, bounds: initialBounds };
+  }
+  return { crop: { x, y, width, height }, bounds: { x: left, y: top, width: right - left, height: bottom - top } };
+}
+
 export function resolveImageCrop(
   page: { width: number; height: number },
   estimate: PixelRect,
