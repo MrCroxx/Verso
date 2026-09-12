@@ -7,7 +7,7 @@ export type TranslationSentence = {
 };
 
 export type LayoutBlock = {
-  kind: "heading" | "paragraph" | "list_item" | "caption" | "spacer" | "page_number" | "image";
+  kind: "heading" | "paragraph" | "list_item" | "caption" | "spacer" | "page_number" | "image" | "equation";
   sourceRect?: SourceRect;
   imageRole?: "body" | "decoration";
   fontSize?: number;
@@ -21,7 +21,7 @@ export type LayoutBlock = {
   size: "xs" | "sm" | "md" | "lg" | "xl";
 };
 
-const blockKinds = ["heading", "paragraph", "list_item", "caption", "spacer", "page_number", "image"] as const;
+const blockKinds = ["heading", "paragraph", "list_item", "caption", "spacer", "page_number", "image", "equation"] as const;
 const blockAlignments = ["left", "center", "right", "justify"] as const;
 const blockSpaces = ["none", "xs", "sm", "md", "lg", "xl"] as const;
 const blockSizes = ["xs", "sm", "md", "lg", "xl"] as const;

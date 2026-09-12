@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, type CSSProperties, type ReactNode } from "react";
 import { excludeImageCaption, resolveImageCrop } from "../lib/image-crop";
 import type { LayoutBlock, SourceRect } from "../lib/translation-layout";
 
@@ -61,7 +61,8 @@ export function SourceImageCrop({ source, rect, className, alt, caption, caption
   }, [source, rect, captionRect, width, height, placement]);
 
   const captionElement = caption && (
-    <figcaption className={`layout-block block-caption media-caption size-${captionSize}`} style={captionFontSize ? { fontSize: captionFontSize } : undefined}>
+    <figcaption className={`layout-block block-caption media-caption size-${captionSize}`}
+      style={captionFontSize ? { "--source-font-size": `${captionFontSize}px` } as CSSProperties : undefined}>
       {caption}
     </figcaption>
   );

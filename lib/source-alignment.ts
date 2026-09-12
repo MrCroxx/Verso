@@ -146,6 +146,8 @@ export function alignSourceBlocks(blocks: LayoutBlock[], layout: SourcePageLayou
       }
       return { ...sentence, sourceRects: Array.from(lines.values()) };
     });
+    // Narrow symbols and script-sized glyphs do not measure an equation's base font.
+    if (block.kind === "equation") return { ...block, ...(sentences && { sentences }) };
     const region = block.sourceRect;
     const regionWords = region ? layout.words.filter(({ rect }) => {
       const x = rect.x + rect.width / 2;

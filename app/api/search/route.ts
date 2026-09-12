@@ -24,10 +24,12 @@ export async function POST(request: NextRequest) {
       || typeof input.cacheKeySuffix !== "string"
       || !input.cacheKeySuffix
       || input.cacheKeySuffix.length > 1800
-      || typeof input.fallbackCacheKeySuffix !== "string"
-      || !input.fallbackCacheKeySuffix
-      || input.fallbackCacheKeySuffix.length > 80
-      || input.fallbackCacheKeySuffix.includes("::")
+      || (input.fallbackCacheKeySuffix !== undefined && (
+        typeof input.fallbackCacheKeySuffix !== "string"
+        || !input.fallbackCacheKeySuffix
+        || input.fallbackCacheKeySuffix.length > 80
+        || input.fallbackCacheKeySuffix.includes("::")
+      ))
     ) {
       return NextResponse.json({ error: "Invalid search request." }, { status: 400 });
     }
@@ -35,7 +37,9 @@ export async function POST(request: NextRequest) {
     const { db } = getStorage();
     await ensureStorageSchema(db);
     const expectedSuffix = `::${input.cacheKeySuffix}`;
-    const expectedFallbackSuffix = `::${input.fallbackCacheKeySuffix}`;
+    const expectedFallbackSuffix = typeof input.fallbackCacheKeySuffix === "string"
+      ? `::${input.fallbackCacheKeySuffix}`
+      : expectedSuffix;
     const result = await db.prepare(`SELECT page, payload
       FROM translations
       WHERE document_id = ?1

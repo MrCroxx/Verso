@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { cookies, headers } from "next/headers";
 import { UI_LOCALE_COOKIE, resolveUiLocale } from "../lib/ui-locale";
+import "katex/dist/katex.min.css";
 import "./globals.css";
 import { UiLocaleProvider } from "./ui-locale";
 import { AppSettingsProvider } from "./app-settings";

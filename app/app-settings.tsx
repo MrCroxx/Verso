@@ -4,6 +4,8 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import { DEFAULT_SETTINGS, EMPTY_TRANSLATION_SERVICE, type AppSettings, type TranslationService } from "../lib/app-settings";
 import type { AiProviderSettingsUpdate, PublicAiProviderSettings } from "../lib/ai-provider-settings";
 
+import { normalizeReaderTypography } from "../lib/reader-typography";
+
 import { useAiProviderAutosave } from "./ai-provider-autosave";
 import { parseTheme, watchTheme, type ThemeMode } from "../lib/theme";
 
@@ -32,6 +34,7 @@ export function AppSettingsProvider({ children }: { children: ReactNode }) {
         const stored = JSON.parse(localStorage.getItem("verso-settings") || "null") as Partial<AppSettings> | null;
         if (stored) setSettingsState({
           ...DEFAULT_SETTINGS,
+          ...normalizeReaderTypography(stored),
           targetLanguage: typeof stored.targetLanguage === "string" && stored.targetLanguage ? stored.targetLanguage : DEFAULT_SETTINGS.targetLanguage,
           nearbyPages: boundedInteger(stored.nearbyPages, 1, 4, DEFAULT_SETTINGS.nearbyPages),
           translationConcurrency: boundedInteger(stored.translationConcurrency, 1, 10, DEFAULT_SETTINGS.translationConcurrency),

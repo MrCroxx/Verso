@@ -25,12 +25,29 @@ import { captionSourceRect, groupTranslationMedia, imagePlacement } from "../lib
 import { typewriterDuration, typewriterProgress } from "../lib/translation-typewriter.ts";
 import { resolveUiLocale, UI_LOCALE_COOKIE } from "../lib/ui-locale.ts";
 import { isPageWorkEnabled, pageWorkWindow, shouldStartTranslationRequest } from "../lib/viewport-work.ts";
+import { prepareDisplayEquation, renderMath, splitMathText } from "../lib/math-content.ts";
+import { translationCacheKey, translationCacheSuffix } from "../lib/translation-cache.ts";
+import { normalizeReaderTypography } from "../lib/reader-typography.ts";
 import nextConfig from "../next.config.ts";
 
 let baseUrl;
 let serverProcess;
 let testDataDirectory;
 let rendererLogPath;
+
+test("restores font preferences safely from old or invalid reader settings", () => {
+  const defaults = { translationFontSize: 100, translationFontFamily: "serif" };
+  assert.deepEqual(normalizeReaderTypography({}), defaults);
+  for (const value of [undefined, null, "150", NaN, Infinity]) {
+    assert.deepEqual(normalizeReaderTypography({ translationFontSize: value, translationFontFamily: "unknown" }), defaults);
+  }
+  assert.deepEqual(normalizeReaderTypography({ translationFontSize: 145, translationFontFamily: "sans" }), {
+    translationFontSize: 145, translationFontFamily: "sans",
+  });
+  assert.equal(normalizeReaderTypography({ translationFontSize: -100 }).translationFontSize, 50);
+  assert.equal(normalizeReaderTypography({ translationFontSize: 1000 }).translationFontSize, 300);
+  assert.equal(normalizeReaderTypography({ translationFontSize: 127 }).translationFontSize, 125);
+});
 
 before(async () => {
   testDataDirectory = await mkdtemp(path.join(tmpdir(), "verso-test-"));
@@ -131,6 +148,37 @@ test("does not open local storage while server modules load", async () => {
     child.once("exit", (code) => code === 0 ? resolve() : reject(new Error(`Module import exited with ${code}.`)));
   });
   await assert.rejects(access(importDataDirectory), { code: "ENOENT" });
+});
+
+test("separates equation annotations without changing mathematical symbols", () => {
+  const expression = String.raw`\hat{X}_l = B_{l-1} X_{l-1} + C_{l-1} Y_{l-1}`;
+  const annotation = String.raw`\text{残差更新，对 } n \text{ 进行收缩}`;
+  assert.deepEqual(prepareDisplayEquation(`\\[${expression} \\quad ${annotation}\\]`, "3"), {
+    expression, annotation, number: "(3)",
+  });
+  assert.match(renderMath(expression, true), /<math /);
+  assert.match(renderMath(annotation, false), /<math /);
+  assert.deepEqual(prepareDisplayEquation("$$X_l = A_l X_l$$", " (A.1) "), {
+    expression: "X_l = A_l X_l", annotation: "", number: "(A.1)",
+  });
+  assert.equal(prepareDisplayEquation("x=y", "A.2a").number, "(A.2a)");
+  assert.equal(prepareDisplayEquation("x=y", "").number, "");
+  assert.equal(prepareDisplayEquation("x=y", "[7]").number, "[7]");
+});
+
+test("keeps mathematical spacing inside expressions and environments intact", () => {
+  for (const expression of [
+    String.raw`X_{l+1}=B_l X_l, \quad (A_l,B_l,C_l)=\mathcal{H}(X_l)`,
+    String.raw`\frac{x\quad\text{units}}{n}`,
+    String.raw`\begin{cases}x\quad\text{if }x>0\\0\quad\text{otherwise}\end{cases}`,
+    String.raw`\left(x\quad\text{units}\right)`,
+  ]) {
+    assert.deepEqual(prepareDisplayEquation(expression, "2"), { expression, annotation: "", number: "(2)" });
+    assert.match(renderMath(expression, true), /<math /);
+  }
+  assert.deepEqual(prepareDisplayEquation(String.raw`\{x\}\qquad\text{a set}`, ""), {
+    expression: String.raw`\{x\}`, annotation: String.raw`\text{a set}`, number: "",
+  });
 });
 
 test("allows development access through homelab proxies", () => {
@@ -541,6 +589,28 @@ test("keeps legacy browser-provider translations readable after server migration
   });
   assert.equal(searchResponse.status, 200);
   assert.deepEqual((await searchResponse.json()).matches.map(({ page }) => page), [3]);
+});
+
+test("uses a new cache namespace for structured mathematical translations", () => {
+  assert.equal(translationCacheSuffix("Simplified Chinese"), "server-v2::Simplified Chinese");
+  assert.equal(
+    translationCacheKey("book", 15, "Simplified Chinese"),
+    "layout-v4::book::15::server-v2::Simplified Chinese",
+  );
+});
+
+test("renders display and inline mathematics without trusting unsafe LaTeX", () => {
+  assert.deepEqual(splitMathText(String.raw`令 \(x_i\) 为词元，并计算 \[\frac{1}{n}\sum_j x_j^2\]。`), [
+    { text: "令 ", math: false, display: false, start: 0, end: 2 },
+    { text: "x_i", math: true, display: false, start: 2, end: 9 },
+    { text: " 为词元，并计算 ", math: false, display: false, start: 9, end: 18 },
+    { text: String.raw`\frac{1}{n}\sum_j x_j^2`, math: true, display: true, start: 18, end: 45 },
+    { text: "。", math: false, display: false, start: 45, end: 46 },
+  ]);
+  assert.match(renderMath(String.raw`\Delta_t=\sqrt{n}D_r\widehat{G}_tD_c,\quad \frac{1}{n}\sum_{j=1}^n(\Delta_t)_{ij}^2\approx1`, true), /<math /);
+  assert.equal(renderMath(String.raw`\frac{`, true), null);
+  assert.equal(renderMath("x".repeat(10_001), false), null);
+  assert.doesNotMatch(renderMath(String.raw`\href{javascript:alert(1)}{x}`, false) || "", /<a\b|href=/);
 });
 
 test("searches translated blocks without matching source text", () => {
@@ -1077,7 +1147,9 @@ test("requests and persists image crops, typography, and sentence positions with
         assert.ok(blockSchema.required.includes("sentences"));
         assert.ok(blockSchema.required.includes("imageRole"));
         assert.ok(blockSchema.properties.kind.enum.includes("image"));
+        assert.ok(blockSchema.properties.kind.enum.includes("equation"));
       }
+      assert.match(instruction, /valid KaTeX-compatible LaTeX/);
       const key = `layout-v3::aligned-${format}::2::server-v1::Simplified Chinese`;
       const saved = await fetch(`${baseUrl}/api/translations`, {
         method: "PUT", headers: { "Content-Type": "application/json" },
@@ -1109,6 +1181,111 @@ test("grounds sentence highlights in PDF words instead of estimated model rectan
   assert.equal(aligned.sentences[1].sourceRects.length, 2);
   assert.equal(aligned.sentences[1].sourceRects[0].x, 170 / 600);
   assert.equal(aligned.fontSize, 0.02);
+});
+
+test("repairs a cached cross-page word without repeating it or losing page-local source mappings", async () => {
+  const { parsePdfWordLayout, alignSourceBlocks } = await import("../lib/source-alignment.ts");
+  const language = "Simplified Chinese";
+  const leading = { kind: "heading", text: "推理系统", spaceBefore: "none" };
+  const boundary = (text, sourceText) => ({ kind: "paragraph", text, sentences: [{ text, sourceText, sourceRects: [] }] });
+  const previousBlocks = [leading, boundary("编码器和解码器", "Encoder and De-")];
+  const currentBlocks = [boundary("的 SWA 有界重放路径。", "coder SWA Bounded Replay paths.")];
+  const requests = [];
+  const provider = createHttpServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const input = JSON.parse(Buffer.concat(chunks).toString());
+    const content = (input.input || input.messages)[0].content;
+    requests.push(content);
+    const needsRevision = content[0].text.includes('The cached translation ends with: "编码器和 De-"');
+    const result = { page: 2, blocks: currentBlocks, sourceSummary: "", previousPageRevision: needsRevision ? { page: 1, blocks: previousBlocks } : null };
+    response.setHeader("Content-Type", "application/json");
+    response.end(JSON.stringify(input.input
+      ? { output_text: JSON.stringify(result) }
+      : { choices: [{ message: { content: JSON.stringify(result) } }] }));
+  });
+  await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
+  try {
+    for (const [index, format] of ["openai", "compatible"].entries()) {
+      const book = await uploadQueueBook(`c${index + 1}`.repeat(32), 2);
+      const settings = await fetch(`${baseUrl}/api/settings/ai-provider`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: format, endpoint: `http://127.0.0.1:${provider.address().port}/${format === "openai" ? "responses" : "v1"}`, apiKey: "test-key", model: "boundary-test", reasoningEffort: "none" }),
+      });
+      assert.equal(settings.status, 200);
+      const seeded = await fetch(`${baseUrl}/api/translations`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: translationCacheKey(book.fingerprint, 1, language), documentId: book.fingerprint, page: 1,
+          translation: { page: 1, blocks: [leading, boundary("编码器和 De-", "Encoder and De-")] } }),
+      });
+      assert.equal(seeded.status, 200);
+      const response = await readTestPage(book, 2, { targetLanguage: language, contextPages: [1, 2] });
+      assert.equal(response.status, 200);
+      const result = await response.json();
+      const instruction = requests.at(-1)[0].text;
+      assert.match(instruction, /belongs in full to the page where it starts/);
+      assert.match(instruction, /even when neither page is cached yet/);
+      assert.match(instruction, /Preserve genuine compound hyphens/);
+      assert.match(instruction, /its cached translation left a split word incomplete/);
+      assert.deepEqual(requests.at(-1).filter((part) => /^Page \d+:$/.test(part.text || "")).map((part) => part.text), ["Page 1:", "Page 2:"]);
+      assert.equal(result.previousPageRevision.page, 1);
+
+      const cached = [];
+      for (const page of [1, 2]) {
+        const reread = await readTestPage(book, page, { targetLanguage: language });
+        assert.equal(reread.status, 200);
+        cached.push(await reread.json());
+      }
+      assert.deepEqual(cached[0].blocks, normalizeTranslationPayload({ blocks: previousBlocks }).blocks);
+      assert.deepEqual(cached[1].blocks, normalizeTranslationPayload({ blocks: currentBlocks }).blocks);
+      assert.equal(cached[0].cacheVersion, cached[1].cacheVersion);
+      assert.equal(cached[0].blocks.at(-1).text + cached[1].blocks[0].text, "编码器和解码器的 SWA 有界重放路径。");
+      assert.equal(cached[0].markdown, "推理系统\n\n编码器和解码器");
+      assert.equal(requests.length, index * 2 + 1);
+
+      // A complete translated word still highlights only the fragment on its own scan.
+      for (const [page, sourceText, y] of [[0, "Encoder and De-", 700], [1, "coder SWA Bounded Replay paths.", 80]]) {
+        const words = sourceText.split(" ").map((word, position) => `<word xMin="${60 + position * 80}" yMin="${y}" xMax="${130 + position * 80}" yMax="${y + 12}">${word}</word>`).join("");
+        const layout = parsePdfWordLayout(`<page width="600" height="800"><line>${words}</line></page>`);
+        const blocks = alignSourceBlocks(cached[page].blocks, layout);
+        const sentence = blocks.find((block) => block.kind === "paragraph").sentences[0];
+        assert.equal(sentence.sourceText, sourceText);
+        assert.equal(sentence.sourceRects.length, 1);
+        assert.equal(sentence.sourceRects[0].y, y / 800);
+      }
+      const repeated = await readTestPage(book, 2, { targetLanguage: language, contextPages: [1, 2], force: true });
+      assert.equal(repeated.status, 200);
+      assert.equal((await repeated.json()).previousPageRevision, null);
+      assert.match(requests.at(-1)[0].text, /The cached translation ends with: "编码器和解码器"/);
+    }
+  } finally {
+    provider.closeAllConnections();
+    await new Promise((resolve) => provider.close(resolve));
+  }
+});
+
+test("preserves equation typography while grounding highlights in small math glyphs", async () => {
+  const { parsePdfWordLayout, alignSourceBlocks } = await import("../lib/source-alignment.ts");
+  const layout = parsePdfWordLayout(`<page width="600" height="800"><line>
+    <word xMin="72" yMin="80" xMax="80" yMax="92">X</word>
+    <word xMin="80" yMin="88" xMax="82" yMax="94">l</word>
+    <word xMin="90" yMin="80" xMax="98" yMax="92">=</word>
+    <word xMin="105" yMin="80" xMax="113" yMax="92">B</word>
+    <word xMin="113" yMin="88" xMax="115" yMax="94">l</word>
+    <word xMin="120" yMin="80" xMax="128" yMax="92">X</word>
+    <word xMin="128" yMin="88" xMax="130" yMax="94">l</word></line></page>`);
+  const blocks = normalizeTranslationPayload({ blocks: [{
+    kind: "equation", text: "X_l = B_l X_l", fontSize: 0.02,
+    sourceRect: { x: 0.1, y: 0.09, width: 0.2, height: 0.04 },
+    sentences: [{ text: "X_l = B_l X_l", sourceText: "X_l = B_l X_l", sourceRects: [] }],
+  }] }).blocks;
+  const aligned = alignSourceBlocks(blocks, layout)[0];
+  assert.equal(aligned.fontSize, 0.02);
+  assert.equal(aligned.sentences[0].sourceRects.length, 1);
+  assert.equal(aligned.sentences[0].sourceRects[0].x, 0.12);
+  assert.equal(aligned.text, blocks[0].text);
+  const unmapped = { ...blocks[0], sentences: undefined };
+  assert.equal(alignSourceBlocks([unmapped], layout)[0].fontSize, 0.02);
 });
 
 test("aligns ligatures and hyphenated line breaks and refuses ungrounded text", async () => {
@@ -1670,7 +1847,7 @@ test("persists whole-book work, shares reader requests, skips cached blank pages
     assert.equal(settings.status, 200);
     const blank = await fetch(`${baseUrl}/api/translations`, {
       method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
-        key: `layout-v3::${book.fingerprint}::1::server-v1::English`, documentId: book.fingerprint, page: 1,
+        key: translationCacheKey(book.fingerprint, 1, "English"), documentId: book.fingerprint, page: 1,
         translation: { page: 1, blocks: [], isBlank: true, markdown: "" },
       }),
     });
@@ -1838,7 +2015,7 @@ test("persists whole-book work, shares reader requests, skips cached blank pages
     responses.get(1)();
     await new Promise((resolve) => setTimeout(resolve, 150));
     assert.equal(await queueStatus(discardBook.fingerprint), undefined);
-    const query = new URLSearchParams({ documentId: discardBook.fingerprint, cacheKeySuffix: "server-v1::English" });
+    const query = new URLSearchParams({ documentId: discardBook.fingerprint, cacheKeySuffix: translationCacheSuffix("English") });
     assert.deepEqual((await (await fetch(`${baseUrl}/api/translations?${query}`)).json()).pages, []);
 
     const restartBook = await uploadQueueBook("e".repeat(64), 2);
@@ -2225,7 +2402,7 @@ test("reports streamed failures without saving a partial translation", async () 
     assert.match(result.error, /length/);
     assert.equal(result.trace.status, "error");
     assert.ok(result.trace.spans.some(span => span.name === "provider.stream" && span.status === "error"));
-    const key = `layout-v3::${book.fingerprint}::1::server-v1::English`;
+    const key = translationCacheKey(book.fingerprint, 1, "English");
     const cached = await (await fetch(`${baseUrl}/api/translations?key=${encodeURIComponent(key)}`)).json();
     assert.equal(cached.translation, null);
   } finally {

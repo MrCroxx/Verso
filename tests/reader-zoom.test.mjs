@@ -34,5 +34,6 @@ test('reader zoom preserves the pointer anchor and page layout', {
     child.once('exit', resolve);
   });
   assert.equal(code, 0, output);
+  assert.match(output, /"controlsAndResize":"passed"/, output);
   t.diagnostic(output.trim());
 });

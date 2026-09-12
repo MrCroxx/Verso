@@ -14,7 +14,7 @@ type TranslationCacheInput = {
 };
 
 function validKey(key: unknown) {
-  return typeof key === "string" && key.startsWith("layout-v3::") && key.length <= 2048;
+  return typeof key === "string" && /^layout-v(?:3|4)::/.test(key) && key.length <= 2048;
 }
 
 function validFallbackSuffix(value: unknown) {

@@ -32,7 +32,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { DEFAULT_SETTINGS, type TranslationSettings } from "../lib/app-settings";
@@ -64,8 +64,11 @@ import type { UiLocale } from "../lib/ui-locale";
 import { pageWorkWindow, isPageWorkEnabled, shouldStartTranslationRequest } from "../lib/viewport-work";
 import { useUiLocale } from "./ui-locale";
 import { SourceImageCrop } from "./source-image-crop";
-import { ReaderViewport, ReaderZoomProvider, ReaderZoomControls, READER_PAGE_WIDTH } from "./reader-viewport";
+import { ReaderDivider, ReaderViewport, ReaderZoomProvider, ReaderZoomControls, READER_PAGE_WIDTH } from "./reader-viewport";
+import { ReaderFontControls } from "./reader-font-controls";
 import { alignSourceBlocks, type SourcePageLayout } from "../lib/source-alignment";
+import { DisplayEquation, MathText } from "./math-content";
+import { translationCacheKey, translationCacheSuffix } from "../lib/translation-cache";
 
 type PdfDocument = import("pdfjs-dist").PDFDocumentProxy;
 type PdfLoadingTask = import("pdfjs-dist").PDFDocumentLoadingTask;
@@ -209,26 +212,20 @@ function isWorkCancellation(error: unknown) {
 }
 
 function cacheKey(documentId: string, page: number, settings: TranslationSettings) {
-  return ["layout-v3", documentId, page, cacheKeySuffix(settings)].join("::");
+  return translationCacheKey(documentId, page, settings.targetLanguage);
 }
 
 function cacheKeySuffix(settings: TranslationSettings) {
-  return ["server-v1", settings.targetLanguage].join("::");
+  return translationCacheSuffix(settings.targetLanguage);
 }
 
 async function readLocalCache(
   key: string,
-  documentId: string,
-  page: number,
-  settings: TranslationSettings,
   fallbackMessage: string,
   signal?: AbortSignal,
 ): Promise<Translation | undefined> {
   const query = new URLSearchParams({
     key,
-    documentId,
-    page: String(page),
-    fallbackCacheKeySuffix: settings.targetLanguage,
   });
   const response = await fetch(`/api/translations?${query}`, { cache: "no-store", signal });
   const result = await response.json() as { translation?: Translation | null; error?: string };
@@ -244,7 +241,6 @@ async function readLocalTranslationIndex(
   const query = new URLSearchParams({
     documentId,
     cacheKeySuffix: cacheKeySuffix(settings),
-    fallbackCacheKeySuffix: settings.targetLanguage,
   });
   const response = await fetch(`/api/translations?${query}`, { cache: "no-store" });
   const result = await response.json() as { pages?: unknown; error?: string };
@@ -449,8 +445,17 @@ function MappedTranslationText({ block, query, offset, progress, onHighlight }: 
   progress: number;
   onHighlight: (rects: SourceRect[]) => void;
 }) {
+  const renderText = (text: string, start: number) => (
+    <MathText
+      text={text}
+      progress={Math.max(0, progress - start)}
+      renderText={(plainText, localOffset) => (
+        <TypewriterText text={plainText} query={query} offset={start + localOffset} progress={progress} />
+      )}
+    />
+  );
   if (!block.sentences?.length) {
-    return <TypewriterText text={block.text} query={query} offset={offset} progress={progress} />;
+    return renderText(block.text, offset);
   }
   const sentences = block.sentences;
   return sentences.map((sentence, index) => {
@@ -467,7 +472,7 @@ function MappedTranslationText({ block, query, offset, progress, onHighlight }: 
         onFocus={() => onHighlight(interactive ? sentence.sourceRects : [])}
         onBlur={() => onHighlight([])}
       >
-        <TypewriterText text={sentence.text} query={query} offset={start} progress={progress} />
+        {renderText(sentence.text, start)}
       </span>
     );
   });
@@ -543,7 +548,7 @@ function TranslationText({
   const texts = value.blocks?.length
     ? displayBlocks.flatMap(({ block, caption }) => {
       if (caption) return [caption.text];
-      if (block.kind === "spacer" || block.kind === "image") return [];
+      if (block.kind === "spacer" || block.kind === "image" || block.kind === "equation") return [];
       if (block.kind === "list_item") return [block.marker, block.text, block.trailing];
       return [block.text];
     })
@@ -609,7 +614,12 @@ function TranslationText({
                 />
               ) : null;
             }
-            const style = block.fontSize ? { fontSize: block.fontSize * READER_PAGE_WIDTH } : undefined;
+            const style = block.fontSize
+              ? { "--source-font-size": `${block.fontSize * READER_PAGE_WIDTH}px` } as CSSProperties
+              : undefined;
+            if (block.kind === "equation") {
+              return <DisplayEquation key={index} className={className} style={style} text={block.text} number={block.trailing} />;
+            }
             if (block.kind === "list_item") {
               const markerIndex = segmentIndex++;
               const textIndex = segmentIndex++;
@@ -657,7 +667,18 @@ function TranslationText({
     <article className="translation-copy">
       {texts.map((paragraph, index) => (
         <p key={`${index}-${paragraph}`}>
-          <TypewriterText text={paragraph} query={searchQuery} offset={offsets[index] ?? 0} progress={progress} />
+          <MathText
+            text={paragraph}
+            progress={Math.max(0, progress - (offsets[index] ?? 0))}
+            renderText={(plainText, localOffset) => (
+              <TypewriterText
+                text={plainText}
+                query={searchQuery}
+                offset={(offsets[index] ?? 0) + localOffset}
+                progress={progress}
+              />
+            )}
+          />
         </p>
       ))}
       <div className="translation-meta">
@@ -707,6 +728,7 @@ type PageSpreadProps = {
   progress?: TranslationProgress;
   error?: string;
   pageImageUrl?: string;
+  pdfReady: boolean;
   renderPageToCanvas: (page: number, canvas: HTMLCanvasElement, signal: AbortSignal) => Promise<void>;
   requestTranslation: (page: number, force?: boolean, cacheOnly?: boolean) => void;
   onTranslationAnimationComplete: (page: number, cacheVersion?: number) => void;
@@ -730,6 +752,7 @@ function PageSpread({
   progress,
   error,
   pageImageUrl,
+  pdfReady,
   renderPageToCanvas,
   requestTranslation,
   onTranslationAnimationComplete,
@@ -802,7 +825,8 @@ function PageSpread({
   }, [isDemo, near, workDistance, workEnabled]);
 
   useEffect(() => {
-    if (isDemo || !sourceActive || (pageImageUrl && !serverImageFailed)) return;
+    // Resume deferred canvas work after scrolling without redrawing a ready scan.
+    if (isDemo || !sourceActive || !workEnabled || !pdfReady || sourceReady || (pageImageUrl && !serverImageFailed)) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -822,7 +846,7 @@ function PageSpread({
         setRenderError(error instanceof Error ? error.message : "Unknown page rendering error");
       });
     return () => controller.abort();
-  }, [isDemo, page, pageImageUrl, renderAttempt, renderPageToCanvas, serverImageFailed, sourceActive]);
+  }, [isDemo, page, pageImageUrl, pdfReady, renderAttempt, renderPageToCanvas, serverImageFailed, sourceActive, sourceReady, workEnabled]);
 
   useEffect(() => {
     const node = ref.current;
@@ -891,6 +915,7 @@ function PageSpread({
           </div>
         </div>
       </div>
+      <ReaderDivider />
       <div className="translated-page page-surface">
         <div className="translation-heading">
           <div className="page-label">{messages.translatedPage(page)}</div>
@@ -1317,6 +1342,7 @@ export default function Home() {
   const searchInput = useRef<HTMLInputElement>(null);
   const readerMenu = useRef<HTMLDivElement>(null);
   const pdfRef = useRef<PdfDocument | undefined>(undefined);
+  const [pdfReady, setPdfReady] = useState(false);
   const pdfLoadingTaskRef = useRef<PdfLoadingTask | undefined>(undefined);
   const imageCache = useRef(new Map<number, string>());
   const renderJobs = useRef(new Map<number, Promise<string>>());
@@ -1353,7 +1379,7 @@ export default function Home() {
   const [searchError, setSearchError] = useState("");
   const { locale, setLocale } = useUiLocale();
   const router = useRouter();
-  const { settings, translationService } = useAppSettings();
+  const { settings, setSettings, translationService } = useAppSettings();
   const messages = UI_MESSAGES[locale];
   const messagesRef = useRef(messages);
   const translationSettings = useMemo<TranslationSettings>(() => ({
@@ -1666,7 +1692,6 @@ export default function Home() {
             documentId,
             query,
             cacheKeySuffix: cacheKeySuffix(translationSettings),
-            fallbackCacheKeySuffix: translationSettings.targetLanguage,
           }),
           signal: controller.signal,
         });
@@ -1784,6 +1809,7 @@ export default function Home() {
     const previousPdf = pdfRef.current;
     pdfLoadingTaskRef.current = undefined;
     pdfRef.current = undefined;
+    setPdfReady(false);
     if (previousLoadingTask) void previousLoadingTask.destroy();
     else if (previousPdf) void previousPdf.loadingTask.destroy();
     pageNavigationCleanup.current();
@@ -1833,6 +1859,7 @@ export default function Home() {
       return false;
     }
     pdfRef.current = pdf;
+    setPdfReady(true);
     setTotalPages(pdf.numPages);
     setDocumentReady(true);
     setLoadingDocument(false);
@@ -2082,9 +2109,6 @@ export default function Home() {
       try {
         return await readLocalCache(
           previousKey,
-          documentId,
-          page - 1,
-          translationSettings,
           currentMessages.localTranslationReadFailed,
           controller.signal,
         );
@@ -2099,9 +2123,6 @@ export default function Home() {
       if (!force) {
         const cached = await readLocalCache(
           key,
-          documentId,
-          page,
-          translationSettings,
           currentMessages.localTranslationReadFailed,
           controller.signal,
         );
@@ -2351,7 +2372,9 @@ export default function Home() {
       void failure.catch((error) => {
         if (sequence !== documentLoadSequence.current) return;
         pdfRef.current = undefined;
+        setPdfReady(false);
         setStorageMessage(messagesRef.current.openLocalFailed(error.message));
+        setDocumentError(messagesRef.current.openLocalFailed(error.message));
         void loadingTask.destroy();
       });
       const pdf = await Promise.race([loadingTask.promise, failure]);
@@ -2363,6 +2386,7 @@ export default function Home() {
       if (sequence !== documentLoadSequence.current) return;
       const detail = error instanceof Error ? error.message : "Unknown PDF error";
       setStorageMessage(currentMessages.openLocalFailed(detail));
+      setDocumentError(currentMessages.openLocalFailed(detail));
     }
   }, [beginDocumentLoad, finishDocumentLoad, loadNavigation, translationSettings]);
 
@@ -2772,7 +2796,11 @@ export default function Home() {
               </div>
             </div>
             <div className="column-labels"><span>{messages.sourceScan}</span><i /><span><Languages size={15} /> {targetLanguageLabel(settings.targetLanguage, locale)}</span></div>
-            <ReaderZoomControls messages={messages} />
+            <div className="reader-display-controls">
+              <ReaderFontControls value={{ translationFontSize: settings.translationFontSize, translationFontFamily: settings.translationFontFamily }} messages={messages.readerFont}
+                onChange={(typography) => setSettings({ ...settings, ...typography })} />
+              <ReaderZoomControls messages={messages} />
+            </div>
             <div className="reader-menu-anchor" ref={readerMenu}>
               <button
                 className="icon-button reader-menu-button"
@@ -2836,7 +2864,9 @@ export default function Home() {
               <p>{messages.rendererFailedHelp}</p>
             </div>
           ) : (
-            <ReaderViewport currentPage={currentPage}>
+            <ReaderViewport currentPage={currentPage}
+              fontSize={settings.translationFontSize} fontFamily={settings.translationFontFamily}
+              dividerLabel={messages.readerDivider} dividerValueText={messages.readerDividerValue}>
               {pageNumbers.map((page) => (
                 <PageSpread
                   key={`${documentId}-${page}-${serverBookAvailable ? "server" : "local"}`}
@@ -2858,6 +2888,7 @@ export default function Home() {
                   pageImageUrl={serverBookAvailable
                     ? `/api/books/${encodeURIComponent(documentId)}/pages/${page}?profile=display`
                     : undefined}
+                  pdfReady={pdfReady}
                   renderPageToCanvas={renderPageToCanvas}
                   requestTranslation={requestTranslation}
                   onTranslationAnimationComplete={completeTranslationAnimation}

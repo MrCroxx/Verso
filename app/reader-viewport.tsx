@@ -1,6 +1,7 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import type { ReaderTypography } from "../lib/reader-typography";
 import { Minus, Plus } from "lucide-react";
 import type { UiMessages } from "../lib/ui-messages";
 
@@ -12,6 +13,92 @@ const READER_ZOOM_STEP = 0.2;
 const WHEEL_ZOOM_SENSITIVITY = 0.004;
 type ZoomUpdate = (zoom: number) => number;
 const ZoomContext = createContext({ zoom: 1, onZoom: (() => {}) as (update: ZoomUpdate) => void });
+const MIN_SOURCE_PERCENT = 25;
+const MAX_SOURCE_PERCENT = 75;
+
+const ReaderColumns = createContext<{
+  sourcePercent: number;
+  resize: (percent: number) => void;
+  setResizing: (active: boolean) => void;
+  label: string;
+  valueText: (percent: number) => string;
+} | null>(null);
+
+export function ReaderDivider() {
+  const columns = useContext(ReaderColumns);
+  const drag = useRef<{ pointerId: number; offset: number; initial: number } | null>(null);
+  const pending = useRef<number | null>(null);
+  const frame = useRef<number | null>(null);
+  const stopResizing = columns?.setResizing;
+  useEffect(() => () => {
+    if (frame.current !== null) cancelAnimationFrame(frame.current);
+    if (drag.current) stopResizing?.(false);
+  }, [stopResizing]);
+  if (!columns) return null;
+  const { sourcePercent, resize, setResizing, label, valueText } = columns;
+  const flush = () => {
+    if (frame.current !== null) cancelAnimationFrame(frame.current);
+    frame.current = null;
+    if (pending.current !== null) resize(pending.current);
+    pending.current = null;
+  };
+  const finish = (node: HTMLDivElement) => {
+    const active = drag.current;
+    if (!active) return;
+    flush();
+    drag.current = null;
+    setResizing(false);
+    if (node.hasPointerCapture(active.pointerId)) node.releasePointerCapture(active.pointerId);
+  };
+  return (
+    <div
+      className="reader-divider"
+      role="separator"
+      tabIndex={0}
+      aria-orientation="vertical"
+      aria-label={label}
+      aria-valuemin={MIN_SOURCE_PERCENT}
+      aria-valuemax={MAX_SOURCE_PERCENT}
+      aria-valuenow={Math.round(sourcePercent)}
+      aria-valuetext={valueText(Math.round(sourcePercent))}
+      title={label}
+      onPointerDown={(event) => {
+        if (event.button !== 0 || !event.isPrimary || drag.current) return;
+        const bounds = event.currentTarget.parentElement!.getBoundingClientRect();
+        event.preventDefault();
+        event.currentTarget.focus({ preventScroll: true });
+        event.currentTarget.setPointerCapture(event.pointerId);
+        drag.current = { pointerId: event.pointerId, offset: event.clientX - bounds.left - bounds.width * sourcePercent / 100, initial: sourcePercent };
+        setResizing(true);
+      }}
+      onPointerMove={(event) => {
+        if (drag.current?.pointerId !== event.pointerId) return;
+        const bounds = event.currentTarget.parentElement!.getBoundingClientRect();
+        pending.current = (event.clientX - bounds.left - drag.current.offset) / bounds.width * 100;
+        if (frame.current === null) frame.current = requestAnimationFrame(flush);
+      }}
+      onPointerUp={(event) => finish(event.currentTarget)}
+      onPointerCancel={(event) => finish(event.currentTarget)}
+      onLostPointerCapture={(event) => finish(event.currentTarget)}
+      onDoubleClick={() => resize(50)}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && drag.current) {
+          event.preventDefault();
+          pending.current = drag.current.initial;
+          finish(event.currentTarget);
+          return;
+        }
+        if (drag.current) return;
+        const step = event.shiftKey ? 5 : 1;
+        const next = { ArrowLeft: sourcePercent - step, ArrowRight: sourcePercent + step,
+          Home: MIN_SOURCE_PERCENT, End: MAX_SOURCE_PERCENT, Enter: 50 }[event.key];
+        if (next === undefined) return;
+        event.preventDefault();
+        resize(next);
+      }}
+    ><span aria-hidden="true" /></div>
+  );
+}
 
 // Only the controls and viewport subscribe; a gesture never rerenders every book page.
 export function ReaderZoomProvider({ children }: { children: ReactNode }) {
@@ -37,12 +124,18 @@ export function ReaderZoomControls({ messages }: { messages: UiMessages }) {
 
 type ZoomAnchor = { page: number; x: number; y: number; fractionX: number; fractionY: number };
 
-export function ReaderViewport({ children, currentPage }: {
+export function ReaderViewport({ children, currentPage, dividerLabel, dividerValueText, fontSize, fontFamily }: {
   children: ReactNode;
   currentPage: number;
+  dividerLabel: string;
+  dividerValueText: (percent: number) => string;
+  fontSize: number;
+  fontFamily: ReaderTypography["translationFontFamily"];
 }) {
   const { zoom, onZoom } = useContext(ZoomContext);
   const ref = useRef<HTMLDivElement>(null);
+  const [sourcePercent, setSourcePercent] = useState(50);
+  const [resizing, setResizing] = useState(false);
   const spreadsRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -67,6 +160,21 @@ export function ReaderViewport({ children, currentPage }: {
     anchor.current = { page: Number(node.dataset.page), x, y,
       fractionX: (x - rect.left) / rect.width, fractionY: (y - rect.top) / rect.height };
   }, []);
+
+  const resize = useCallback((percent: number) => {
+    const next = Math.min(MAX_SOURCE_PERCENT, Math.max(MIN_SOURCE_PERCENT, percent));
+    if (!Number.isFinite(next) || next === sourcePercent) return;
+    rememberAnchor();
+    setSourcePercent(next);
+  }, [rememberAnchor, sourcePercent]);
+  const columns = useMemo(() => ({ sourcePercent, resize, setResizing, label: dividerLabel, valueText: dividerValueText }),
+    [sourcePercent, resize, dividerLabel, dividerValueText]);
+
+  useEffect(() => {
+    if (!resizing) return;
+    document.documentElement.classList.add("reader-resizing");
+    return () => document.documentElement.classList.remove("reader-resizing");
+  }, [resizing]);
 
   useLayoutEffect(() => {
     const viewport = ref.current;
@@ -147,7 +255,7 @@ export function ReaderViewport({ children, currentPage }: {
     if (saved && rect) {
       window.scrollBy({ top: rect.top + saved.fractionY * rect.height - saved.y, behavior: "instant" });
     }
-  }, [geometry.fitScale, zoom, positionHorizontally]);
+  }, [geometry.fitScale, zoom, positionHorizontally, sourcePercent, fontSize, fontFamily]);
 
   useEffect(() => {
     let frame = 0;
@@ -159,15 +267,15 @@ export function ReaderViewport({ children, currentPage }: {
       gesture.current.active = false;
       gesture.current.anchor = null;
     };
-    const controlZoom = (event: Event) => {
-      if (event.target instanceof Element && event.target.closest(".reader-zoom")) {
+    const controlLayout = (event: Event) => {
+      if (event.target instanceof Element && event.target.closest(".reader-zoom, .reader-font-controls")) {
         stopGesture();
         settleHorizontalPosition(false);
         rememberAnchor();
       }
     };
     const keydown = (event: KeyboardEvent) => {
-      if (["Enter", " "].includes(event.key)) controlZoom(event);
+      if (["Enter", " "].includes(event.key)) controlLayout(event);
       if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
       if (event.target instanceof HTMLElement && event.target.closest("input, textarea, select, [contenteditable=true]")) return;
       if (!["+", "=", "-", "0"].includes(event.key)) return;
@@ -207,13 +315,15 @@ export function ReaderViewport({ children, currentPage }: {
         onZoom((value) => value * factor);
       });
     };
-    window.addEventListener("click", controlZoom, { capture: true });
+    window.addEventListener("click", controlLayout, { capture: true });
+    window.addEventListener("input", controlLayout, { capture: true });
     window.addEventListener("keydown", keydown, { capture: true });
     window.addEventListener("wheel", wheel, { passive: false, capture: true });
     return () => {
       window.cancelAnimationFrame(frame);
       stopGesture();
-      window.removeEventListener("click", controlZoom, { capture: true });
+      window.removeEventListener("click", controlLayout, { capture: true });
+      window.removeEventListener("input", controlLayout, { capture: true });
       window.removeEventListener("keydown", keydown, { capture: true });
       window.removeEventListener("wheel", wheel, { capture: true });
     };
@@ -221,12 +331,16 @@ export function ReaderViewport({ children, currentPage }: {
 
   const scale = geometry.fitScale * zoom;
   return (
-    <div className="reader-viewport" ref={ref}>
-      <div className="reader-stage" ref={stageRef} style={{ width: Math.max(SPREAD_WIDTH * geometry.fitScale, SPREAD_WIDTH * scale) }}>
-        <div className="reader-canvas" ref={canvasRef} style={{ width: SPREAD_WIDTH * scale, height: geometry.height * scale }}>
-          <div className="spreads" ref={spreadsRef} style={{ width: SPREAD_WIDTH, transform: `scale(${scale})` }}>{children}</div>
+    <ReaderColumns.Provider value={columns}>
+      <div className="reader-viewport" ref={ref} data-resizing={resizing || undefined} data-translation-font={fontFamily} style={{ "--reader-scale": scale } as CSSProperties}>
+        <div className="reader-stage" ref={stageRef} style={{ width: Math.max(SPREAD_WIDTH * geometry.fitScale, SPREAD_WIDTH * scale) }}>
+          <div className="reader-canvas" ref={canvasRef} style={{ width: SPREAD_WIDTH * scale, height: geometry.height * scale }}>
+            <div className="spreads" ref={spreadsRef} style={{ width: SPREAD_WIDTH, transform: `scale(${scale})`,
+              "--translation-font-scale": fontSize / 100,
+              "--reader-source-width": `${sourcePercent}%` } as CSSProperties}>{children}</div>
+          </div>
         </div>
       </div>
-    </div>
+    </ReaderColumns.Provider>
   );
 }

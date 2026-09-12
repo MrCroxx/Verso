@@ -15,7 +15,7 @@ export type StoredBook = {
 type SqlValue = string | number | bigint | Uint8Array | null;
 
 export class LocalStatement {
-  private values: SqlValue[] = [];
+  private values: SqlValue[] | Record<string, SqlValue> = [];
   private readonly statement: StatementSync;
 
   constructor(statement: StatementSync) {
@@ -23,20 +23,23 @@ export class LocalStatement {
   }
 
   bind(...values: SqlValue[]) {
-    this.values = values;
+    // Node 24 treats SQLite's numbered ?1 parameters as named parameters.
+    // Object binding remains compatible with Node 22 and preserves repeated indexes.
+    this.values = Object.fromEntries(values.map((value, index) => [`?${index + 1}`, value]));
     return this;
   }
 
   async first<T extends Record<string, unknown>>() {
-    return this.statement.get(...this.values) as T | undefined;
+    return (Array.isArray(this.values) ? this.statement.get() : this.statement.get(this.values)) as T | undefined;
   }
 
   async all<T extends Record<string, unknown>>() {
-    return { results: this.statement.all(...this.values) as T[] };
+    const results = Array.isArray(this.values) ? this.statement.all() : this.statement.all(this.values);
+    return { results: results as T[] };
   }
 
   async run() {
-    return this.statement.run(...this.values);
+    return Array.isArray(this.values) ? this.statement.run() : this.statement.run(this.values);
   }
 }
 

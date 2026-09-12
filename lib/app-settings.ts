@@ -1,3 +1,4 @@
+import { DEFAULT_READER_TYPOGRAPHY, type ReaderTypography } from "./reader-typography";
 import { DEFAULT_AI_PROVIDER_SETTINGS, type PublicAiProviderSettings } from "./ai-provider-settings";
 import { DEFAULT_TYPEWRITER_CHARACTERS_PER_SECOND } from "./translation-typewriter";
 
@@ -6,7 +7,7 @@ export type TranslationSettings = {
   translationConcurrency: number;
 };
 
-export type AppSettings = TranslationSettings & {
+export type AppSettings = TranslationSettings & ReaderTypography & {
   schemaVersion: number;
   nearbyPages: number;
   smoothScrolling: boolean;
@@ -19,6 +20,7 @@ export type TranslationService = PublicAiProviderSettings & {
 };
 
 export const DEFAULT_SETTINGS: AppSettings = {
+  ...DEFAULT_READER_TYPOGRAPHY,
   schemaVersion: 2,
   targetLanguage: "Simplified Chinese",
   nearbyPages: 2,

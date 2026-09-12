@@ -208,6 +208,36 @@ async function run() {
       return height > ${previousHeight} + 1
         && Math.abs(height - document.querySelector('.spreads').getBoundingClientRect().height) < 1;
     })()`), 'Scroll height must follow newly rendered content');
+    // Font preferences and resizable columns must survive the shared-settings/zoom integration.
+    await act(`
+      document.querySelector('.reader-font-button').click();
+      await nextFrames();
+      const slider = document.querySelector('.reader-font-size input');
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(slider, '150');
+      slider.dispatchEvent(new Event('input', { bubbles: true }));
+      await nextFrames();
+      document.querySelector('.reader-font-family input[value="sans"]').click();
+      await nextFrames();
+    `);
+    assert.equal(await js(`getComputedStyle(document.querySelector('.spreads')).getPropertyValue('--translation-font-scale').trim()`), '1.5');
+    assert.equal(await js(`document.querySelector('.reader-viewport').dataset.translationFont`), 'sans');
+    await act(`
+      const divider = document.querySelector('.reader-divider');
+      divider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', shiftKey: true, bubbles: true }));
+      await nextFrames();
+    `);
+    assert.equal(await js(`document.querySelector('.reader-divider').getAttribute('aria-valuenow')`), '55');
+    const split = await js(`(() => {
+      const page = document.querySelector('.page-spread');
+      return page.querySelector('.source-page').getBoundingClientRect().width / page.getBoundingClientRect().width;
+    })()`);
+    assert.ok(Math.abs(split - 0.55) < 0.01, 'Column resizing must change the rendered source width');
+    await act(`document.querySelector('.reader-divider').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await nextFrames();`);
+    assert.equal(await js(`document.querySelector('.reader-divider').getAttribute('aria-valuenow')`), '50');
+    await window.webContents.reload();
+    await waitFor(() => js(`document.querySelector('.reader-viewport')?.dataset.translationFont === 'sans'
+      && getComputedStyle(document.querySelector('.spreads')).getPropertyValue('--translation-font-scale').trim() === '1.5'`),
+    'Font preferences must persist across a desktop reload');
     console.log(JSON.stringify({ pages: 80, burstEvents: 40, scaleWrites: burst.writes,
       pointerDrift: { x: continuous.x - before.anchor.x, y: continuous.y - before.anchor.y },
       intrinsicLayoutUnchanged: true, bounds: '50%-300%', controlsAndResize: 'passed', edges: edgeResults }));
