@@ -61,10 +61,10 @@ export function ReaderFontControls({ value, onChange, messages }: {
         close();
       }
     }}>
-      <button type="button" className="reader-font-button" ref={trigger}
+      <button type="button" className="icon-button reader-font-button" ref={trigger}
         aria-label={messages.title} title={messages.title} aria-haspopup="dialog"
         aria-expanded={open} aria-controls={open ? id : undefined} onClick={() => setOpen(!open)}>
-        <Type size={17} /><span>{messages.label}</span>
+        <Type size={17} />
       </button>
       {open && (
         <div className="reader-font-panel" id={id} role="dialog" aria-label={messages.title}>
