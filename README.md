@@ -58,6 +58,21 @@ source.
   theme, and configure animated page navigation without altering the source
   scan.
 
+## Translation backups
+
+Use **Export library translations** in **Settings → Library** to export every local
+book, or **Export translations** in a book's three-dot reading menu to export that book.
+The versioned JSON file includes translations in every target language, layout
+and source alignment data, contents, and page number settings. It excludes PDF
+files, provider credentials, and translation jobs.
+
+Use the corresponding **Import** action to restore a file. Upload the matching
+PDFs first: books are matched by fingerprint, even when their local IDs differ.
+Imports add missing records and retain existing translations and navigation.
+Errors and missing PDFs are reported; successful imports and exports finish
+without an extra message. A book's reading menu accepts only that book's export; Settings → Library
+accepts both single-book and whole-library files. Files are limited to 100 MB.
+
 ## Background translation queue
 
 Open **Translation queue** from the library to see jobs in every target language,

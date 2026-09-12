@@ -286,15 +286,18 @@ test("resolves an explicit locale before the best supported browser language", (
 test("serves settings as a localized page with a library navigation link", async () => {
   const home = await (await render()).text();
   assert.match(home, /href="\/settings"/);
+  assert.doesNotMatch(home, /translation-transfer/);
   for (const [locale, title] of [["en-US", "Settings"], ["zh-CN", "设置"]]) {
     const response = await render("/settings", { cookie: `${UI_LOCALE_COOKIE}=${locale}` });
     assert.equal(response.status, 200);
     const html = await response.text();
     assert.match(html, new RegExp(`<h1>${title}</h1>`));
     assert.match(html, new RegExp(`<option value="system" selected="">${locale === "zh-CN" ? "跟随系统" : "System"}</option>`));
-    for (const section of ["ai-provider", "translation", "reading", "interface"]) {
+    for (const section of ["ai-provider", "translation", "reading", "library", "interface"]) {
       assert.match(html, new RegExp(`id="${section}"`));
     }
+    assert.match(html, new RegExp(locale === "zh-CN" ? "导入书库翻译信息" : "Import library translations"));
+    assert.match(html, new RegExp(locale === "zh-CN" ? "导出书库翻译信息" : "Export library translations"));
     assert.doesNotMatch(html, /role="dialog"|aria-modal="true"/);
   }
 });
@@ -1766,6 +1769,109 @@ async function uploadQueueBook(fingerprint, pageCount) {
   assert.equal(response.status, 200);
   return (await response.json()).book;
 }
+
+test("translation archives round-trip all languages and navigation while retaining local records", async () => {
+  const first = await uploadQueueBook("a1".repeat(32), 3);
+  const second = await uploadQueueBook("a2".repeat(32), 2);
+  const entries = [
+    { book: first, page: 1, language: "Simplified Chinese", text: "译文与公式 $x^2$" },
+    { book: first, page: 2, language: "English", text: "Translated paragraph" },
+    { book: second, page: 1, language: "Japanese", text: "翻訳" },
+  ];
+  for (const { book, page, language, text } of entries) {
+    const response = await fetch(`${baseUrl}/api/translations`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: translationCacheKey(book.fingerprint, page, language), documentId: book.fingerprint, page,
+        translation: { page, markdown: text, blocks: [{ kind: "paragraph", text, sourceRect: { x: 0.1, y: 0.2, width: 0.8, height: 0.1 } }], cacheVersion: 42, cachedAt: 1234 } }),
+    });
+    assert.equal(response.status, 200);
+  }
+  const observation = { pdfPage: 1, isTableOfContents: true,
+    tocEntries: [{ sourcePage: 1, ordinal: 0, title: "Chapter one", label: "1", value: 1, numbering: "arabic", level: 0 }],
+    anchor: { pdfPage: 1, label: "i", value: 1, numbering: "roman" } };
+  for (const fields of [{ observation }, { manualOffset: 2 }]) {
+    assert.equal((await fetch(`${baseUrl}/api/navigation`, { method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ documentId: first.fingerprint, ...fields }) })).status, 200);
+  }
+  const singleResponse = await fetch(`${baseUrl}/api/translations/archive?documentId=${first.id}`);
+  assert.equal(singleResponse.status, 200);
+  assert.match(singleResponse.headers.get("content-disposition"), /attachment; filename=".*\.json"/);
+  assert.equal(singleResponse.headers.get("cache-control"), "no-store");
+  const single = await singleResponse.json();
+  assert.equal(singleResponse.headers.get("content-disposition"), `attachment; filename="verso-${first.fingerprint.slice(0, 16)}-translations-${Date.parse(single.exportedAt)}.json"`);
+  assert.equal(single.format, "verso-translations");
+  assert.equal(single.version, 1);
+  assert.equal(single.books.length, 1);
+  assert.equal(single.books[0].translations.length, 2);
+  assert.deepEqual(single.books[0].navigation, { observations: [observation], manualOffset: 2 });
+  const allResponse = await fetch(`${baseUrl}/api/translations/archive`);
+  const all = await allResponse.json();
+  assert.equal(allResponse.headers.get("content-disposition"), `attachment; filename="verso-library-translations-${Date.parse(all.exportedAt)}.json"`);
+  assert.ok(all.books.some(book => book.fingerprint === second.fingerprint));
+  const archive = { ...all, books: all.books.filter(book => [first.fingerprint, second.fingerprint].includes(book.fingerprint)) };
+  const sqlite = new DatabaseSync(path.join(testDataDirectory, "verso.sqlite"));
+  try {
+    for (const table of ["translations", "navigation_pages", "navigation_settings"]) {
+      sqlite.prepare(`DELETE FROM ${table} WHERE document_id IN (?, ?)`).run(first.fingerprint, second.fingerprint);
+    }
+    // Restore to a library whose local book IDs differ from the export source.
+    sqlite.prepare("UPDATE books SET id = ? WHERE fingerprint = ?").run("restored-book-id", first.fingerprint);
+    const restored = await fetch(`${baseUrl}/api/translations/archive`, { method: "POST", body: JSON.stringify(archive) });
+    assert.equal(restored.status, 200);
+    assert.deepEqual(await restored.json(), { books: 2, imported: 3, retained: 0, missingBooks: 0 });
+    const after = await (await fetch(`${baseUrl}/api/translations/archive?documentId=${first.fingerprint}`)).json();
+    assert.deepEqual(after.books, single.books);
+    for (const { book, page, language, text } of entries) {
+      const query = new URLSearchParams({ key: translationCacheKey(book.fingerprint, page, language) });
+      const cached = await (await fetch(`${baseUrl}/api/translations?${query}`)).json();
+      assert.equal(cached.translation.markdown, text);
+    }
+    archive.books[0].translations[0].translation.markdown = "Do not replace local work";
+    const repeated = await fetch(`${baseUrl}/api/translations/archive`, { method: "POST", body: JSON.stringify(archive) });
+    assert.deepEqual(await repeated.json(), { books: 2, imported: 0, retained: 3, missingBooks: 0 });
+    assert.deepEqual((await (await fetch(`${baseUrl}/api/translations/archive?documentId=${first.fingerprint}`)).json()).books, single.books);
+  } finally { sqlite.close(); }
+});
+
+test("translation archive imports reject mismatches and invalid files before writing any records", async () => {
+  const book = await uploadQueueBook("a3".repeat(32), 2);
+  const entry = { key: translationCacheKey(book.fingerprint, 1, "English"), page: 1,
+    translation: { page: 1, markdown: "Page one", blocks: [] }, updatedAt: 100 };
+  const archive = { format: "verso-translations", version: 1, books: [{ fingerprint: book.fingerprint, name: book.name, pageCount: 2,
+    translations: [entry], navigation: { observations: [], manualOffset: null } }] };
+  const invalidArchives = [
+    null, {}, { ...archive, version: 99 },
+    { ...archive, books: [{ ...archive.books[0], translations: [entry, { ...entry, page: 3 }] }] },
+    { ...archive, books: [{ ...archive.books[0], translations: [entry, entry] }] },
+    { ...archive, books: [{ ...archive.books[0], translations: [{ ...entry, key: translationCacheKey("a4".repeat(32), 1, "English") }] }] },
+    { ...archive, books: [{ ...archive.books[0], translations: [{ ...entry, translation: {} }] }] },
+  ];
+  for (const value of invalidArchives) {
+    const response = await fetch(`${baseUrl}/api/translations/archive`, { method: "POST", body: JSON.stringify(value) });
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error, "INVALID_ARCHIVE");
+  }
+  const malformed = await fetch(`${baseUrl}/api/translations/archive`, { method: "POST", body: "{" });
+  assert.equal(malformed.status, 400);
+  const mismatch = await fetch(`${baseUrl}/api/translations/archive?documentId=${book.id}`, {
+    method: "POST", body: JSON.stringify({ ...archive, books: [{ ...archive.books[0], fingerprint: "a4".repeat(32), translations: [] }] }),
+  });
+  assert.equal(mismatch.status, 400);
+  assert.equal((await mismatch.json()).error, "BOOK_MISMATCH");
+  assert.equal((await fetch(`${baseUrl}/api/translations/archive?documentId=missing-book`)).status, 404);
+  const exported = await (await fetch(`${baseUrl}/api/translations/archive?documentId=${book.id}`)).json();
+  assert.deepEqual(exported.books[0].translations, []);
+  const restored = await fetch(`${baseUrl}/api/translations/archive?documentId=${book.id}`, { method: "POST", body: JSON.stringify(archive) });
+  assert.deepEqual(await restored.json(), { books: 1, imported: 1, retained: 0, missingBooks: 0 });
+});
+
+test("library translation import reports books whose PDFs have not been uploaded", async () => {
+  const archive = { format: "verso-translations", version: 1, books: [{ fingerprint: "a5".repeat(32), name: "Missing.pdf", pageCount: 1,
+    translations: [], navigation: { observations: [], manualOffset: null } }] };
+  const response = await fetch(`${baseUrl}/api/translations/archive`, { method: "POST", body: JSON.stringify(archive) });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { books: 0, imported: 0, retained: 0, missingBooks: 1 });
+});
 
 async function waitFor(check) {
   const deadline = Date.now() + 15000;

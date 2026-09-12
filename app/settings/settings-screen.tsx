@@ -11,6 +11,7 @@ import { useAppSettings } from "../app-settings";
 import { useUiLocale } from "../ui-locale";
 import { Brand } from "../brand";
 import { ThemeSelect } from "../theme-select";
+import { TranslationTransfer } from "../translation-transfer";
 
 const COPY = {
   "zh-CN": {
@@ -115,6 +116,10 @@ export function SettingsScreen({ backHref }: { backHref: string }) {
               onChange={(event) => update("translationAnimationSpeed", Number(event.target.value))}
             />
 
+          </section>
+          <section id="library" className="settings-card" aria-labelledby="library-heading">
+            <h2 id="library-heading">{messages.library}</h2>
+            <TranslationTransfer messages={messages} />
           </section>
           <section id="interface" className="settings-card" aria-labelledby="interface-heading">
             <h2 id="interface-heading">{copy.appearance}</h2>

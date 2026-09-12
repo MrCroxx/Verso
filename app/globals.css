@@ -63,6 +63,19 @@ button { color: inherit; }
 .locale-button { width: auto; grid-auto-flow: column; gap: 5px; padding: 0 8px; font-size: 9px; font-weight: 750; letter-spacing: .04em; }
 
 .library-shell { background: var(--canvas); }
+.translation-transfer { margin-bottom: 24px; min-width: 0; }
+.translation-transfer-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.translation-transfer-actions > span { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.translation-transfer button:disabled { opacity: .5; cursor: not-allowed; }
+.translation-transfer-help { margin: 10px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.translation-transfer-notice { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; font-size: 12px; line-height: 1.6; color: var(--green); overflow-wrap: anywhere; }
+.translation-transfer-notice.failed { color: #b44b42; }
+.settings-card .translation-transfer { margin-bottom: 0; }
+.translation-transfer-menu { margin: 0; }
+.translation-transfer-menu .translation-transfer-actions { display: block; }
+.translation-transfer-menu .translation-transfer-actions > span { padding: 8px 10px; }
+.translation-transfer-menu .translation-transfer-notice { padding: 0 10px 8px; font-size: 11px; }
+.reader-overflow-menu .translation-transfer-notice .icon-button { width: 24px; min-height: 24px; padding: 0; }
 .library-topbar { grid-template-columns: auto 1fr; }
 .library-topbar .top-actions { justify-self: end; }
 .library-home { width: min(1440px, 100%); min-height: 100vh; margin: 0 auto; padding: 126px 48px 80px; }
@@ -180,6 +193,8 @@ button { color: inherit; }
 .reader-overflow-menu button svg { flex: 0 0 auto; }
 .reader-overflow-menu button span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 650; }
 .reader-overflow-menu > i { display: block; height: 1px; margin: 5px 4px; background: var(--line); }
+.reader-overflow-menu[hidden] { display: none; }
+.reader-overflow-menu { max-height: calc(100dvh - 128px); overflow-y: auto; }
 .reader-notice { position: sticky; z-index: 19; top: 113px; min-height: 46px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 7px max(18px, calc((100% - 984px) / 2)); border-bottom: 1px solid; font-size: 11px; }
 .reader-notice > span { display: flex; align-items: center; gap: 8px; line-height: 1.45; }
 .setup-notice { color: #315f4e; background: #edf6f1; border-color: #d5e8de; }
