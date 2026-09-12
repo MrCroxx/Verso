@@ -2,6 +2,7 @@ import type { UiLocale } from "./ui-locale";
 
 export const UI_MESSAGES = {
   "zh-CN": {
+    copyCode: "复制代码", codeCopied: "已复制", codeCopyFailed: "复制失败，请重试",
     translationPhases: { queued: "等待翻译", preparing: "正在准备页面", waiting: "等待模型响应", thinking: "模型正在思考", generating: "正在生成译文", aligning: "正在整理译文" },
     translationStatsHelp: "已接收的推理和正文。token/TPS 为估算值，收到有效 usage 后校准。TPS 为首个输出以来的平均速度。",
     blankPage: "此页没有可翻译文本",
@@ -208,6 +209,7 @@ export const UI_MESSAGES = {
     openLocalFailed: (detail: string) => `无法打开本地 PDF：${detail}`,
   },
   "en-US": {
+    copyCode: "Copy code", codeCopied: "Copied", codeCopyFailed: "Copy failed. Retry",
     translationPhases: { queued: "Waiting to translate", preparing: "Preparing page", waiting: "Waiting for the model", thinking: "The model is thinking", generating: "Generating translation", aligning: "Finishing translation" },
     translationStatsHelp: "Received reasoning and text. Tokens/TPS are estimates, calibrated when valid usage arrives. TPS is the average since the first output.",
     blankPage: "No translatable text on this page",
@@ -420,6 +422,7 @@ export type UiMessages = (typeof UI_MESSAGES)[UiLocale];
 export function targetLanguageLabel(value: string, locale: UiLocale) {
   const labels: Record<UiLocale, Record<string, string>> = {
     "zh-CN": {
+    copyCode: "复制代码", codeCopied: "已复制", codeCopyFailed: "复制失败，请重试",
       "Simplified Chinese": "简体中文",
       "Traditional Chinese": "繁體中文",
       English: "English",
@@ -427,6 +430,7 @@ export function targetLanguageLabel(value: string, locale: UiLocale) {
       Spanish: "Español",
     },
     "en-US": {
+    copyCode: "Copy code", codeCopied: "Copied", codeCopyFailed: "Copy failed. Retry",
       "Simplified Chinese": "Simplified Chinese",
       "Traditional Chinese": "Traditional Chinese",
       English: "English",

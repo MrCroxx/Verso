@@ -1,7 +1,18 @@
+import { alignTableCells, recoverSourceTables } from "./source-table.ts";
+import { recoverSourceCodeBlocks } from "./source-code.ts";
 import { normalizeSourceRect, type LayoutBlock, type SourceRect } from "./translation-layout.ts";
 
-export type SourceWord = { text: string; rect: SourceRect; line: number };
-export type SourcePageLayout = { width: number; height: number; words: SourceWord[]; method: "pdf" | "ocr" };
+export type SourceWord = { text: string; rect: SourceRect; line: number; block?: number; fontSize?: number };
+export type SourcePageLayout = { width: number; height: number; words: SourceWord[]; method: "pdf" | "ocr"; confidence?: number; retainedWordRatio?: number };
+
+export function isSourcePageLayout(value: unknown): value is SourcePageLayout {
+  if (!value || typeof value !== "object") return false;
+  const layout = value as SourcePageLayout;
+  return Number.isFinite(layout.width) && layout.width > 0 && Number.isFinite(layout.height) && layout.height > 0
+    && ["pdf", "ocr"].includes(layout.method) && Array.isArray(layout.words) && layout.words.length <= 100_000
+    && layout.words.every((word) => word && typeof word.text === "string" && Number.isSafeInteger(word.line)
+      && Boolean(normalizeSourceRect(word.rect)));
+}
 
 function decodeXml(text: string) {
   return text.replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos);/gi, (_, entity: string) => {
@@ -22,12 +33,14 @@ export function parsePdfWordLayout(xml: string, rotation = 0): SourcePageLayout 
   if (!(width > 0 && height > 0)) throw new Error("PDF text extraction returned no page dimensions.");
   const words: SourceWord[] = [];
   let line = 0;
-  for (const match of xml.matchAll(/<line\b|<word\b([^>]*)>([\s\S]*?)<\/word>/g)) {
+  let block = 0;
+  for (const match of xml.matchAll(/<block\b|<line\b|<word\b([^>]*)>([\s\S]*?)<\/word>/g)) {
+    if (match[0] === "<block") { block += 1; continue; }
     if (match[0] === "<line") { line += 1; continue; }
     const attributes = Object.fromEntries(Array.from(match[1].matchAll(/(xMin|yMin|xMax|yMax)="([\d.-]+)"/g), (part) => [part[1], Number(part[2])]));
     const rect = normalizeSourceRect({ x: attributes.xMin / width, y: attributes.yMin / height, width: (attributes.xMax - attributes.xMin) / width, height: (attributes.yMax - attributes.yMin) / height });
     const text = decodeXml(match[2]);
-    if (rect && text.trim()) words.push({ text, rect, line });
+    if (rect && text.trim()) words.push({ text, rect, line, block });
   }
   return { width, height, words, method: "pdf" };
 }
@@ -40,15 +53,48 @@ export function parseOcrWordLayout(tsv: string): SourcePageLayout {
   if (!(width > 0 && height > 0)) throw new Error("OCR returned no page dimensions.");
   const words: SourceWord[] = [];
   const lines = new Map<string, number>();
+  const blocks = new Map<string, number>();
+  const candidates = rows.filter((row) => row[0] === "5" && row.slice(11).join("\t").trim());
   for (const row of rows) {
     if (row[0] !== "5" || Number(row[10]) < 30) continue;
     const text = row.slice(11).join("\t").trim();
     const rect = normalizeSourceRect({ x: Number(row[6]) / width, y: Number(row[7]) / height, width: Number(row[8]) / width, height: Number(row[9]) / height });
     const lineKey = row.slice(1, 5).join(":");
+    const blockKey = row.slice(1, 4).join(":");
     if (!lines.has(lineKey)) lines.set(lineKey, lines.size);
-    if (rect && text) words.push({ text, rect, line: lines.get(lineKey)! });
+    if (!blocks.has(blockKey)) blocks.set(blockKey, blocks.size);
+    if (rect && text) words.push({ text, rect, line: lines.get(lineKey)!, block: blocks.get(blockKey)! });
   }
-  return { width, height, words, method: "ocr" };
+  return { width, height, words, method: "ocr",
+    confidence: candidates.length ? candidates.reduce((sum, row) => sum + Math.max(0, Number(row[10]) || 0), 0) / candidates.length : 0,
+    retainedWordRatio: candidates.length ? words.length / candidates.length : 0 };
+}
+
+export function applyPdfFontSizes(layout: SourcePageLayout, xml: string): SourcePageLayout {
+  const attributes = (value: string) => Object.fromEntries(Array.from(value.matchAll(/([\w]+)="([^"]*)"/g), (m) => [m[1], m[2]]));
+  const page = attributes(/<page\b([^>]*)>/.exec(xml)?.[1] ?? "");
+  // pdftohtml uses the MediaBox. Refuse mismatched CropBoxes or rotations.
+  if (Math.abs(Number(page.width) - layout.width) > 1 || Math.abs(Number(page.height) - layout.height) > 1
+    || !(Number(page.width) > 0 && Number(page.height) > 0)) return layout;
+  const fonts = new Map(Array.from(xml.matchAll(/<fontspec\b([^>]*)\/>/g), (m) => {
+    const attr = attributes(m[1]);
+    return [attr.id, Number(attr.size)] as const;
+  }));
+  const spans = Array.from(xml.matchAll(/<text\b([^>]*)>([\s\S]*?)<\/text>/g), (m) => {
+    const attr = attributes(m[1]);
+    return { x: Number(attr.left), y: Number(attr.top), width: Number(attr.width), height: Number(attr.height),
+      font: fonts.get(attr.font), text: matchingText(decodeXml(m[2].replace(/<[^>]*>/g, ""))) };
+  }).filter((span) => span.font && span.font > 0 && span.font <= layout.width * .25);
+  if (spans.length * layout.words.length > 2_000_000) return layout;
+  return { ...layout, words: layout.words.map((word) => {
+    const x = (word.rect.x + word.rect.width / 2) * layout.width;
+    const y = (word.rect.y + word.rect.height / 2) * layout.height;
+    const text = matchingText(word.text);
+    const matches = spans.filter((span) => text && span.text.includes(text)
+      && x >= span.x - 1 && x <= span.x + span.width + 1 && y >= span.y - 1 && y <= span.y + span.height + 1);
+    const sizes = new Set(matches.map((span) => span.font!));
+    return sizes.size === 1 ? { ...word, fontSize: matches[0].font! / layout.width } : word;
+  }) };
 }
 
 function matchingText(text: string) {
@@ -110,7 +156,30 @@ function approximateSentence(text: string, needle: string, cursor: number, start
   return best.find((match) => match.start >= cursor) ?? best[0];
 }
 
+function sourceFontSize(words: SourceWord[], layout: SourcePageLayout): number | undefined {
+  const lines = new Map<number, SourceWord[]>();
+  for (const word of words) {
+    if (!matchingText(word.text)) continue;
+    const line = lines.get(word.line) ?? [];
+    line.push(word);
+    lines.set(word.line, line);
+  }
+  const heights = Array.from(lines.values(), (line) => {
+    // Weight by letters so punctuation, superscripts and drop caps cannot dominate.
+    const samples = line.map((word) => ({ height: word.fontSize && Number.isFinite(word.fontSize) && word.fontSize > 0 && word.fontSize <= .25
+      ? word.fontSize * layout.width / layout.height : word.rect.height,
+      weight: Math.min(12, Array.from(matchingText(word.text)).length) }))
+      .sort((a, b) => a.height - b.height);
+    const target = samples.reduce((sum, sample) => sum + sample.weight, 0) * (layout.method === "ocr" ? 0.65 : 0.5);
+    let weight = 0;
+    return samples.find((sample) => { weight += sample.weight; return weight >= target; })!.height;
+  }).sort((a, b) => a - b);
+  // OCR measures visible ink, whose height varies by word. Aggregate whole lines.
+  return heights.length ? heights[Math.floor(heights.length / 2)] * layout.height / layout.width : undefined;
+}
+
 export function alignSourceBlocks(blocks: LayoutBlock[], layout: SourcePageLayout): LayoutBlock[] {
+  blocks = recoverSourceTables(recoverSourceCodeBlocks(alignTableCells(blocks, layout), layout), layout);
   let text = "";
   const ranges = layout.words.map((word) => {
     const start = text.length;
@@ -122,6 +191,13 @@ export function alignSourceBlocks(blocks: LayoutBlock[], layout: SourcePageLayou
   let cursor = 0;
   return blocks.map((block) => {
     if (block.kind === "image" || block.kind === "spacer") return block;
+    if (block.kind === "code" || block.kind === "table_header" || block.kind === "table_row") {
+      const r = block.sourceRect;
+      const words = r ? layout.words.filter(({ rect: w }) => w.x + w.width / 2 >= r.x && w.x + w.width / 2 <= r.x + r.width
+        && w.y + w.height / 2 >= r.y && w.y + w.height / 2 <= r.y + r.height) : [];
+      const fontSize = sourceFontSize(words, layout);
+      return { ...block, ...(fontSize && { fontSize }) };
+    }
     const matchedWords: SourceWord[] = [];
     const sentences = block.sentences?.map((sentence) => {
       const needle = matchingText(sentence.sourceText);
@@ -154,8 +230,8 @@ export function alignSourceBlocks(blocks: LayoutBlock[], layout: SourcePageLayou
       const y = rect.y + rect.height / 2;
       return x >= region.x && x <= region.x + region.width && y >= region.y && y <= region.y + region.height;
     }) : [];
-    const fontWords = matchedWords.length ? matchedWords : regionWords.length ? regionWords : layout.words;
-    const sizes = fontWords.map((word) => Math.min(word.rect.height * layout.height, word.rect.width * layout.width) / layout.width).sort((a, b) => a - b);
-    return { ...block, ...(sentences && { sentences }), ...(sizes.length && (block.fontSize || matchedWords.length) && { fontSize: sizes[Math.floor(sizes.length / 2)] }) };
+    const fontWords = matchedWords.length ? matchedWords : regionWords;
+    const fontSize = sourceFontSize(fontWords, layout);
+    return { ...block, ...(sentences && { sentences }), ...(fontSize && { fontSize }) };
   });
 }

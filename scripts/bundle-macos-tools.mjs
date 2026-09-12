@@ -78,7 +78,7 @@ function bundle(sourcePath, target, executableDirectory = path.dirname(sourcePat
 }
 
 bundle(process.execPath, path.join(root, 'bin/node'));
-for (const tool of ['pdftocairo', 'pdftotext', 'pdfinfo']) bundle(path.join(poppler, 'bin', tool), path.join(root, 'bin', tool));
+for (const tool of ['pdftocairo', 'pdftotext', 'pdftohtml', 'pdfinfo']) bundle(path.join(poppler, 'bin', tool), path.join(root, 'bin', tool));
 bundle(path.join(tesseract, 'bin/tesseract'), path.join(root, 'bin/tesseract'));
 for (const language of ['eng', 'chi_sim', 'chi_tra', 'jpn', 'osd']) {
   const source = [tesseract, languages].map((directory) => path.join(directory, 'share/tessdata', `${language}.traineddata`)).find(existsSync);

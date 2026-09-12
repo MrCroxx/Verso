@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { access, chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { createServer as createHttpServer } from "node:http";
 import { DatabaseSync } from "node:sqlite";
@@ -29,6 +29,9 @@ import { prepareDisplayEquation, renderMath, splitMathText } from "../lib/math-c
 import { translationCacheKey, translationCacheSuffix } from "../lib/translation-cache.ts";
 import { normalizeReaderTypography } from "../lib/reader-typography.ts";
 import nextConfig from "../next.config.ts";
+
+import { sourceFixture } from "./fixtures/source-pages.mjs";
+import { buildTextPage } from "../lib/translation-source-plan.ts";
 
 let baseUrl;
 let serverProcess;
@@ -1151,6 +1154,9 @@ test("requests and persists image crops, typography, and sentence positions with
         assert.ok(blockSchema.required.includes("imageRole"));
         assert.ok(blockSchema.properties.kind.enum.includes("image"));
         assert.ok(blockSchema.properties.kind.enum.includes("equation"));
+        assert.ok(blockSchema.properties.kind.enum.includes("code"));
+        assert.ok(blockSchema.properties.kind.enum.includes("table_header"));
+        assert.ok(blockSchema.properties.kind.enum.includes("table_row"));
       }
       assert.match(instruction, /valid KaTeX-compatible LaTeX/);
       const key = `layout-v3::aligned-${format}::2::server-v1::Simplified Chinese`;
@@ -2515,4 +2521,133 @@ test("reports streamed failures without saving a partial translation", async () 
     provider.closeAllConnections();
     await new Promise(resolve => provider.close(resolve));
   }
+});
+
+
+test("optimizes provider contracts and context in both protocols, preserving local layout and bounded fallback", async () => {
+  async function cacheAnalysis(book, page, layout, textOnly) {
+    for (const [version, profile, payload] of [["v3", "embedded", layout?.method === "pdf" ? layout : null],
+      ["v2", "textonly", textOnly], ["v2", "words", layout]]) {
+      const directory = path.join(testDataDirectory, "renders", book.fingerprint, version, profile);
+      await mkdir(directory, { recursive: true });
+      await writeFile(path.join(directory, `${String(page).padStart(6, "0")}.json`), JSON.stringify(payload));
+    }
+  }
+  const source = sourceFixture(), textPage = buildTextPage(source);
+  const records = [];
+  let invalidText = false;
+  const provider = createHttpServer(async (request, response) => {
+    const chunks = []; for await (const chunk of request) chunks.push(chunk);
+    const input = JSON.parse(Buffer.concat(chunks).toString());
+    const content = (input.input || input.messages)[0].content;
+    const instruction = content[0].text;
+    const textMode = instruction.includes("Source units for requested page");
+    records.push({ input, content, textMode });
+    const output = textMode ? { translations: invalidText ? [] : textPage.units.flat().map((u, i) => ({ id: u.id, text: `完整译文${i}。` })) }
+      : { page: 2, blocks: [{ kind: "paragraph", sentences: [{ text: "完整译文。", sourceText: textPage.units[0][0].sourceText, sourceRects: [] }] }], previousPageRevision: null };
+    const usage = { input_tokens: 100, output_tokens: 50 };
+    response.setHeader("Content-Type", "application/json");
+    response.end(JSON.stringify(input.input ? { output_text: JSON.stringify(output), usage }
+      : { choices: [{ message: { content: JSON.stringify(output) } }], usage }));
+  });
+  await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
+  try {
+    for (const [i, format] of ["openai", "compatible"].entries()) {
+      const book = await uploadQueueBook(`f${i}ed`.padEnd(64, "a"), 3);
+      for (const page of [1, 2, 3]) await cacheAnalysis(book, page, source, true);
+      await fetch(`${baseUrl}/api/settings/ai-provider`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+        provider: format, endpoint: `http://127.0.0.1:${provider.address().port}/${format === "openai" ? "responses" : "v1"}`,
+        model: "optimization-fixture", apiKey: "fixture", reasoningEffort: "high",
+      }) });
+      invalidText = false;
+      const translate = async (extra = {}) => {
+        const response = await readTestPage(book, 2, { force: true, contextPages: [1, 2, 3], ...extra });
+        const result = await response.json(); assert.equal(response.status, 200, JSON.stringify(result)); return result;
+      };
+      const text = await translate();
+      assert.equal(text.trace.attributes.translationMode, "text");
+      assert.equal(text.trace.attributes.contextTextPages, 2);
+      assert.ok(text.blocks.every((b) => b.sentences.every((s) => s.sourceRects.length)));
+      assert.deepEqual(text.blocks.map((b) => b.sourceRect), textPage.blocks.map((b) => b.sourceRect));
+      assert.equal(records.at(-1).content.length, 1);
+      assert.equal((records.at(-1).input.reasoning?.effort || records.at(-1).input.reasoning_effort), "high");
+      if (format === "openai") assert.deepEqual(Object.keys(records.at(-1).input.text.format.schema.properties), ["translations"]);
+      const calls = records.length;
+      const cached = await readTestPage(book, 2);
+      assert.equal((await cached.json()).trace.attributes.cacheHit, true);
+      assert.equal(records.length, calls);
+
+      // Missing IDs cause one full-image retry; usage includes both attempts.
+      invalidText = true;
+      const fallback = await translate();
+      assert.equal(records.length, calls + 2);
+      assert.equal(fallback.trace.attributes.optimizationFallback, true);
+      assert.equal(fallback.trace.attributes.providerAttempts, 2);
+      assert.equal(fallback.trace.attributes.inputTokens, 200);
+      assert.equal(fallback.trace.attributes.outputTokens, 100);
+      assert.equal(records.at(-1).content.filter((p) => p.image_url || p.type === "input_image").length, 3);
+      assert.equal(fallback.blocks[0].text, "完整译文。");
+      invalidText = false;
+
+      // Complex current pages retain vision, but reliable adjacent prose is text.
+      await cacheAnalysis(book, 2, source, false);
+      const visual = await translate();
+      assert.equal(visual.trace.attributes.translationMode, "vision");
+      assert.equal(visual.trace.attributes.localSentenceRects, true);
+      assert.equal(records.at(-1).content.filter((p) => p.image_url || p.type === "input_image").length, 1);
+      assert.ok(visual.blocks[0].sentences[0].sourceRects.length);
+      if (format === "openai") {
+        const schema = records.at(-1).input.text.format.schema.properties.blocks.items;
+        assert.ok(!schema.required.includes("text"));
+        assert.ok(!schema.properties.sentences.items.required.includes("sourceRects"));
+        const revisionSchema = records.at(-1).input.text.format.schema.properties.previousPageRevision.anyOf[1].properties.blocks.items;
+        assert.ok(revisionSchema.properties.sentences.items.required.includes("sourceRects"));
+        assert.ok(!revisionSchema.required.includes("text"));
+      }
+      const revision = await translate({ previousTranslationTail: "An unfinished De-" });
+      assert.equal(revision.trace.attributes.contextTextPages, 1);
+      assert.equal(records.at(-1).content.filter((p) => p.image_url || p.type === "input_image").length, 2);
+
+      // Only high-confidence, cached OCR with complete boundary paragraphs crops.
+      const top = { ...structuredClone(source), method: "ocr", confidence: 99, retainedWordRatio: 1 };
+      const bottom = structuredClone(top); bottom.words.forEach((w) => { w.rect.y += .55; });
+      await cacheAnalysis(book, 1, bottom, false); await cacheAnalysis(book, 3, top, false);
+      const crop = await translate();
+      assert.equal(crop.trace.attributes.contextCropPages, 2);
+      assert.ok(records.at(-1).content.some((p) => p.text?.includes("bottom half only")));
+      assert.ok(records.at(-1).content.some((p) => p.text?.includes("top half only")));
+      const log = await readFile(rendererLogPath, "utf8");
+      assert.match(log, /-y 1100 -W 1650 -H 1100/);
+      top.confidence = 50; await cacheAnalysis(book, 3, top, false);
+      assert.equal((await translate()).trace.attributes.contextCropPages, 1);
+    }
+  } finally { await new Promise((resolve) => provider.close(resolve)); }
+});
+
+test("persists literal code blocks without stripping indentation or closing delimiters", async () => {
+  const key = "layout-v4::code-fixture::1::server-v2::Simplified Chinese";
+  const text = 'example = Agent(\n    name="<sample>",\n)\n';
+  const blocks = [{ kind: "code", text, marker: "python", sentences: [{ text, sourceText: text, sourceRects: [] }] }];
+  const response = await fetch(`${baseUrl}/api/translations`, {
+    method: "PUT", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key, documentId: "code-fixture", page: 1, translation: { page: 1, blocks } }),
+  });
+  assert.equal(response.status, 200);
+  const cached = await (await fetch(`${baseUrl}/api/translations?key=${encodeURIComponent(key)}`)).json();
+  assert.equal(cached.translation.blocks[0].kind, "code");
+  assert.equal(cached.translation.blocks[0].text, text);
+  assert.equal(cached.translation.blocks[0].marker, "python");
+});
+
+test("persists table rows with empty cells without collapsing column positions", async () => {
+  const key = "layout-v4::table-fixture::1::server-v2::Simplified Chinese";
+  const row = (kind, values) => ({ kind, text: values.join(""), sentences: values.map((text) => ({ text, sourceText: text, sourceRects: [] })) });
+  const blocks = [row("table_header", ["Type", "Description", "Examples"]), row("table_row", ["A", "", "B"])];
+  const response = await fetch(`${baseUrl}/api/translations`, { method: "PUT", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key, documentId: "table-fixture", page: 1, translation: { page: 1, blocks } }) });
+  assert.equal(response.status, 200);
+  const cached = await (await fetch(`${baseUrl}/api/translations?key=${encodeURIComponent(key)}`)).json();
+  assert.equal(cached.translation.blocks[0].kind, "table_header");
+  assert.equal(cached.translation.blocks[1].kind, "table_row");
+  assert.deepEqual(cached.translation.blocks[1].sentences.map((cell) => cell.text), ["A", "", "B"]);
 });

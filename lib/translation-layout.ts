@@ -7,7 +7,7 @@ export type TranslationSentence = {
 };
 
 export type LayoutBlock = {
-  kind: "heading" | "paragraph" | "list_item" | "caption" | "spacer" | "page_number" | "image" | "equation";
+  kind: "heading" | "paragraph" | "list_item" | "caption" | "spacer" | "page_number" | "image" | "equation" | "code" | "table_header" | "table_row";
   sourceRect?: SourceRect;
   imageRole?: "body" | "decoration";
   fontSize?: number;
@@ -21,7 +21,7 @@ export type LayoutBlock = {
   size: "xs" | "sm" | "md" | "lg" | "xl";
 };
 
-const blockKinds = ["heading", "paragraph", "list_item", "caption", "spacer", "page_number", "image", "equation"] as const;
+const blockKinds = ["heading", "paragraph", "list_item", "caption", "spacer", "page_number", "image", "equation", "code", "table_header", "table_row"] as const;
 const blockAlignments = ["left", "center", "right", "justify"] as const;
 const blockSpaces = ["none", "xs", "sm", "md", "lg", "xl"] as const;
 const blockSizes = ["xs", "sm", "md", "lg", "xl"] as const;
@@ -39,7 +39,7 @@ export function normalizeSourceRect(value: unknown): SourceRect | undefined {
   return { x, y, width: Math.min(width, 1 - x), height: Math.min(height, 1 - y) };
 }
 
-function normalizeSentences(value: unknown, text: string): TranslationSentence[] | undefined {
+function normalizeSentences(value: unknown, text: string, keepEmpty = false): TranslationSentence[] | undefined {
   if (!Array.isArray(value) || !value.length) return undefined;
   const sentences = value.map((item) => {
     const sentence = item && typeof item === "object" ? item : {};
@@ -50,7 +50,7 @@ function normalizeSentences(value: unknown, text: string): TranslationSentence[]
         ? sentence.sourceRects.map(normalizeSourceRect).filter((rect: SourceRect | undefined): rect is SourceRect => Boolean(rect))
         : [],
     };
-  }).filter((sentence) => sentence.text);
+  }).filter((sentence) => keepEmpty || sentence.text);
   // Never substitute an incomplete or reordered sentence mapping for the translation.
   return sentences.length && sentences.map((sentence) => sentence.text).join("") === text ? sentences : undefined;
 }
@@ -66,7 +66,7 @@ export function normalizeLayoutBlock(value: unknown): LayoutBlock {
   const text = typeof block.text === "string" ? block.text : "";
   const sourceRect = normalizeSourceRect(block.sourceRect);
   const imageRole = block.imageRole === "body" || block.imageRole === "decoration" ? block.imageRole : undefined;
-  const sentences = normalizeSentences(block.sentences, text);
+  const sentences = normalizeSentences(block.sentences, text, rawKind === "table_header" || rawKind === "table_row");
   const fontSize = typeof block.fontSize === "number" && Number.isFinite(block.fontSize) && block.fontSize > 0 && block.fontSize <= 0.25
     ? block.fontSize : undefined;
   return {

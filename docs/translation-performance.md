@@ -187,3 +187,206 @@ per-page retries survive restarts. Each page gets three automatic retries; the
 book pauses at three distinct pages that remain failed after those retries.
 Recovered pages are removed from that count, and isolated exhausted pages are
 skipped so later pages can continue.
+
+## Compact output and conservative source routing (September 12, 2026)
+
+Translation now selects its input and output contract per page. The model,
+reasoning effort, requested-page image quality, persistent translation keys,
+reader rendering, and provider concurrency settings are unchanged.
+
+### Output contract
+
+Visual translation generates translated text only in `sentences[].text`,
+including a single sentence for display equations. The server reconstructs
+`block.text` by exact concatenation before normalization, alignment, storage,
+and delivery. Images, equation numbers, captions, typography, and previous-page
+revision layouts retain their existing representation. Legacy responses with
+`block.text` are still accepted; existing caches and imports need no migration.
+
+When local PDF words or high-confidence cached OCR are available, the current
+page's provider schema omits sentence rectangles. The existing local alignment
+computes them. The schema retains model rectangles when local extraction is
+unavailable, and for previous-page revisions. Cold OCR still overlaps provider
+generation; it is not added to the serial path just to remove coordinates.
+
+### Source analysis and context
+
+Embedded text, including block and line IDs, is cached under
+`renders/<fingerprint>/v2/embedded`. Empty text layers are negatively cached;
+failed extraction is retried on a later request. A bounded Cairo SVG inspection
+checks for painted graphics, images, hidden text, and unknown rendering forms.
+Its result is cached under `v2/textonly`. Analysis failure retains vision.
+These derived files are local, reusable across translation languages, and
+independent of the translated-page cache.
+
+The text route initially admits only ordinary Latin-script prose with reliable
+single-column geometry and consistent typography. Formulas, lists, navigation
+pages, unsupported scripts, uncertain text, mixed graphics, and overlapping
+columns retain visual translation. Merely having a text layer is insufficient.
+Stable sentence IDs map translations back to local source text, source rectangles,
+block geometry, and typography. Missing, duplicated, reordered, or empty units,
+changed page numbers, and malformed text output cause at most one full-context
+visual fallback. Both attempts' reported usage is included in the trace totals;
+invalid text output is never cached as a successful page.
+
+Adjacent verified prose pages contribute complete first/last paragraphs, up to
+two paragraphs and 3,500 characters. A paragraph is never truncated to fit the
+budget. Cached OCR may instead select a full-width half-page image only when
+confidence is at least 95, at least 98% of detected words were retained, simple
+geometry passes, and both boundary paragraphs fit wholly inside that half with
+a margin. Crops retain the original 2,200-pixel full-page scale and JPEG quality.
+Cold or uncertain scans retain full adjacent images; crop failure also retains
+the full image. No extra neighboring OCR jobs are started for this optimization.
+
+An unfinished cached previous translation preserves the full previous image
+and uses the visual route, since the model may need to revise that entire page.
+Without a complete previous image, whole-page revisions are disabled. Complex
+adjacent pages can therefore still supply full images even when the requested
+page uses stable text IDs. Client-supplied image requests retain their visual
+path. All extraction, graphics checks, and rendering have bounded concurrency.
+
+### Verification
+
+`tests/translation-optimization.test.mjs` exercises contract restoration,
+source coverage, sentence highlights, rejected IDs, geometry and content gates,
+complete boundary context, and serialized output size. Native Poppler fixtures
+verify ordinary text, vector diagrams, columns, formulas, hidden text, local
+analysis reuse/corruption recovery, and actual 1,650-by-1,100 boundary JPEGs.
+Native-tool tests skip when Poppler is unavailable.
+
+The HTTP integration suite exercises both provider protocols, exact schemas,
+local coordinate restoration, cached translations, preserved reasoning settings,
+text context, cropped context, full-image fallback, previous-page context, and
+usage accounting across a failed text attempt and its visual retry. Existing
+rendering, equations, captions, cross-page words, OCR overlap, queue sharing,
+archive, and restart tests remain in the full test command.
+
+Trace attributes include `translationMode`, `localSentenceRects`,
+`contextTextPages`, `contextCropPages`, `sourceUnits`, `providerAttempts`,
+`optimizationFallback`, and `textValidationFailed`. `request.encode` records
+actual request bytes and image count. These distinguish saved input/output work
+from queue time or a different provider/model setting.
+
+### Small live comparison
+
+Four paid calls compared the original `89a9020` provider prompt/schema with the
+new pipeline on two pages of the existing technical report. Both sides used
+`deepseek-flash`, `high` reasoning, Simplified Chinese, identical full-page
+render settings, no cached previous translation, and the same local LiteLLM
+endpoint. An isolated book/database copy kept live settings and translations
+untouched. Baseline measurements start after image rendering; optimized times
+include the API's local preparation, alignment and persistence, so these are
+observations rather than a controlled provider-only latency benchmark.
+
+| Page and route | Input tokens, before → after | Output tokens including reasoning, before → after | Observed seconds, before → after |
+| --- | ---: | ---: | ---: |
+| 51, short prose / stable IDs | 4,605 → 1,464 | 1,815 → 393 | 8.64 → 3.37 |
+| 5, figure and inline math / vision | 5,614 → 5,447 | 19,700 → 15,521 | 72.19 → 60.76 |
+
+Page 51 retained a full previous-page context image because that neighboring
+page was complex. Its requested-page image was removed (two images became
+one). Page 5 retained all three images; output reduction came from the compact
+contract and different model reasoning, not reduced image detail. Reasoning
+counts were 1,168 → 277 and 15,474 → 13,431 respectively. Each optimized request
+completed in one provider attempt.
+
+Manual source/translation comparison found no missing sentences in these two
+samples. Page 51 retained all four source units including its page number;
+page 5 retained its figure, caption, all 22 sentence mappings, numeric claims,
+and cross-page continuation. All 26 sentence mappings grounded successfully
+in the local source on both sides. The four inline LaTeX expressions on page 5
+were identical between outputs and rendered with KaTeX. Translated wording and
+some spacing/crop estimates varied; this is not a claim of identical pixels or
+unchanged quality on every page.
+
+The live runs used a development build; final cache-validation and independent
+previous-revision schema guards were subsequently verified by tests.
+
+These two single-run samples do not establish a general percentage saving.
+Page 51 is unusually short, generation is stochastic, and input cache state
+can differ. Token counts are provider-reported usage, not measured currency
+cost; cached-input pricing and model rates must be accounted for separately.
+No extra live calls were made solely to obtain a more favorable result.
+
+Final validation: `npm run lint` passed without warnings. `npm test` completed
+the production build and 134 tests: 130 passed, zero failed, and four existing
+GUI tests skipped in the headless environment. Native Poppler tests ran and
+passed. The running Docker deployment was not replaced by this development run.
+
+## Source presentation corrections
+
+Image crops now use the locally aligned bounds of separately translated body text,
+headings, captions and page numbers to exclude neighboring prose on all four sides.
+The same bounds limit whitespace expansion so it cannot bring excluded text back.
+Ambiguous overlaps through the central artwork retain the estimated crop. Raw OCR
+words inside diagrams and code images are not treated as exclusion regions.
+
+PDF typography uses font sizes from optional local `pdftohtml` XML metadata when
+page dimensions, word positions and text agree. This avoids treating an inflated
+font bounding box as the font's em size. Without usable font metadata, estimates
+aggregate letter-weighted word heights by line; narrow letters and punctuation no
+longer reduce the estimated size. Titles, captions and body text retain their own
+source measurements, and equations retain their existing typography.
+
+Embedded PDF analysis uses cache version 3 and enriched word layouts use version 2.
+Existing OCR caches remain reusable. Translation cache keys and content are
+unchanged; cached translations receive these corrections when their source layout
+loads in the reader. No additional model requests are needed.
+
+Programming listings now have a `code` block kind. The compact provider contract
+returns code once, verbatim in a sentence, with the language label in `marker`.
+The reader renders literal text in a selectable `<pre><code>` element, preserving
+indentation and line breaks and allowing horizontal scrolling without cropping.
+Code content is never executed or interpreted as HTML or translated prose.
+
+For existing image blocks, local PDF word geometry can recover explicitly labelled,
+monospaced listings, including lines just outside a clipped model estimate. It
+removes only a verified consecutive line-number gutter and restores spacing from
+character widths. Unlabelled diagrams, ambiguous extraction and OCR retain the
+image fallback. Source line wrapping is preserved, including wraps inside strings;
+this is a transcription of the printed listing, not an automatic syntax repair.
+Existing translation caches remain valid and need no provider calls for recovery.
+
+Readable text tables use consecutive `table_header` / `table_row` blocks, with one
+sentence entry per cell. This reuses the compact output contract: translated cell
+text is generated once, and empty cells retain their column positions. The reader
+groups rows into a semantic HTML table with column headers, source-informed column
+widths, wrapped cell contents and horizontal overflow for narrow viewports.
+Complex merged-cell and graphical tables retain the image fallback.
+
+Legacy paragraphs are upgraded locally only when a horizontally separated header
+and at least two data rows match every cell's source text within its own PDF column.
+Ambiguous or merged sentence mappings remain unchanged rather than guessing how to
+split translated text. Cached content is preserved, and this recovery makes no
+provider requests. Table cell highlights use column-specific matches, avoiding
+partial matches such as `Action` inside `transaction` in a neighboring cell.
+
+Code blocks now use locally measured font sizes for model-produced listings as
+well as recovered listings. Display size is bounded to 12–16 px at the default
+reader scale (13 px without a source measurement), then multiplied once by the
+user's translation font scale. Both `pre` and `code` explicitly inherit this size.
+
+Each code block has a localized copy button with success/failure feedback. Copying
+uses the literal code string, including indentation and final newlines. The secure
+Clipboard API is preferred; a temporary selected textarea provides a fallback for
+LAN HTTP readers and restores focus/selection afterward. No code is executed and
+no model requests are involved.
+
+Explicit table rows now align independently of legacy table detection. Text anchors
+recover source columns even when model row coordinates are inaccurate, including
+single-row and headerless tables. Matching respects whole-word boundaries, uses
+reading order for repeated values, and clears ungrounded rectangles. Reliable OCR
+word matches can also supply cell highlights without upgrading arbitrary OCR prose
+to a table. No additional provider request is required.
+
+Each mapped table cell is a keyboard focus target and highlights its source lines
+when hovered, including cell padding. Leaving or blurring the cell clears the
+source overlay. Nested text hover handlers are suppressed inside table cells, and
+cells whose typewriter content has not yet appeared remain inactive.
+
+Image canvases now highlight their source region on hover or keyboard focus. The
+mapping uses the final pixel crop normalized to page coordinates, including local
+edge recovery and caption/body exclusions. Active highlights update when the crop
+changes and clear when the image is left, blurred, unloaded or unmounted. Caption
+interaction remains independent. This applies to existing cached image blocks
+without changing translation content or making provider requests.

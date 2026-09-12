@@ -4,8 +4,10 @@ export type TranslationDisplayBlock = {
   block: LayoutBlock;
   index: number;
   caption?: LayoutBlock;
+  tableRows?: LayoutBlock[];
   captionRect?: SourceRect;
   captionPosition?: "top" | "bottom";
+  surroundingTextRects?: SourceRect[];
   spaceBefore: LayoutBlock["spaceBefore"];
 };
 
@@ -42,6 +44,14 @@ export function captionSourceRect(block: LayoutBlock): SourceRect | undefined {
 
 // Group at display time so cached translations retain their text and source mappings.
 export function groupTranslationMedia(blocks: LayoutBlock[]): TranslationDisplayBlock[] {
+  // Only locally grounded, separately translated text can constrain artwork.
+  // Raw OCR words may be labels inside a diagram and must remain in the image.
+  const surroundingTextRects = blocks.flatMap((block) => {
+    if (!["paragraph", "heading", "caption", "list_item", "page_number"].includes(block.kind)
+      || !block.sentences?.some((sentence) => sentence.sourceRects.length)) return [];
+    const rect = captionSourceRect(block);
+    return rect ? [rect] : [];
+  });
   const candidates: { image: number; caption: number; position: "top" | "bottom"; score: number }[] = [];
   blocks.forEach((caption, index) => {
     if (caption.kind !== "caption" || !caption.text.trim()) return;
@@ -75,13 +85,24 @@ export function groupTranslationMedia(blocks: LayoutBlock[]): TranslationDisplay
       block: blocks[candidate.image], index: candidate.image,
       caption: blocks[candidate.caption], captionPosition: candidate.position,
       captionRect: captionSourceRect(blocks[candidate.caption]),
+      surroundingTextRects,
       spaceBefore: blocks[first].spaceBefore,
     });
     for (let index = first; index <= last; index++) consumed.add(index);
   }
-  return blocks.flatMap((block, index) => {
+  const media = blocks.flatMap<TranslationDisplayBlock>((block, index) => {
     const group = grouped.get(index);
     if (group) return [group];
-    return consumed.has(index) ? [] : [{ block, index, spaceBefore: block.spaceBefore }];
+    return consumed.has(index) ? [] : [{ block, index, spaceBefore: block.spaceBefore,
+      ...(block.kind === "image" && { surroundingTextRects }) }];
   });
+  const display: TranslationDisplayBlock[] = [];
+  for (const item of media) {
+    if (item.block.kind === "table_header" || item.block.kind === "table_row") {
+      const previous = display.at(-1);
+      if (item.block.kind === "table_row" && previous?.tableRows) previous.tableRows.push(item.block);
+      else display.push({ ...item, tableRows: [item.block] });
+    } else display.push(item);
+  }
+  return display;
 }
