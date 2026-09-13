@@ -165,8 +165,11 @@ async function run() {
     console.error(error);
     exitCode = 1;
   } finally {
+    console.log('Translation transfer: destroying window');
     window?.destroy();
+    console.log('Translation transfer: stopping backend');
     await backend?.stop();
+    console.log('Translation transfer: exiting Electron');
     app.exit(exitCode);
   }
 }
