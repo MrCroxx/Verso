@@ -38,6 +38,9 @@ jobs:
       - name: Repeat real installer mount and detach
         run: |
           unzip -j .diagnose/Verso-0.1.0-x64.zip 'Verso.app/Contents/Resources/*.icns' -d .diagnose
+          mkdir .diagnose/staging
+          ditto -x -k .diagnose/Verso-0.1.0-x64.zip .diagnose/staging
+          ln -s /Applications .diagnose/staging/Applications
           node --input-type=module <<'NODE'
           import { execFileSync } from 'node:child_process';
           import { readdir, rm } from 'node:fs/promises';
@@ -45,14 +48,11 @@ jobs:
           import { createMacosDmg } from './scripts/create-macos-dmg.mjs';
           const root = path.resolve('.diagnose');
           const icon = path.join(root, (await readdir(root)).find(name => name.endsWith('.icns')));
-          for (let attempt = 1; attempt <= 10; attempt++) {
-            console.log(`DMG lifecycle attempt ${attempt}/10`);
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            console.log(`Fresh DMG lifecycle attempt ${attempt}/3`);
             const destination = path.join(root, 'repacked.dmg');
-            await createMacosDmg({ staging: root, destination, icon }, {
+            await createMacosDmg({ staging: path.join(root, 'staging'), destination, icon }, {
               run(tool, args, options = {}) {
-                if (tool === '/usr/bin/hdiutil' && args[0] === 'create') {
-                  args = ['convert', path.join(root, 'Verso-0.1.0-x64.dmg'), '-format', 'UDRW', '-o', args.at(-1)];
-                }
                 return execFileSync(tool, args, { stdio: 'inherit', ...options });
               },
             });
