@@ -6,6 +6,8 @@ import { TranslationTable } from "./translation-table";
 import { useQueueFeedback } from "./queue-feedback";
 import { isTranslationActive, type BookTranslationJob } from "../lib/translation-queue";
 import { readTranslationResponse, type TranslationProgress } from "../lib/translation-progress";
+import type { TranslationUsage } from "../lib/translation-usage";
+import { TranslationUsageSummary } from "./translation-usage-summary";
 import { recordClientTiming, recordTranslationTrace, type TranslationTrace } from "../lib/translation-trace";
 import {
   BookOpen,
@@ -114,6 +116,7 @@ type LocalBook = {
 type TranslationBlock = LayoutBlock;
 
 type Translation = {
+  usage?: TranslationUsage;
   page: number;
   markdown: string;
   blocks?: TranslationBlock[];
@@ -126,6 +129,7 @@ type Translation = {
 };
 
 type TranslationResponse = {
+  usage?: TranslationUsage;
   serverManaged?: boolean;
   cacheVersion?: number;
   cachedAt?: number;
@@ -940,6 +944,9 @@ function PageSpread({
           <div className="page-label">{messages.translatedPage(page)}</div>
           <div className="translation-heading-actions">
             {loading && progress && <TranslationLiveProgress progress={progress} messages={messages} />}
+            {!loading && translation?.usage && (
+              <TranslationUsageSummary usage={translation.usage} messages={messages} />
+            )}
             {(translation || translating) && (
               <button
                 className="icon-button subtle"
@@ -2253,6 +2260,7 @@ export default function Home() {
         blocks: payload.blocks,
         isBlank: payload.isBlank,
         sourceSummary: payload.sourceSummary,
+        usage: payload.usage,
         cacheVersion: payload.cacheVersion ?? requestVersion,
         cachedAt: payload.cachedAt ?? Date.now(),
       });

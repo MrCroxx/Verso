@@ -1,3 +1,5 @@
+import { normalizeTranslationUsage } from "./translation-usage.ts";
+
 export type SourceRect = { x: number; y: number; width: number; height: number };
 
 export type TranslationSentence = {
@@ -95,6 +97,7 @@ export function normalizeTranslationPayload(value: unknown) {
   const inferredBlank = !hasLayoutContent(blocks);
   return {
     ...payload,
+    ...(payload.usage !== undefined && { usage: normalizeTranslationUsage(payload.usage) }),
     blocks,
     isBlank: blocks.length ? inferredBlank : typeof payload.isBlank === "boolean" ? payload.isBlank : inferredBlank,
   };

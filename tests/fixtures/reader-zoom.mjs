@@ -4,6 +4,7 @@ import path from 'node:path';
 import { writeFile } from 'node:fs/promises';
 import { launchBackend } from '../../desktop/backend.mjs';
 import { APP_URL, createProtocolHandler } from '../../desktop/protocol.mjs';
+import { translationCacheKey } from '../../lib/translation-cache.ts';
 
 app.setPath('userData', path.join(process.env.VERSO_TEST_DIRECTORY, 'profile'));
 let backend;
@@ -52,14 +53,50 @@ async function run() {
       { 'Content-Type': 'application/octet-stream', 'x-object-key': upload.objectKey });
     await request(`/api/books/uploads/${upload.uploadId}/complete`, 'POST',
       JSON.stringify({ ...metadata, objectKey: upload.objectKey, parts: [part] }));
+    for (const page of [1, 10]) await request('/api/translations', 'PUT', JSON.stringify({
+      key: translationCacheKey(metadata.fingerprint, page, 'Simplified Chinese'), documentId: metadata.fingerprint, page,
+      translation: { page, blocks: [{ kind: 'paragraph', text: 'Usage display fixture.' }], cachedAt: Date.now(),
+        usage: { inputTokens: 12000, outputTokens: 3000, totalTokens: 15000, cachedInputTokens: 9000, outputSeconds: 30,
+          cost: { amount: 0.0345, currency: 'USD' } } },
+    }));
     protocol.handle('https', createProtocolHandler({ ...ready,
       getCookies: url => session.defaultSession.cookies.get({ url }) }));
-    window = new BrowserWindow({ show: false, width: 1400, height: 900,
+    // Native pointer events require a visible window for the usage tooltip checks.
+    window = new BrowserWindow({ show: true, width: 1400, height: 900,
       webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, backgroundThrottling: false } });
     const js = code => window.webContents.executeJavaScript(code);
     const act = code => js(`(async () => { ${code} })()`);
     await window.loadURL(`${APP_URL}?book=${metadata.fingerprint}`);
+    window.focus();
     await waitFor(() => js('document.querySelectorAll(".page-spread").length === 80 && !!document.querySelector(".reader-zoom")'));
+    await waitFor(() => js(`document.querySelector('[data-page="1"] .translation-usage')?.textContent.includes('0.0345')`));
+    const usage = await js(`document.querySelector('[data-page="1"] .translation-usage').textContent`);
+    assert.match(usage, /In12,000/);
+    assert.match(usage, /Out3,000/);
+    assert.match(usage, /TPS100.0/);
+    assert.match(usage, /75.0%/);
+    assert.match(usage, /USD\s0.0345/);
+    assert.equal(await js(`!!document.querySelector('[data-page="2"] .translation-usage')`), false);
+    const usageHeadingHeight = await js(`document.querySelector('[data-page="1"] .translation-heading').offsetHeight`);
+    assert.equal(await js(`document.querySelector('[data-page="1"] .translation-usage-tooltip').hidden`), true);
+    assert.equal(await js(`!!document.querySelector('[data-page="1"] .translation-usage button .lucide-info')`), true);
+    const infoPosition = await js(`(() => {
+      const info = document.querySelector('[data-page="1"] .translation-usage button').getBoundingClientRect();
+      const refresh = document.querySelector('[data-page="1"] .translation-heading-actions > button').getBoundingClientRect();
+      return { x: Math.round(info.x + info.width / 2), y: Math.round(info.y + info.height / 2), beforeRefresh: info.right <= refresh.left };
+    })()`);
+    assert.equal(infoPosition.beforeRefresh, true);
+    window.webContents.sendInputEvent({ type: 'mouseMove', x: infoPosition.x, y: infoPosition.y });
+    await waitFor(() => js(`!document.querySelector('[data-page="1"] .translation-usage-tooltip').hidden`));
+    assert.equal(await js(`document.querySelector('[data-page="1"] .translation-heading').offsetHeight`), usageHeadingHeight,
+      'Showing usage details must not change the header height');
+    window.webContents.sendInputEvent({ type: 'mouseMove', x: 10, y: 10 });
+    await waitFor(() => js(`document.querySelector('[data-page="1"] .translation-usage-tooltip').hidden`));
+    await js(`document.querySelector('[data-page="1"] .translation-usage button').focus()`);
+    await waitFor(() => js(`!document.querySelector('[data-page="1"] .translation-usage-tooltip').hidden`));
+    await js(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+    await waitFor(() => js(`document.querySelector('[data-page="1"] .translation-usage-tooltip').hidden`));
+    await js(`document.activeElement.blur()`);
     await js(`new Promise(resolve => setTimeout(resolve, 800))`);
     await act(`
       window.nextFrames = async (count = 3) => { for (let i = 0; i < count; i++) await new Promise(requestAnimationFrame); };
@@ -232,15 +269,49 @@ async function run() {
       return page.querySelector('.source-page').getBoundingClientRect().width / page.getBoundingClientRect().width;
     })()`);
     assert.ok(Math.abs(split - 0.55) < 0.01, 'Column resizing must change the rendered source width');
+    assert.equal(await js(`(() => {
+      const heading = document.querySelector('[data-page="1"] .translation-heading').getBoundingClientRect();
+      return [...document.querySelectorAll('[data-page="1"] .translation-heading-actions button')].every(span => {
+        const rect = span.getBoundingClientRect();
+        return rect.left >= heading.left - 1 && rect.right <= heading.right + 1 && rect.bottom <= heading.bottom + 1;
+      });
+    })()`), true, 'Usage and refresh buttons must fit within the resized page header');
     await act(`document.querySelector('.reader-divider').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await nextFrames();`);
     assert.equal(await js(`document.querySelector('.reader-divider').getAttribute('aria-valuenow')`), '50');
     await window.webContents.reload();
     await waitFor(() => js(`document.querySelector('.reader-viewport')?.dataset.translationFont === 'sans'
       && getComputedStyle(document.querySelector('.spreads')).getPropertyValue('--translation-font-scale').trim() === '1.5'`),
     'Font preferences must persist across a desktop reload');
+    await window.loadURL(`${APP_URL}/settings`);
+    await waitFor(() => js(`!!document.querySelector('#pricing-inputPerMillion')`));
+    for (const [id, value] of [['pricing-inputPerMillion', '2.5'], ['pricing-outputPerMillion', '8'], ['pricing-cachedInputPerMillion', '0.5']]) {
+      await js(`(() => {
+        const input = document.getElementById(${JSON.stringify(id)});
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(value)});
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      })()`);
+    }
+    await waitFor(async () => (await request('/api/settings/ai-provider', 'GET')).pricing?.cachedInputPerMillion === 0.5);
+    assert.deepEqual((await request('/api/settings/ai-provider', 'GET')).pricing,
+      { currency: 'USD', inputPerMillion: 2.5, outputPerMillion: 8, cachedInputPerMillion: 0.5 });
+    for (const [id, value] of [['pricing-currency', 'CNY'], ['pricing-schedule', 'deepseek-peak']]) {
+      await js(`(() => {
+        const select = document.getElementById(${JSON.stringify(id)});
+        select.value = ${JSON.stringify(value)};
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+      })()`);
+    }
+    await waitFor(async () => (await request('/api/settings/ai-provider', 'GET')).pricing?.schedule === 'deepseek-peak');
+    assert.equal((await request('/api/settings/ai-provider', 'GET')).pricing.currency, 'CNY');
+    await window.loadURL(`${APP_URL}/settings`);
+    await waitFor(() => js(`document.querySelector('#pricing-inputPerMillion')?.value === '2.5'`));
+    assert.equal(await js(`document.querySelector('#pricing-schedule').value`), 'deepseek-peak');
+    assert.equal(await js(`document.querySelector('#pricing-currency').value`), 'CNY');
+    await window.loadURL(`${APP_URL}?book=${metadata.fingerprint}`);
+    await waitFor(() => js(`/USD\\s0.0345/.test(document.querySelector('[data-page="1"] .translation-usage')?.textContent ?? '')`));
     console.log(JSON.stringify({ pages: 80, burstEvents: 40, scaleWrites: burst.writes,
       pointerDrift: { x: continuous.x - before.anchor.x, y: continuous.y - before.anchor.y },
-      intrinsicLayoutUnchanged: true, bounds: '50%-300%', controlsAndResize: 'passed', edges: edgeResults }));
+      intrinsicLayoutUnchanged: true, bounds: '50%-300%', controlsAndResize: 'passed', usageAndPricing: 'passed', edges: edgeResults }));
   } catch (error) {
     console.error(error);
     exitCode = 1;

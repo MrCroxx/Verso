@@ -265,7 +265,8 @@ button { color: inherit; }
 .page-label { font-family: var(--font-geist-mono), monospace; color: #98a09b; font-size: 9px; text-transform: uppercase; letter-spacing: .1em; }
 .source-page > .page-label { position: absolute; left: 17px; top: 16px; }
 .translated-page { padding: 0 clamp(18px, 6%, 44px) 30px; overflow-anchor: none; container: translation / inline-size; }
-.translation-heading { height: 49px; max-width: 560px; margin-inline: auto; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line); }
+.translation-heading { min-height: 49px; padding-block: 6px; max-width: 560px; margin-inline: auto; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line); }
+.translation-heading > .page-label { flex: none; }
 .translation-copy { max-width: 560px; margin-inline: auto; padding-top: 24px; font-family: "Songti SC", "Noto Serif CJK SC", Georgia, serif; font-size: calc(17px * var(--translation-font-scale, 1)); line-height: 2.05; color: #26312b; overflow-wrap: anywhere; }
 .reader-viewport[data-translation-font="sans"] .translation-copy { font-family: var(--font-geist-sans), "PingFang SC", "Noto Sans CJK SC", sans-serif; }
 .translation-copy > p { margin: 0 0 1em; }
@@ -688,6 +689,13 @@ body, .topbar, .sidebar, .reader-toolbar, .page-spread, .page-surface, .settings
 .translation-live { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 4px 10px; min-width: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .translation-live-phase { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .translation-live-counts { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.translation-usage { position: relative; flex: none; }
+.translation-usage-tooltip { position: absolute; z-index: 20; top: 100%; right: 0; width: max-content; min-width: 210px; max-width: min(280px, 80vw); padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); color: var(--ink); box-shadow: 0 8px 24px rgba(0,0,0,.14); font-size: 11px; line-height: 1.6; }
+.translation-usage-tooltip > strong { display: block; margin-bottom: 8px; font-size: 11px; font-weight: 600; }
+.translation-usage-tooltip dl { margin: 0; }
+.translation-usage-tooltip dl > div { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 20px; margin-top: 4px; }
+.translation-usage-tooltip dt { color: var(--muted); }
+.translation-usage-tooltip dd { margin: 0; text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .translation-heading-actions > button { flex: none; }
 
 .queue-page { width: min(920px, 100%); }
