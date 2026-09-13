@@ -17,6 +17,49 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  diagnose-macos-dmg:
+    name: Diagnose Intel DMG lifecycle
+    runs-on: macos-15-intel
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: Verso-macOS-x64
+          run-id: 34763724624
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: .diagnose
+      - name: Repeat real installer mount and detach
+        run: |
+          unzip -j .diagnose/Verso-0.1.0-x64.zip 'Verso.app/Contents/Resources/*.icns' -d .diagnose
+          node --input-type=module <<'NODE'
+          import { execFileSync } from 'node:child_process';
+          import { readdir, rm } from 'node:fs/promises';
+          import path from 'node:path';
+          import { createMacosDmg } from './scripts/create-macos-dmg.mjs';
+          const root = path.resolve('.diagnose');
+          const icon = path.join(root, (await readdir(root)).find(name => name.endsWith('.icns')));
+          for (let attempt = 1; attempt <= 10; attempt++) {
+            console.log(`DMG lifecycle attempt ${attempt}/10`);
+            const destination = path.join(root, 'repacked.dmg');
+            await createMacosDmg({ staging: root, destination, icon }, {
+              run(tool, args, options = {}) {
+                if (tool === '/usr/bin/hdiutil' && args[0] === 'create') {
+                  args = ['convert', path.join(root, 'Verso-0.1.0-x64.dmg'), '-format', 'UDRW', '-o', args.at(-1)];
+                }
+                return execFileSync(tool, args, { stdio: 'inherit', ...options });
+              },
+            });
+            await rm(destination);
+          }
+          NODE
+
   validate:
     name: Validate (${{ matrix.os }})
     strategy:
