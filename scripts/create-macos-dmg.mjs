@@ -15,31 +15,21 @@ function readPlist(run, args) {
 }
 
 async function detachImage(device, run, wait) {
-  for (let attempt = 0; attempt < 4; attempt++) {
+  // Intel runners can keep a newly created image busy beyond the first few seconds.
+  // Allow 65 seconds of backoff, then make one final forced detach attempt.
+  const attempts = 16;
+  for (let attempt = 0; attempt < attempts; attempt++) {
     try {
-      run('/usr/bin/hdiutil', ['detach', device, ...(attempt === 3 ? ['-force'] : [])]);
+      run('/usr/bin/hdiutil', ['detach', device, ...(attempt === attempts - 1 ? ['-force'] : [])]);
       return;
     } catch (error) {
       // A failed eject may already have unmounted the volume. Track the device, not the mountpoint.
       const { images } = readPlist(run, ['info']);
       if (!images.some(image => image['system-entities'].some(entity => entity['dev-entry'] === device))) return;
-      if (attempt === 3) {
-        console.error('DMG detach failed; collecting device and process diagnostics.');
-        for (const [tool, args] of [
-          ['/usr/bin/hdiutil', ['info']],
-          ['/usr/sbin/diskutil', ['info', device]],
-          ['/usr/bin/sudo', ['/usr/sbin/lsof', '-nP']],
-        ]) {
-          try {
-            const output = run(tool, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10000 });
-            console.error(tool.endsWith('sudo') ? output.split('\n').filter(line => /verso-dmg|disk\d|diskimage|mds|hdiutil/i.test(line)).join('\n') : output);
-          } catch (diagnosticError) {
-            console.error(`Diagnostic command failed: ${diagnosticError.message}`);
-          }
-        }
-        throw error;
-      }
-      await wait(1000 * (attempt + 1));
+      if (error.status !== 16 || attempt === attempts - 1) throw error;
+      const delay = Math.min(1000 * (attempt + 1), 5000);
+      console.error(`DMG ${device} is still busy after detach attempt ${attempt + 1}/${attempts}; retrying in ${delay}ms.`);
+      await wait(delay);
     }
   }
 }
