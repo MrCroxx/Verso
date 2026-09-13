@@ -165,9 +165,8 @@ async function run() {
     console.error(error);
     exitCode = 1;
   } finally {
-    console.log('Translation transfer: destroying window');
-    window?.destroy();
     console.log('Translation transfer: stopping backend');
+    // Keep Electron alive until async cleanup finishes; app.exit closes the windows.
     await backend?.stop();
     console.log('Translation transfer: exiting Electron');
     app.exit(exitCode);

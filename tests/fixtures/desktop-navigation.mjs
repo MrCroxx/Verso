@@ -107,10 +107,10 @@ async function run() {
     console.error(error);
     process.exitCode = 1;
   } finally {
-    window?.destroy();
     for (const response of responses) response.destroy();
     provider.closeAllConnections();
     await new Promise(resolve => provider.close(resolve));
+    // Keep Electron alive until async cleanup finishes; app.exit closes the windows.
     await backend?.stop();
     app.exit(process.exitCode || 0);
   }
