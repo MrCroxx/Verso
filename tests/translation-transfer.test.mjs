@@ -27,6 +27,7 @@ test('translation transfer downloads archives and refreshes imported pages in th
   const child = spawn(electron, ['tests/fixtures/translation-transfer.mjs'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   t.after(() => { if (child.exitCode === null) child.kill('SIGKILL'); });
   let output = '';
+  t.after(() => t.diagnostic(output.trim()));
   child.stdout.on('data', chunk => { output += chunk; });
   child.stderr.on('data', chunk => { output += chunk; });
   const code = await new Promise((resolve, reject) => {
@@ -35,5 +36,4 @@ test('translation transfer downloads archives and refreshes imported pages in th
   });
   assert.equal(code, 0, output);
   assert.match(output, /"translationTransfer":"passed"/, output);
-  t.diagnostic(output.trim());
 });
