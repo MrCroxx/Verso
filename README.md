@@ -1,199 +1,120 @@
 # Verso
 
-Verso is an AI-powered web reader for scanned PDF books. It keeps the original
-page visible beside a layout-aware translation, so you can read across
-languages without losing the typography, illustrations, or structure of the
-source.
+**Read beyond language.**
 
-![Verso reader showing a scanned page and its translation side by side](./docs/images/reader-light.png)
+A bilingual PDF reader for **macOS** and your **self-hosted browser**. Read
+scanned books and technical papers with the original page beside an AI
+translation, keeping illustrations, structure, and source context in view.
+
+[Get started](#get-started) · [Features](#features) · [Development](#development) · [Documentation](#documentation)
+
+![Verso browser showcase with the DeepSeek V4.1 technical report and Chinese translation](docs/images/verso-browser-showcase.png)
+
+*Browser presentation mockup built from an [actual Verso screenshot](docs/images/reader-deepseek-en.png).*
 
 ## Features
 
-- **Side-by-side reading:** compare the source scan and translation while
-  navigating pages from a persistent sidebar with reading progress.
-- **Layout-aware vision translation:** preserve headings, paragraphs, lists,
-  captions, whitespace, and page numbers. Restore illustrations cropped from
-  the source scan in reading order and retain their horizontal placement and
-  relative width, preserving typography as the entire reading view scales.
-- **Sentence alignment:** hover over or keyboard-focus a translated sentence to
-  highlight its original lines on the scan. Match the source sentence against
-  actual PDF word boxes, using local Tesseract OCR for image-only pages. Word
-  indexes are cached in the data volume; existing sentence mappings are corrected
-  when their page is opened. Unmatched text is not highlighted.
-  Existing cached pages remain readable; use the page's retranslate button to
-  add image crops and sentence alignment.
-- **Cross-page context:** translate with a bounded window of consecutive pages,
-  revise unfinished paragraphs, and deterministically remove duplicated text at
-  page boundaries.
-- **Server-managed AI providers:** use the OpenAI Responses API or an
-  OpenAI-compatible endpoint without exposing provider credentials to the
-  browser. Provider settings are stored in server-side SQLite together with
-  the local library metadata.
-- **Local library and caching:** keep uploaded PDFs, page indexes, blank-page
-  results, and translations in the Docker volume or desktop library so books remain available
-  across reading sessions without a cloud storage service.
-- **Whole-book translation queue:** enqueue a book from the library and follow its
-  page progress. Work continues with the browser closed and resumes after a server
-  restart. Reading requests take priority over pending background pages and share
-  in-flight work; existing translations (including blank pages) are reused for the
-  selected target language. Failed jobs can be retried without retranslating saved
-  pages. Discarding a book's translations also removes its queued work.
-- **Automatic contents navigation:** detect translated contents pages, preserve
-  printed page references, and calibrate PDF page offsets automatically or
-  manually.
-- **Translation search:** search locally cached translations, jump directly to a
-  result, and highlight matches without scanning or retranslating the book.
-  Open search with Cmd + F or Ctrl + F in both the browser and desktop app.
-  Additional modifiers are left to the system, including Ctrl + Cmd + F for
-  macOS fullscreen.
-- **Large-book performance:** lazily rasterize requested pages on the server,
-  persist display and vision derivatives in the local volume, and bound both
-  page rendering and background translation work.
-- **Reading view zoom:** fit both pages to the available width while preserving
-  the margins inside each page. Zoom the entire spread with the toolbar, Ctrl/Cmd + mouse wheel, or
-  Ctrl/Cmd + plus/minus; Ctrl/Cmd + 0 restores fit width. The sidebar and toolbar
-  stay at their normal size. Browser-menu zoom remains a browser-level setting.
-- **Reader preferences:** switch the interface between English and Simplified
-  Chinese independently of the translation target, choose a light or dark
-  theme, and configure animated page navigation without altering the source
-  scan.
+- **Read in parallel.** Keep the source scan and translation side by side. Follow
+  a sentence back to its original lines with hover or keyboard focus.
+- **Keep the page's structure.** Preserve headings, paragraphs, lists, captions,
+  figures, and page numbers. Render text tables, copyable code blocks, and
+  KaTeX formulas when they can be extracted reliably.
+- **Find your place.** Navigate pages and detected contents, calibrate printed
+  page numbers, and search saved translations with **Cmd/Ctrl + F**.
+- **Translate a whole book.** Queue books in the background with bounded
+  concurrency, automatic retries, and stop/resume controls. Reading takes
+  priority over pending background work.
+- **Make reading comfortable.** Choose light or dark mode, adjust translation
+  fonts, and zoom the whole spread. Set English or Chinese UI independently
+  of the translation language.
+- **Keep your library.** Store PDFs, page indexes, and translations on your own
+  filesystem. Export and import translation backups for one book or the library.
+- **Choose your AI provider.** Connect the OpenAI Responses API or an
+  OpenAI-compatible provider. Inspect token usage, estimated costs, and
+  translation timings when available.
 
-## Translation backups
+### Check a sentence against the source
 
-Use **Export library translations** in **Settings → Library** to export every local
-book, or **Export translations** in a book's three-dot reading menu to export that book.
-The versioned JSON file includes translations in every target language, layout
-and source alignment data, contents, and page number settings. It excludes PDF
-files, provider credentials, and translation jobs.
+Hover over a translated sentence to highlight the matching words on the scan.
+Verso uses PDF word positions or local OCR for image-only pages. A bounded
+window of adjacent pages provides context and helps resolve split paragraphs.
 
-Use the corresponding **Import** action to restore a file. Upload the matching
-PDFs first: books are matched by fingerprint, even when their local IDs differ.
-Imports add missing records and retain existing translations and navigation.
-Errors and missing PDFs are reported; successful imports and exports finish
-without an extra message. A book's reading menu accepts only that book's export; Settings → Library
-accepts both single-book and whole-library files. Files are limited to 100 MB.
+![A translated sentence in the DeepSeek report highlights its original English lines](docs/images/sentence-alignment-en.png)
 
-## Background translation queue
+### A library that stays with you
 
-Open **Translation queue** from the library to see jobs in every target language,
-page progress, retry counts, and provider errors. The library cards show concise
-status and a queue link; raw background errors appear only in the queue view.
+Upload PDFs, reopen saved translations, and queue longer books for later.
+Rendering is lazy and translation concurrency is bounded, so a large scanned
+book does not need to be rendered or translated all at once.
 
-The queue has its own **Background concurrency** selector (1–10, default 4),
-saved in local SQLite and shared across books and target languages. It translates
-multiple pages of the same book concurrently and applies changes to existing
-jobs. Lowering the setting lets active pages finish before filling fewer slots.
-Reader concurrency is configured separately in Settings (also 1–10, default 4).
-Both use the shared provider scheduler, which keeps pending reader work first.
-Only a bounded number of pages are materialized; adjacent source images remain
-available as context even if a previous page's translation is still running.
+![Verso library in the English interface](docs/images/library-en.png)
 
-Each page has its own allowance of three automatic retries, after 1, 2, and 4
-seconds (four total attempts). A page that exhausts its retries is skipped so
-other pages can continue. A book pauses only when **three distinct pages** remain
-failed after exhausting their own retries. This tolerates isolated bad pages
-while stopping a persistently failing job. Successful pages do not consume this
-limit; pages recovered through the reader are removed from the failure count.
+<details>
+<summary><strong>Background translation</strong></summary>
 
-If the queue reaches the end with one or two failed pages, it shows **Finished
-with failed pages**, rather than claiming the book is fully translated. Choose
-**Retry translation** to retry unfinished pages with fresh per-page allowances.
-Retry counts, exhausted pages, and pause state survive application restarts in
-local SQLite storage.
+Work continues while the browser is closed, as long as the server is running.
+Saved jobs resume after a restart. Completed pages are reused, and retries
+focus on unfinished pages. Background and reader concurrency are configured
+separately.
 
-Use **Stop translation** in the queue to stop pending work and cancel its active
-provider request. Completed translations are retained. **Resume translation**
-continues unfinished pages and skips pages already translated. Stopping is
-scoped to the selected book and target language; an independent reader request
-that the background worker joined may still finish and save its page.
+![A completed whole-book translation in the background queue](docs/images/translation-queue-en.png)
 
-## Screenshots
+See the [translation guide](docs/translation-guide.md#background-translation-queue)
+for retry limits, cancellation, and recovery.
 
-### Translation configuration
+</details>
 
-Open the dedicated `/settings` page from the library or reader to configure the
-server provider, translation, reading, and interface preferences. Returning to
-the reader restores the book and page. All settings save automatically. Use
-Test connection to check the configured AI endpoint, credentials, and model
-with a short request. Interface language remains independent of the translation
-target. Provider
-credentials, endpoints, models, and reasoning settings are stored in the
-server-side SQLite database. The API key is never returned by the settings API.
+<details>
+<summary><strong>Dark mode and reading preferences</strong></summary>
 
-![Verso translation and reading settings](./docs/images/ai-settings.png)
+The interface and translated page adapt to dark mode while the source scan
+keeps its original appearance. Adjust the translation font, fit the spread to
+width, or zoom with the toolbar and keyboard shortcuts.
 
-### Dark theme
+![Midnight Movies shown in the dark reader](docs/images/reader-dark-en.png)
 
-The reader chrome and translated page adapt to dark mode while the scanned page
-retains its original appearance.
+![Reading preferences, translation backups, and independent interface language](docs/images/reader-settings-en.png)
 
-![Verso reader in dark mode](./docs/images/reader-dark.png)
+</details>
 
-## Technology
+<details>
+<summary><strong>Provider settings and translation costs</strong></summary>
 
-- React 19 and the Next.js App Router.
-- Poppler for server-side, volume-backed page rasterization, with PDF.js as a
-  browser fallback for files that have not finished uploading.
-- SQLite for metadata, navigation indexes, and translation records.
-- The local filesystem for uploaded PDF objects.
-- TypeScript, Tailwind CSS, and Lucide icons.
+Configure your endpoint, API key, model, reasoning effort, and optional token
+prices in Settings. Provider credentials stay in the local backend; the
+settings API returns only a masked key hint. Prices you enter are used for
+estimates when compatible usage data is available.
 
-## Requirements
+![English provider settings with the endpoint and API key redacted](docs/images/provider-settings-en.png)
 
-- Node.js 22.13 or newer.
-- npm.
-- Poppler's `pdftocairo` and `pdftotext` for page rendering and word positions.
-- Tesseract with English, Simplified/Traditional Chinese, and Japanese language
-  data for word positions in image-only PDFs.
-  The Docker image includes these tools. Without Poppler, page display falls
-  back to PDF.js; reliable sentence highlighting requires the local text/OCR
-  tools.
+</details>
 
-## Local Development
+## Get started
 
-```bash
-npm ci
-npm run dev
-```
+### macOS app
 
-On Debian or Ubuntu, install the optional server renderer with
-`apt-get install poppler-utils tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-chi-tra tesseract-ocr-jpn`. The development server listens on
-`0.0.0.0:3000`. Open
-`http://localhost:3000` locally or use the machine hostname from another device
-on the same network.
+Run Verso as a standalone desktop app with its own local library. Node.js,
+Poppler, Tesseract, and OCR language data are bundled; end users do not need
+Docker, Homebrew, or a separate Verso server.
 
-Start Verso, open Settings, and enter the AI provider configuration. Verso does
-not read provider credentials from environment variables. Translation results,
-uploaded books, and page indexes are not stored in browser caches.
+![Verso macOS presentation mockup showing the DeepSeek V4.1 report beside its translation](docs/images/verso-macos-showcase.png)
 
-For a local production deployment, build and start the standalone server:
+*Illustrative macOS window mockup using the same reader; not a captured Mac session.*
 
-```bash
-npm run build
-npm start
-```
+1. Open a successful main-branch run of [CI](https://github.com/MrCroxx/Verso/actions/workflows/ci.yml?query=branch%3Amain).
+2. Download **Verso-macOS-arm64** for Apple Silicon or **Verso-macOS-x64** for Intel.
+3. Extract the artifact, open the DMG, and drag **Verso.app** into Applications.
+4. Open Verso, configure an AI provider in **Settings**, and upload a PDF.
 
-`npm start` binds to `0.0.0.0:3000` and resolves the default `.data` directory
-before the standalone server changes its working directory. Set
-`VERSO_DATA_DIR` to use a different absolute or project-relative data path.
+CI installers are ad-hoc signed and not notarized. See the
+[desktop guide](docs/desktop.md) for installation, signing, and building your
+own installer. These builds are distributed as CI artifacts, not GitHub Releases.
 
-## Docker Deployment
+The desktop library lives in `~/Library/Application Support/Verso/library`.
+Closing the window keeps background work running; quitting the app or system
+sleep stops or pauses processing. Saved queue progress resumes on launch.
 
-Images for `linux/amd64` and `linux/arm64` are published from the `main` branch
-to `ghcr.io/mrcroxx/verso`. Start the latest image with Docker Compose:
-
-```bash
-docker compose up -d
-```
-
-Then open `http://localhost:3000`. The named `verso-data` volume stores
-`verso.sqlite`, uploaded books, and lazily generated page images together with
-page indexes, translations, and AI provider settings. No external database,
-queue, or object-storage service is required. The database contains the
-provider credential, so protect its backups and back up the volume before
-replacing or moving the deployment.
-
-The equivalent Docker command is:
+### Browser app with Docker
 
 ```bash
 docker run -d \
@@ -204,131 +125,81 @@ docker run -d \
   ghcr.io/mrcroxx/verso:latest
 ```
 
-To update an existing Compose deployment:
+Open [localhost:3000](http://localhost:3000), configure your provider in
+**Settings**, and upload a PDF. Images are available for `linux/amd64` and
+`linux/arm64`.
+
+From a checkout of this repository, you can also use the included
+[Compose configuration](compose.yaml):
+
+```bash
+docker compose up -d
+```
+
+To update a Compose deployment:
 
 ```bash
 docker compose pull
 docker compose up -d
 ```
 
-## macOS Desktop App
+The named volume stores the library and SQLite database. Preserve it when
+updating or replacing the container. For access outside a trusted network,
+place authentication and TLS in front of the web app.
 
-Verso can also run as a standalone macOS app with a local library, using the
-same reader and backend as the Docker deployment. The app bundles Node.js,
-Poppler, Tesseract, and OCR language data; it does not require Docker or a remote
-Verso server. Desktop data lives in `~/Library/Application Support/Verso/library`.
+### Your data and your provider
 
-Build an ad-hoc signed installer on a Mac:
+Books, rendered pages, indexes, and saved translations stay in the Docker
+volume or desktop application-support directory. The two installations have
+separate libraries. Translation requests send the required page content and
+context to your configured AI provider; local storage does not make AI
+translation offline. Saved translations can be read without another provider
+request.
+
+Back up the complete data directory to preserve PDFs and configuration. For
+portable translation-only backups, use **Settings → Library** or a book's
+reading menu. These exports exclude PDFs, credentials, and queue jobs; import
+them after adding the matching PDFs. See the [backup guide](docs/translation-guide.md#translation-backups).
+
+## Development
+
+Requires **Node.js 22.13+**, npm, and local PDF/OCR tools. On Debian or Ubuntu:
 
 ```bash
-brew install poppler tesseract tesseract-lang
+sudo apt-get install poppler-utils tesseract-ocr \
+  tesseract-ocr-chi-sim tesseract-ocr-chi-tra tesseract-ocr-jpn
 npm ci
-VERSO_MAC_UNSIGNED=1 npm run desktop:package
+npm run dev
 ```
 
-Installers are written to `dist/desktop`. The **CI** Actions workflow also builds
-separate Apple Silicon and Intel artifacts after Linux and macOS validation
-passes on main pushes, version tags, and manual dispatch. See
-[desktop development and packaging](docs/desktop.md) for startup behavior,
-validation, signing, and notarization.
+The development server binds to `0.0.0.0:3000` for LAN access. Configure AI
+credentials in Settings; they are not read from environment variables.
 
-## Translation traces
+For a local production server:
 
-Open **Settings → View translation traces** (`/traces`). The local waterfall
-refreshes every two seconds and shows foreground and background requests,
-queue waits, image preparation, provider latency, PDF text/OCR extraction,
-alignment, persistence, cache hits, failures, and token usage when the provider
-reports it. Completed traces survive restarts; the latest 200 are retained in
-`translation_traces` in the volume-backed SQLite database. In-flight traces
-are held in memory and disappear on restart. No credentials, prompts, page
-images, translation text, or provider response bodies are recorded.
+```bash
+npm run build
+npm start
+```
 
-Translation uses streaming for both Responses and Chat Completions providers.
-Provider requests allow five minutes for response headers, then five minutes
-without response data. Every nonempty network chunk resets the idle deadline,
-including reasoning, SSE heartbeats, and fragmented events. Active translations
-can run for up to 30 minutes in total; this final limit also stops endless
-reasoning or heartbeat-only streams. Timeout errors distinguish initial waiting,
-idle connections, and the total limit, and traces record `timeoutPhase`.
-These limits apply to both the desktop app and Docker, including providers that
-return ordinary JSON. The short Settings connection test retains its 30-second
-limit.
+Data defaults to `.data`. Set `VERSO_DATA_DIR` to choose another directory.
+The stack is React, Next.js, TypeScript, SQLite, Poppler, Tesseract, and Electron
+for the desktop app.
 
-While a page is translating, the header beside its refresh button shows the
-current phase, received tokens, Unicode characters, and average tokens per
-second (TPS), refreshed at most every 150 ms. Counts include received reasoning
-and output text, including JSON structure. No partial text or reasoning is
-forwarded to the reader. A reader joining an existing background job receives
-its latest counters without a second model request.
-
-Providers usually report token usage only at completion. Until consistent
-usage arrives, tokens are estimated as received UTF-8 bytes divided by four,
-rounded up; this is a rough estimate, not model tokenization. The header tooltip
-explains the estimate without adding a symbol to each counter.
-TPS uses the same token count divided by time since the first nonempty output
-delta, including pauses, and appears after one second of output. Final reported
-usage calibrates tokens and TPS only when internally consistent (for example,
-reasoning tokens must not exceed output tokens). Character counts remain exact
-for received Unicode code points. Providers that omit hidden reasoning cannot
-expose it through these live counters.
-
-Counters stay in memory and are removed when the request finishes or the reader
-switches documents. The complete model output is still validated, aligned, and
-saved before it replaces the page. An interrupted or incomplete stream is an
-error, never a partially saved translation. Providers that return ordinary JSON
-instead of SSE remain readable and are marked `streamed: false` in the trace.
-
-For Chrome debugging:
-
-1. In **Performance**, enable **Capture settings → Show custom tracks**, start
-   recording before requesting a translation, and stop after it completes.
-   The **Verso translation** group contains browser queue/image preparation
-   and server-stage tracks. Server spans are anchored at response receipt to
-   avoid cross-machine clock skew; their network alignment is approximate.
-   See the [Chrome custom-track documentation](https://developer.chrome.com/docs/devtools/performance/extension).
-2. In **Network**, `/api/translate` requests with `Accept: text/event-stream`
-   contain `progress` events followed by a final `result` or `error` event. The
-   final event includes the trace. Clients requesting ordinary JSON also get
-   `Server-Timing` and `X-Verso-Trace-Id` response headers. Streaming responses
-   cannot include final durations in headers sent before generation completes.
-3. For background work or requests completed before recording, use **Export**
-   on `/traces`. Open the Chrome Trace Event JSON in `chrome://tracing` or a
-   [Perfetto-compatible viewer](https://perfetto.dev/docs/getting-started/other-formats).
-   `/api/traces?format=chrome` exports all retained traces; add `&id=TRACE_ID`
-   for one request.
-
-`provider.wait_headers` ends at HTTP response headers. All `provider.first_*`
-spans start at request submission: `first_event` ends at the first parsed SSE
-event, `first_output` at the first nonempty reasoning or text delta,
-`first_reasoning` at the first nonempty reasoning delta, and `first_text` at the
-first nonempty output-text delta. A role-only event is not a token. For reasoning
-models, `first_text` includes thinking time and is not time to first output. `provider.stream`
-measures from headers until the completed output has been received. The first
-text delta can contain JSON structure before any translated words. Old traces
-and JSON-only provider responses may include full generation in header latency.
-Parent spans include child work and parallel spans overlap; adding every
-duration overcounts elapsed time. `queue.shared_wait` means the request joined
-an existing page translation; inspect that page's original request for its
-provider stages.
-
-Protocol references: [OpenAI streaming](https://developers.openai.com/api/docs/guides/streaming-responses)
-and [DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/).
-
-See [the performance investigation](docs/translation-performance.md) for
-measurements, changes, and their practical limits.
-
-## Validation
+Before contributing:
 
 ```bash
 npm run lint
 npm test
 ```
 
-`npm test` creates a production build and runs the rendering, translation
-normalization, blank-page caching, cross-page deduplication, and concurrency
-tests.
+`npm test` builds the production app and runs the application test suite.
+See [AGENTS.md](AGENTS.md) for repository conventions.
 
-## Repository Conventions
+## Documentation
 
-Repository-wide contribution and language rules are documented in
-[`AGENTS.md`](./AGENTS.md).
+- [Translation guide](docs/translation-guide.md) — providers, cost estimates, backups, and background jobs.
+- [Desktop development and packaging](docs/desktop.md) — native tooling, installation, signing, and validation.
+- [Translation traces](docs/translation-traces.md) — timings, streaming counters, timeouts, and diagnostic exports.
+- [Performance investigation](docs/translation-performance.md) — measurements and implementation tradeoffs.
+- [Showcase image sources](docs/images/showcase-prompts.md) — screenshot provenance and promotional-image prompts.
