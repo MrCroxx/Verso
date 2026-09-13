@@ -5,6 +5,7 @@ import { useState } from "react";
 import { ArrowLeft, HardDrive, Sparkles } from "lucide-react";
 import clsx from "clsx";
 import { DEFAULT_AI_PROVIDER_SETTINGS, type AiProviderSettingsUpdate, type ReasoningEffort } from "../../lib/ai-provider-settings";
+import { PRICING_CURRENCIES, type TranslationPricing } from "../../lib/translation-pricing";
 import type { AppSettings, TranslationService } from "../../lib/app-settings";
 import { UI_MESSAGES, targetLanguageLabel, type UiMessages } from "../../lib/ui-messages";
 import { useAppSettings } from "../app-settings";
@@ -141,6 +142,8 @@ function ProviderForm({ translationService, messages }: {
   translationService: TranslationService;
   messages: UiMessages;
 }) {
+  const { locale } = useUiLocale();
+  const currencyNames = new Intl.DisplayNames(locale, { type: "currency" });
   const { providerAutosave } = useAppSettings();
   const { draft, status, update: updateDraft, flush } = providerAutosave;
   const values: AiProviderSettingsUpdate = draft || {
@@ -149,6 +152,7 @@ function ProviderForm({ translationService, messages }: {
     apiKey: "",
     model: translationService.model,
     reasoningEffort: translationService.reasoningEffort,
+    pricing: translationService.pricing,
   };
   const { provider, endpoint, apiKey, model, reasoningEffort } = values;
   const [testing, setTesting] = useState(false);
@@ -157,7 +161,14 @@ function ProviderForm({ translationService, messages }: {
 
   function update(next: Partial<AiProviderSettingsUpdate>) {
     setTestMessage("");
-    updateDraft({ ...values, ...next });
+    const modelChanged = (next.model !== undefined && next.model !== values.model)
+      || (next.endpoint !== undefined && next.endpoint !== values.endpoint)
+      || (next.provider !== undefined && next.provider !== values.provider);
+    updateDraft({ ...values, ...(modelChanged && { pricing: null }), ...next });
+  }
+
+  function updatePricing(next: Partial<TranslationPricing>) {
+    update({ pricing: { currency: "USD", ...values.pricing, ...next } });
   }
 
   async function testConnection() {
@@ -259,6 +270,29 @@ function ProviderForm({ translationService, messages }: {
             </select>
           </div>
         </div>
+        <label className="field-label" htmlFor="pricing-currency">{messages.pricingLabel}</label>
+        <p className="field-help">{messages.pricingHelp}</p>
+        <select id="pricing-currency" value={values.pricing?.currency ?? "USD"}
+          onChange={(event) => updatePricing({ currency: event.target.value as TranslationPricing["currency"] })}>
+          {PRICING_CURRENCIES.map((currency) => <option key={currency} value={currency}>{currency} · {currencyNames.of(currency)}</option>)}
+        </select>
+        <label className="field-label" htmlFor="pricing-schedule">{messages.pricingSchedule}</label>
+        <select id="pricing-schedule" value={values.pricing?.schedule ?? "fixed"}
+          onChange={(event) => updatePricing({ schedule: event.target.value === "deepseek-peak" ? "deepseek-peak" : undefined })}>
+          <option value="fixed">{messages.pricingFixed}</option>
+          <option value="deepseek-peak">{messages.pricingDeepseek}</option>
+        </select>
+        {values.pricing?.schedule === "deepseek-peak" && <p className="field-help">{messages.pricingDeepseekHelp}</p>}
+        {([
+          ["inputPerMillion", messages.pricingInput],
+          ["outputPerMillion", messages.pricingOutput],
+          ["cachedInputPerMillion", messages.pricingCachedInput],
+        ] as const).map(([key, label]) => <div key={key}>
+          <label className="field-label" htmlFor={`pricing-${key}`}>{label}</label>
+          <input id={`pricing-${key}`} type="number" min="0" max="1000000000" step="any"
+            value={values.pricing?.[key] ?? ""} placeholder={messages.pricingNotSet}
+            onChange={(event) => updatePricing({ [key]: event.target.value === "" ? undefined : event.target.valueAsNumber })} />
+        </div>)}
         <button
           type="submit"
           className="secondary-button full provider-save-button"

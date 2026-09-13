@@ -36,6 +36,9 @@ export function createTranslationStatistics(now = () => performance.now()) {
       reportedTokens = output as number;
       return true;
     },
+    outputSeconds() {
+      return firstOutputAt === undefined ? undefined : (now() - firstOutputAt) / 1000;
+    },
     snapshot() {
       const elapsed = firstOutputAt === undefined ? 0 : (now() - firstOutputAt) / 1000;
       const tokens = reportedTokens ?? Math.ceil(bytes / 4);

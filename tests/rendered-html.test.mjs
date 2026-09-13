@@ -60,6 +60,9 @@ before(async () => {
     document_id TEXT NOT NULL, target_language TEXT NOT NULL, next_page INTEGER NOT NULL DEFAULT 1,
     concurrency INTEGER NOT NULL DEFAULT 4, status TEXT NOT NULL DEFAULT 'queued', error TEXT,
     updated_at INTEGER NOT NULL, PRIMARY KEY (document_id, target_language))`);
+  legacy.exec(`CREATE TABLE ai_provider_settings (
+    id INTEGER PRIMARY KEY, provider TEXT NOT NULL, endpoint TEXT NOT NULL, api_key TEXT NOT NULL,
+    model TEXT NOT NULL, reasoning_effort TEXT NOT NULL, updated_at INTEGER NOT NULL)`);
   legacy.close();
   const rendererPath = path.join(testDataDirectory, "pdftocairo");
   rendererLogPath = path.join(testDataDirectory, "renderer.log");
@@ -417,6 +420,21 @@ test("stores AI provider settings in SQLite without returning the API key", asyn
 
   const database = await stat(path.join(testDataDirectory, "verso.sqlite"));
   assert.equal(database.mode & 0o777, 0o600);
+});
+
+test("persists optional pricing and rejects invalid rates without changing saved settings", async () => {
+  const pricing = { currency: "EUR", inputPerMillion: 2, outputPerMillion: 8, cachedInputPerMillion: 0.5, schedule: "deepseek-peak" };
+  const settings = { provider: "compatible", endpoint: "http://127.0.0.1:9/v1", model: "priced-model", reasoningEffort: "none", pricing };
+  const save = body => fetch(`${baseUrl}/api/settings/ai-provider`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  assert.equal((await save(settings)).status, 200);
+  assert.deepEqual((await (await fetch(`${baseUrl}/api/settings/ai-provider`)).json()).pricing, pricing);
+  assert.equal((await save({ ...settings, pricing: { ...pricing, inputPerMillion: -1 } })).status, 400);
+  assert.deepEqual((await (await fetch(`${baseUrl}/api/settings/ai-provider`)).json()).pricing, pricing);
+  assert.equal((await save({ ...settings, pricing: undefined })).status, 200);
+  assert.deepEqual((await (await fetch(`${baseUrl}/api/settings/ai-provider`)).json()).pricing, pricing);
+  assert.equal((await save({ ...settings, pricing: null })).status, 200);
+  assert.equal((await (await fetch(`${baseUrl}/api/settings/ai-provider`)).json()).pricing, undefined);
 });
 
 test("connection testing checks the saved model through both provider protocols without exposing credentials", async () => {
@@ -1112,8 +1130,8 @@ test("requests and persists image crops, typography, and sentence positions with
     incoming = JSON.parse(Buffer.concat(chunks).toString());
     response.setHeader("Content-Type", "application/json");
     response.end(JSON.stringify(incoming.input
-      ? { output_text: JSON.stringify(providerResult) }
-      : { choices: [{ message: { content: JSON.stringify(providerResult) } }] }));
+      ? { output_text: JSON.stringify(providerResult), usage: { input_tokens: 120, output_tokens: 30, total_tokens: 150 } }
+      : { choices: [{ message: { content: JSON.stringify(providerResult) } }], usage: { prompt_tokens: 120, completion_tokens: 30, total_tokens: 150 } }));
   });
   await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
   try {
@@ -1134,6 +1152,7 @@ test("requests and persists image crops, typography, and sentence positions with
       assert.match(response.headers.get("server-timing"), /provider.wait_headers/);
       assert.equal(translation.trace.status, "ok");
       assert.equal(translation.trace.attributes.model, "vision-test");
+      assert.deepEqual(translation.usage, { inputTokens: 120, outputTokens: 30, totalTokens: 150 });
       assert.doesNotMatch(JSON.stringify(translation.trace), /test-key|data:image|Source sentence|译文/);
       const traceExport = await (await fetch(`${baseUrl}/api/traces?id=${translation.trace.id}&format=chrome`)).json();
       const lanes = traceExport.traceEvents.filter(event => event.ph === "X").map(event => `${event.pid}:${event.tid}`);
@@ -1144,7 +1163,11 @@ test("requests and persists image crops, typography, and sentence positions with
       assert.deepEqual(translation.blocks[1].sourceRect, imageBlock.sourceRect);
       assert.equal(translation.blocks[1].imageRole, "body");
       assert.deepEqual(translation.previousPageRevision.blocks, translation.blocks);
-      const instruction = (incoming.input || incoming.messages)[0].content[0].text;
+      const messages = incoming.input || incoming.messages;
+      assert.deepEqual(messages.map(message => message.role), ["system", "user"]);
+      const instruction = typeof messages[0].content === "string" ? messages[0].content : messages[0].content[0].text;
+      assert.match(messages[1].content[0].text, /The requested page is 2 of 2/);
+      assert.doesNotMatch(instruction, /Simplified Chinese|The requested page is 2/);
       assert.match(instruction, /one rectangle per line fragment/);
       assert.match(instruction, /"sourceRects"/);
       assert.match(instruction, /"fontSize"/);
@@ -1167,7 +1190,21 @@ test("requests and persists image crops, typography, and sentence positions with
       assert.equal(saved.status, 200);
       const cached = await (await fetch(`${baseUrl}/api/translations?key=${encodeURIComponent(key)}`)).json();
       assert.deepEqual(cached.translation.blocks, translation.blocks);
+      assert.deepEqual(cached.translation.usage, translation.usage);
       assert.equal(searchTranslationPayload(cached.translation, 2, "译文").length, 1);
+      const otherPage = await fetch(`${baseUrl}/api/translate`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targetLanguage: "German", page: 1, totalPages: 3,
+          previousTranslationTail: "CACHE_PREFIX_SENTINEL",
+          images: [{ page: 1, dataUrl: "data:image/png;base64,AA==" }] }),
+      });
+      assert.equal(otherPage.status, 200);
+      assert.equal((await otherPage.json()).previousPageRevision, null);
+      const nextMessages = incoming.input || incoming.messages;
+      assert.deepEqual(nextMessages[0], messages[0], "Vision rules must be identical across pages, languages, and context changes");
+      assert.match(nextMessages[1].content[0].text, /German/);
+      assert.match(nextMessages[1].content[0].text, /CACHE_PREFIX_SENTINEL/);
+      assert.match(nextMessages[1].content[0].text, /Complete previous-page image supplied: no/);
     }
   } finally {
     await new Promise((resolve, reject) => provider.close((error) => error ? reject(error) : resolve()));
@@ -1204,8 +1241,9 @@ test("repairs a cached cross-page word without repeating it or losing page-local
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
     const input = JSON.parse(Buffer.concat(chunks).toString());
-    const content = (input.input || input.messages)[0].content;
-    requests.push(content);
+    const content = (input.input || input.messages).find(message => message.role === "user").content;
+    const system = (input.input || input.messages).find(message => message.role === "system");
+    requests.push({ content, instruction: typeof system.content === "string" ? system.content : system.content[0].text });
     const needsRevision = content[0].text.includes('The cached translation ends with: "编码器和 De-"');
     const result = { page: 2, blocks: currentBlocks, sourceSummary: "", previousPageRevision: needsRevision ? { page: 1, blocks: previousBlocks } : null };
     response.setHeader("Content-Type", "application/json");
@@ -1231,12 +1269,12 @@ test("repairs a cached cross-page word without repeating it or losing page-local
       const response = await readTestPage(book, 2, { targetLanguage: language, contextPages: [1, 2] });
       assert.equal(response.status, 200);
       const result = await response.json();
-      const instruction = requests.at(-1)[0].text;
+      const instruction = requests.at(-1).instruction;
       assert.match(instruction, /belongs in full to the page where it starts/);
       assert.match(instruction, /even when neither page is cached yet/);
       assert.match(instruction, /Preserve genuine compound hyphens/);
       assert.match(instruction, /its cached translation left a split word incomplete/);
-      assert.deepEqual(requests.at(-1).filter((part) => /^Page \d+:$/.test(part.text || "")).map((part) => part.text), ["Page 1:", "Page 2:"]);
+      assert.deepEqual(requests.at(-1).content.filter((part) => /^Page \d+:$/.test(part.text || "")).map((part) => part.text), ["Page 1:", "Page 2:"]);
       assert.equal(result.previousPageRevision.page, 1);
 
       const cached = [];
@@ -1265,7 +1303,7 @@ test("repairs a cached cross-page word without repeating it or losing page-local
       const repeated = await readTestPage(book, 2, { targetLanguage: language, contextPages: [1, 2], force: true });
       assert.equal(repeated.status, 200);
       assert.equal((await repeated.json()).previousPageRevision, null);
-      assert.match(requests.at(-1)[0].text, /The cached translation ends with: "编码器和解码器"/);
+      assert.match(requests.at(-1).content[0].text, /The cached translation ends with: "编码器和解码器"/);
     }
   } finally {
     provider.closeAllConnections();
@@ -1933,7 +1971,7 @@ test("persists whole-book work, shares reader requests, skips cached blank pages
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
     const input = JSON.parse(Buffer.concat(chunks).toString());
-    const page = Number(input.messages[0].content[0].text.match(/The requested page is (\d+)/)[1]);
+    const page = Number(input.messages.find(message => message.role === "user").content[0].text.match(/The requested page is (\d+)/)[1]);
     calls.push(page);
     const finish = () => {
       if (response.writableEnded || response.destroyed) return;
@@ -2173,7 +2211,7 @@ test("runs ten background pages, applies independent limits live, and resumes ou
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
     const input = JSON.parse(Buffer.concat(chunks).toString());
-    const page = Number(input.messages[0].content[0].text.match(/The requested page is (\d+)/)[1]);
+    const page = Number(input.messages.find(message => message.role === "user").content[0].text.match(/The requested page is (\d+)/)[1]);
     calls.push(page);
     pending.set(page, response);
     response.on("close", () => { if (pending.get(page) === response) pending.delete(page); });
@@ -2430,7 +2468,8 @@ test("streams numeric progress to late readers of background work and saves only
     for (const [index, format] of ["compatible", "openai"].entries()) {
       const book = await uploadQueueBook((index ? "7" : "6").repeat(64), 1);
       const saved = await fetch(`${baseUrl}/api/settings/ai-provider`, { method: "PUT", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider: format, endpoint: `http://127.0.0.1:${provider.address().port}/${index ? "responses" : "v1"}`, apiKey: "stream-secret", model: "stream-model", reasoningEffort: "high" }) });
+        body: JSON.stringify({ provider: format, endpoint: `http://127.0.0.1:${provider.address().port}/${index ? "responses" : "v1"}`, apiKey: "stream-secret", model: "stream-model", reasoningEffort: "high",
+          pricing: { currency: "USD", inputPerMillion: 2, outputPerMillion: 8, cachedInputPerMillion: 0.5 } }) });
       assert.equal(saved.status, 200);
       providerResponse = undefined;
       await enqueueTestBook(book);
@@ -2463,12 +2502,15 @@ test("streams numeric progress to late readers of background work and saves only
       await secondResult;
       const tail = '。"}],"previousPageRevision":null}';
       providerResponse.write(`data: ${JSON.stringify(delta(tail))}\n\n`);
-      const usage = index ? { input_tokens: 123, output_tokens: 45, output_tokens_details: { reasoning_tokens: 12 } }
-        : { prompt_tokens: 123, completion_tokens: 45, completion_tokens_details: { reasoning_tokens: 12 } };
+      const usage = index ? { input_tokens: 123, output_tokens: 45, input_tokens_details: { cached_tokens: 100 }, output_tokens_details: { reasoning_tokens: 12 } }
+        : { prompt_tokens: 123, completion_tokens: 45, prompt_tokens_details: { cached_tokens: 100 }, completion_tokens_details: { reasoning_tokens: 12 } };
       providerResponse.end(index ? `data: ${JSON.stringify({ type: "response.completed", response: { status: "completed", usage } })}\n\n`
         : `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage })}\n\ndata: [DONE]\n\n`);
       const result = await resultPromise;
       assert.equal(result.blocks[0].text, "实时译文。");
+      assert.ok(result.usage.outputSeconds > 0);
+      assert.deepEqual(result.usage, { inputTokens: 123, outputTokens: 45, totalTokens: 168, cachedInputTokens: 100,
+        outputSeconds: result.usage.outputSeconds, cost: { currency: "USD", amount: 0.000456 } });
       assert.doesNotMatch(JSON.stringify(progress), /private reasoning|实时译文|lastLine/);
       const aligned = progress.find(value => value.phase === "aligning");
       assert.equal(aligned.characters, 17 + Array.from(partial + tail).length);
@@ -2490,7 +2532,9 @@ test("streams numeric progress to late readers of background work and saves only
       assert.equal(span("provider.stream").status, "ok");
       assert.doesNotMatch(JSON.stringify(traces), /private reasoning|stream-secret|实时译文/);
       const cached = await readTestPage(book, 1);
-      assert.equal((await cached.json()).blocks[0].text, "实时译文。");
+      const cachedResult = await cached.json();
+      assert.equal(cachedResult.blocks[0].text, "实时译文。");
+      assert.deepEqual(cachedResult.usage, result.usage);
     }
   } finally {
     provider.closeAllConnections();
@@ -2539,7 +2583,7 @@ test("optimizes provider contracts and context in both protocols, preserving loc
   const provider = createHttpServer(async (request, response) => {
     const chunks = []; for await (const chunk of request) chunks.push(chunk);
     const input = JSON.parse(Buffer.concat(chunks).toString());
-    const content = (input.input || input.messages)[0].content;
+    const content = (input.input || input.messages).find(message => message.role === "user").content;
     const instruction = content[0].text;
     const textMode = instruction.includes("Source units for requested page");
     records.push({ input, content, textMode });
@@ -2558,6 +2602,7 @@ test("optimizes provider contracts and context in both protocols, preserving loc
       await fetch(`${baseUrl}/api/settings/ai-provider`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
         provider: format, endpoint: `http://127.0.0.1:${provider.address().port}/${format === "openai" ? "responses" : "v1"}`,
         model: "optimization-fixture", apiKey: "fixture", reasoningEffort: "high",
+        pricing: { currency: "CNY", inputPerMillion: 2, outputPerMillion: 8 },
       }) });
       invalidText = false;
       const translate = async (extra = {}) => {
@@ -2572,9 +2617,23 @@ test("optimizes provider contracts and context in both protocols, preserving loc
       assert.equal(records.at(-1).content.length, 1);
       assert.equal((records.at(-1).input.reasoning?.effort || records.at(-1).input.reasoning_effort), "high");
       if (format === "openai") assert.deepEqual(Object.keys(records.at(-1).input.text.format.schema.properties), ["translations"]);
+      const textMessages = records.at(-1).input.input || records.at(-1).input.messages;
+      assert.deepEqual(textMessages.map(message => message.role), ["system", "user"]);
+      assert.match(JSON.stringify(textMessages[0]), /Return each unit ID exactly once/);
+      assert.doesNotMatch(JSON.stringify(textMessages[0]), /The requested page is|Source units for requested page/);
+      const otherPage = await readTestPage(book, 1, { force: true, targetLanguage: "French", contextPages: [1, 2],
+        previousTranslationTail: "CACHE_PREFIX_SENTINEL." });
+      assert.equal(otherPage.status, 200);
+      assert.equal((await otherPage.json()).trace.attributes.translationMode, "text");
+      const nextMessages = records.at(-1).input.input || records.at(-1).input.messages;
+      assert.deepEqual(nextMessages[0], textMessages[0], "Text rules must be identical across pages, languages, and context changes");
+      assert.match(nextMessages[1].content[0].text, /French/);
+      assert.match(nextMessages[1].content[0].text, /CACHE_PREFIX_SENTINEL/);
       const calls = records.length;
       const cached = await readTestPage(book, 2);
-      assert.equal((await cached.json()).trace.attributes.cacheHit, true);
+      const cachedResult = await cached.json();
+      assert.equal(cachedResult.trace.attributes.cacheHit, true);
+      assert.deepEqual(cachedResult.usage, { inputTokens: 100, outputTokens: 50, totalTokens: 150, cost: { currency: "CNY", amount: 0.0006 } });
       assert.equal(records.length, calls);
 
       // Missing IDs cause one full-image retry; usage includes both attempts.
@@ -2585,6 +2644,7 @@ test("optimizes provider contracts and context in both protocols, preserving loc
       assert.equal(fallback.trace.attributes.providerAttempts, 2);
       assert.equal(fallback.trace.attributes.inputTokens, 200);
       assert.equal(fallback.trace.attributes.outputTokens, 100);
+      assert.deepEqual(fallback.usage, { inputTokens: 200, outputTokens: 100, totalTokens: 300, cost: { currency: "CNY", amount: 0.0012 } });
       assert.equal(records.at(-1).content.filter((p) => p.image_url || p.type === "input_image").length, 3);
       assert.equal(fallback.blocks[0].text, "完整译文。");
       invalidText = false;
@@ -2592,6 +2652,7 @@ test("optimizes provider contracts and context in both protocols, preserving loc
       // Complex current pages retain vision, but reliable adjacent prose is text.
       await cacheAnalysis(book, 2, source, false);
       const visual = await translate();
+      const visionMessages = records.at(-1).input.input || records.at(-1).input.messages;
       assert.equal(visual.trace.attributes.translationMode, "vision");
       assert.equal(visual.trace.attributes.localSentenceRects, true);
       assert.equal(records.at(-1).content.filter((p) => p.image_url || p.type === "input_image").length, 1);
@@ -2605,6 +2666,8 @@ test("optimizes provider contracts and context in both protocols, preserving loc
         assert.ok(!revisionSchema.required.includes("text"));
       }
       const revision = await translate({ previousTranslationTail: "An unfinished De-" });
+      assert.deepEqual((records.at(-1).input.input || records.at(-1).input.messages)[0], visionMessages[0],
+        "Supplying a complete previous-page image must not alter the vision system prefix");
       assert.equal(revision.trace.attributes.contextTextPages, 1);
       assert.equal(records.at(-1).content.filter((p) => p.image_url || p.type === "input_image").length, 2);
 

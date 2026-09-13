@@ -1,3 +1,5 @@
+import { normalizeTranslationPricing, type TranslationPricing } from "./translation-pricing.ts";
+
 export type AiProvider = "openai" | "compatible";
 export type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -8,6 +10,7 @@ export type AiProviderSettings = {
   model: string;
   reasoningEffort: ReasoningEffort;
   updatedAt: number;
+  pricing?: TranslationPricing;
 };
 
 export type PublicAiProviderSettings = Omit<AiProviderSettings, "apiKey"> & {
@@ -17,6 +20,7 @@ export type PublicAiProviderSettings = Omit<AiProviderSettings, "apiKey"> & {
 };
 
 export type AiProviderSettingsUpdate = {
+  pricing?: TranslationPricing | null;
   provider: AiProvider;
   endpoint: string;
   apiKey?: string;
@@ -45,6 +49,7 @@ export function publicAiProviderSettings(settings: AiProviderSettings | null): P
     configured: Boolean(settings?.endpoint && settings.model && apiKey),
     apiKeyConfigured: Boolean(apiKey),
     apiKeyHint: apiKey ? `••••${apiKey.slice(-4)}` : "",
+    ...(settings?.pricing && { pricing: settings.pricing }),
   };
 }
 
@@ -73,6 +78,11 @@ export function normalizeAiProviderSettingsUpdate(
     return null;
   }
 
+  const sameModel = existing?.provider === provider && existing.endpoint === endpoint && existing.model === model;
+  const pricing = input.pricing === undefined ? (sameModel ? existing?.pricing : undefined)
+    : normalizeTranslationPricing(input.pricing);
+  if (input.pricing != null && !pricing) return null;
+
   return {
     provider,
     endpoint,
@@ -80,6 +90,7 @@ export function normalizeAiProviderSettingsUpdate(
     model,
     reasoningEffort: reasoningEffort as ReasoningEffort,
     updatedAt: Date.now(),
+    ...(pricing && { pricing }),
   };
 }
 

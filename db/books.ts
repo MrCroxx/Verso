@@ -165,6 +165,10 @@ export async function ensureStorageSchema(db: LocalDatabase = getStorage().db) {
       )`,
     ];
     for (const statement of statements) await db.prepare(statement).run();
+    const providerColumns = await db.prepare("PRAGMA table_info(ai_provider_settings)").all<{ name: string }>();
+    if (!providerColumns.results.some((column) => column.name === "pricing")) {
+      await db.prepare("ALTER TABLE ai_provider_settings ADD COLUMN pricing TEXT").run();
+    }
     // Upgrade existing local databases without resetting queued work.
     const columns = await db.prepare("PRAGMA table_info(translation_queue)").all<{ name: string }>();
     for (const [name, definition] of Object.entries({
