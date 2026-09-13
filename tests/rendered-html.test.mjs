@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { access, chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
-import { createServer as createHttpServer } from "node:http";
+import { createServer as createHttpServer, request as httpRequest } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -10,6 +10,7 @@ import test, { after, before } from "node:test";
 import { runInNewContext } from "node:vm";
 import { applyTheme, watchTheme } from "../lib/theme.ts";
 import { createLocalPdfRangeTransport } from "../lib/local-pdf-range-transport.ts";
+import { readLimitedRequestBody, RequestBodyTooLargeError } from "../lib/server-request-body.ts";
 import { createConcurrencyLimiter } from "../lib/concurrency-limiter.ts";
 import { isDocumentSearchShortcut } from "../lib/keyboard-shortcuts.ts";
 import { createLatestTaskRegistry } from "../lib/latest-task-registry.ts";
@@ -686,6 +687,93 @@ test("rejects navigation requests without a document ID", async () => {
   assert.deepEqual(await response.json(), { error: "Invalid document ID." });
 });
 
+test("reads bounded request bodies at the exact limit and releases the reader", async () => {
+  const request = new Request("http://local/upload", {
+    method: "PUT", duplex: "half",
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2]));
+        controller.enqueue(new Uint8Array([3, 4]));
+        controller.close();
+      },
+    }),
+  });
+  assert.deepEqual(await readLimitedRequestBody(request, 4), Buffer.from([1, 2, 3, 4]));
+  assert.equal(request.body.locked, false);
+  assert.deepEqual(await readLimitedRequestBody(new Request("http://local/upload"), 4), Buffer.alloc(0));
+});
+
+test("stops oversized request bodies even with absent or misleading content lengths", async () => {
+  for (const contentLength of [undefined, "1", "5"]) {
+    let reads = 0;
+    let cancelled = false;
+    const request = new Request("http://local/upload", {
+      method: "PUT", duplex: "half",
+      headers: contentLength ? { "content-length": contentLength } : {},
+      body: new ReadableStream({
+        pull(controller) {
+          reads += 1;
+          controller.enqueue(new Uint8Array(5));
+        },
+        cancel() {
+          cancelled = true;
+          throw new Error("Cancellation must not mask the size limit error.");
+        },
+      }, { highWaterMark: 0 }),
+    });
+    await assert.rejects(readLimitedRequestBody(request, 4), RequestBodyTooLargeError);
+    assert.equal(reads, contentLength === "5" ? 0 : 1);
+    assert.equal(cancelled, true);
+    assert.equal(request.body.locked, false);
+  }
+});
+
+test("releases failed request readers without masking the original error", async () => {
+  const failure = new Error("Upload connection closed.");
+  const request = new Request("http://local/upload", {
+    method: "PUT", duplex: "half",
+    body: new ReadableStream({ pull(controller) { controller.error(failure); } }),
+  });
+  await assert.rejects(readLimitedRequestBody(request, 4), (error) => error === failure);
+  assert.equal(request.body.locked, false);
+});
+
+test("rejects an oversized upload part before the client finishes sending", async () => {
+  const initialize = await fetch(`${baseUrl}/api/books/uploads`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      fingerprint: "b3".repeat(32), name: "oversized.pdf", size: 9 * 1024 * 1024,
+      pageCount: 1, contentType: "application/pdf",
+    }),
+  });
+  assert.equal(initialize.status, 200);
+  const session = await initialize.json();
+  let request;
+  try {
+    const status = await new Promise((resolve, reject) => {
+      request = httpRequest(`${baseUrl}/api/books/uploads/${session.uploadId}/parts/1`, {
+        method: "PUT", headers: { "x-object-key": session.objectKey },
+      }, (response) => {
+        response.resume();
+        response.once("end", () => resolve(response.statusCode));
+        response.once("error", reject);
+      });
+      request.once("error", reject);
+      request.setTimeout(5000, () => request.destroy(new Error("Upload limit waited for the entire request body.")));
+      // Deliberately leave the chunked request open after crossing the size limit.
+      request.write(Buffer.alloc(8 * 1024 * 1024 + 1));
+    });
+    assert.equal(status, 413);
+    await assert.rejects(
+      access(path.join(testDataDirectory, "uploads", session.uploadId, "1.part")),
+      { code: "ENOENT" },
+    );
+  } finally {
+    request?.destroy();
+  }
+});
+
 test("stores a multipart PDF locally and serves bounded byte ranges", async () => {
   const fingerprint = "a".repeat(64);
   const bytes = new Uint8Array(2 * 1024 * 1024 + 1);
@@ -977,6 +1065,37 @@ test("loads local PDFs only through bounded explicit range requests", async () =
     [3072, 1024],
     [4096, 1024],
   ]);
+});
+
+test("cancels invalid PDF responses before retrying and preserves the range error", async () => {
+  for (const responseOptions of [
+    { status: 200 },
+    { status: 206, headers: { "Content-Range": "bytes 0-9/100" } },
+  ]) {
+    let requests = 0;
+    let cancelled = 0;
+    const signals = [];
+    class TestRangeTransport { onDataRange() { assert.fail("Invalid PDF bytes must not be delivered."); } }
+    const { transport, failure } = createLocalPdfRangeTransport({
+      Transport: TestRangeTransport, url: "/book.pdf", length: 10, filename: "book.pdf", maxAttempts: 2,
+      fetcher: async (_url, init) => {
+        assert.equal(cancelled, requests, "The previous response must be cancelled before retrying.");
+        requests += 1;
+        signals.push(init.signal);
+        return new Response(new ReadableStream({
+          cancel() {
+            cancelled += 1;
+            throw new Error("Response cancellation failed.");
+          },
+        }), responseOptions);
+      },
+    });
+    transport.requestDataRange(0, 10);
+    await assert.rejects(failure, /Expected a partial PDF response|invalid Content-Range/);
+    assert.equal(requests, 2);
+    assert.equal(cancelled, 2);
+    assert.ok(signals.every((signal) => signal.aborted));
+  }
 });
 
 test("enables page work only after navigation settles and inside the active window", () => {
