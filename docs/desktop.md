@@ -83,14 +83,14 @@ unrelated install scripts are not blanket-approved.
 
 The **CI** GitHub Actions workflow runs lint, the production build, and tests on
 Linux and Apple Silicon macOS for pull requests, pushes to `main`, version tags,
-and manual dispatch. macOS packaging and Docker image publishing are both skipped
-on pull requests.
+and manual dispatch.
 
 After all validation jobs pass, the same workflow produces ad-hoc signed arm64
-and x64 installers on pushes to `main`, version tags, and manual dispatch.
-Installers are uploaded as artifacts only when the workflow runs on `main`;
-tag and other branch runs only test packaging. Docker image publishing
-also waits for all validation jobs and runs only on pushes to `main`.
+and x64 installers and builds Docker images for both `linux/amd64` and
+`linux/arm64`, including on pull requests. Pull requests test the complete builds
+without pushing images or uploading installers or Docker build records.
+Installers and Docker build records are uploaded as artifacts only when the
+workflow runs on `main`. Docker images are pushed only on pushes to `main`.
 Download the DMG and ZIP installers from a successful `main` CI run's
 `Verso-macOS-arm64` or `Verso-macOS-x64` artifacts. The workflow does not upload
 GitHub Releases.
