@@ -96,6 +96,7 @@ jobs:
 
   package-macos:
     name: Package macOS
+    if: github.event_name != 'pull_request'
     needs: validate
     strategy:
       fail-fast: false
