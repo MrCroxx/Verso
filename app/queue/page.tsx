@@ -97,13 +97,10 @@ export default function QueuePage() {
     <section className="settings-page queue-page" aria-labelledby="queue-title">
       <div className="settings-heading">
         <h1 id="queue-title"><ListOrdered size={28} />{messages.queueTitle}</h1>
-        <p>{messages.queueDescription}</p>
-        <p>{messages.queueRetryHelp}</p>
       </div>
       <div className="settings-card queue-concurrency">
-        <div><label htmlFor="queue-concurrency">{messages.queueConcurrency}</label>
-          <p id="queue-concurrency-help">{messages.queueConcurrencyHelp}</p></div>
-        <select id="queue-concurrency" aria-describedby="queue-concurrency-help" value={concurrency}
+        <label htmlFor="queue-concurrency">{messages.queueConcurrency}</label>
+        <select id="queue-concurrency" value={concurrency}
           disabled={loading || savingConcurrency} onChange={(event) => void configureConcurrency(Number(event.target.value))}>
           {QUEUE_CONCURRENCY_OPTIONS.map((value) => <option key={value} value={value}>{value}</option>)}
         </select>
@@ -127,7 +124,11 @@ export default function QueuePage() {
           <div className="queue-progress-copy"><span>{job.completedPages} / {job.totalPages}</span>
             {job.status !== "completed" && <span>{messages.queueCurrentPage(Math.min(job.nextPage, job.totalPages))}</span>}</div>
           <progress value={job.completedPages} max={job.totalPages} aria-label={messages.queueProgress(job.completedPages, job.totalPages)} />
-          <div className="queue-card-actions"><small>{messages.queueFailedPages(job.failedPages, job.failedPageLimit)} · {messages.queueActivePages(job.activePages)}</small>
+          <div className="queue-card-actions">
+            {(job.failedPages > 0 || job.activePages > 0) && <small>{[
+              job.failedPages > 0 ? messages.queueFailedPages(job.failedPages, job.failedPageLimit) : "",
+              job.activePages > 0 ? messages.queueActivePages(job.activePages) : "",
+            ].filter(Boolean).join(" · ")}</small>}
             {(active || job.status === "failed" || job.status === "stopped" || job.status === "partial") && <button className="secondary-button" disabled={pending.has(id)} onClick={() => void act(job, active)}>
               {pending.has(id) ? <LoaderCircle size={15} className="spin" /> : active ? <Square size={15} /> : <RotateCcw size={15} />}
               {active ? messages.queueStop : job.status === "stopped" ? messages.queueResume : messages.retryBookAction}

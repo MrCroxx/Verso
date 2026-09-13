@@ -81,7 +81,6 @@ export function TranslationTransfer({ documentId, messages, disabled = false, me
         </button>
         {busy && <span role="status"><LoaderCircle size={15} className="spin" />{messages.translationArchiveBusy}</span>}
       </div>
-      {!menu && <p className="translation-transfer-help">{messages.translationArchiveHelp}</p>}
       <input ref={input} type="file" accept=".json,application/json" aria-label={importLabel} hidden disabled={disabled || busy} onChange={(event) => {
         const file = event.currentTarget.files?.[0];
         event.currentTarget.value = "";

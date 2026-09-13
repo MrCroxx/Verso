@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { ArrowLeft, HardDrive, Sparkles } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import clsx from "clsx";
 import { DEFAULT_AI_PROVIDER_SETTINGS, type AiProviderSettingsUpdate, type ReasoningEffort } from "../../lib/ai-provider-settings";
 import { PRICING_CURRENCIES, type TranslationPricing } from "../../lib/translation-pricing";
@@ -17,14 +17,12 @@ import { TranslationTransfer } from "../translation-transfer";
 const COPY = {
   "zh-CN": {
     back: "返回阅读", library: "返回书库", appearance: "界面", reading: "阅读体验", translation: "翻译",
-    language: "界面语言", languageHelp: "界面语言与翻译目标语言独立设置。",
-    autosave: "阅读、翻译和界面偏好修改后自动保存。AI 服务配置也会自动保存。",
+    language: "界面语言",
     loading: "正在读取 AI 配置…", loadFailed: "无法读取 AI 配置，请重试。", retry: "重试",
   },
   "en-US": {
     back: "Back to reading", library: "Back to library", appearance: "Interface", reading: "Reading", translation: "Translation",
-    language: "Interface language", languageHelp: "Interface language is independent of the translation target.",
-    autosave: "Reading, translation, and interface preferences save automatically. AI provider changes also save automatically.",
+    language: "Interface language",
     loading: "Loading AI settings…", loadFailed: "Unable to load AI settings. Please retry.", retry: "Retry",
   },
 } as const;
@@ -44,7 +42,7 @@ export function SettingsScreen({ backHref }: { backHref: string }) {
         <Link href={backHref} className="secondary-button"><ArrowLeft size={16} />{backHref === "/" ? copy.library : copy.back}</Link>
       </header>
       <div className="settings-page">
-        <div className="settings-heading"><h1>{messages.settings}</h1><p>{messages.settingsSubtitle}</p><p>{copy.autosave}</p></div>
+        <div className="settings-heading"><h1>{messages.settings}</h1></div>
         <div className="settings-sections">
           <section id="ai-provider" className="settings-card" aria-labelledby="ai-heading">
             <h2 id="ai-heading">{messages.serverProvider}</h2>
@@ -71,12 +69,6 @@ export function SettingsScreen({ backHref }: { backHref: string }) {
 
             <label className="field-label" htmlFor="concurrency">{messages.parallelTranslation(settings.translationConcurrency)}</label>
             <input id="concurrency" className="range" type="range" min="1" max="10" value={settings.translationConcurrency} onChange={(event) => update("translationConcurrency", Number(event.target.value))} />
-            <p className="field-help">{messages.concurrencyHelp}</p>
-
-            <div className="context-note">
-              <Sparkles size={16} />
-              <div><strong>{messages.crossPageEnabled}</strong><p>{messages.crossPageHelp}</p></div>
-            </div>
           </section>
           <section id="reading" className="settings-card" aria-labelledby="reading-heading">
             <h2 id="reading-heading">{copy.reading}</h2>
@@ -87,7 +79,7 @@ export function SettingsScreen({ backHref }: { backHref: string }) {
               aria-checked={settings.smoothScrolling}
               onClick={() => update("smoothScrolling", !settings.smoothScrolling)}
             >
-              <span><strong>{messages.smoothScrolling}</strong><small>{messages.smoothScrollingHelp}</small></span>
+              <span><strong>{messages.smoothScrolling}</strong></span>
               <i aria-hidden="true"><span /></i>
             </button>
 
@@ -98,7 +90,7 @@ export function SettingsScreen({ backHref }: { backHref: string }) {
               aria-checked={settings.translationAnimation}
               onClick={() => update("translationAnimation", !settings.translationAnimation)}
             >
-              <span><strong>{messages.translationAnimation}</strong><small>{messages.translationAnimationHelp}</small></span>
+              <span><strong>{messages.translationAnimation}</strong></span>
               <i aria-hidden="true"><span /></i>
             </button>
 
@@ -128,7 +120,6 @@ export function SettingsScreen({ backHref }: { backHref: string }) {
             <select id="interface-language" value={locale} onChange={(event) => setLocale(event.target.value as typeof locale)}>
               <option value="zh-CN">简体中文</option><option value="en-US">English</option>
             </select>
-            <p className="field-help">{copy.languageHelp}</p>
             <label className="field-label" htmlFor="theme">{messages.theme}</label>
             <ThemeSelect id="theme" />
           </section>
@@ -203,23 +194,12 @@ function ProviderForm({ translationService, messages }: {
   }
 
   const saveMessage = status === "pending" || status === "saving" ? messages.savingProvider
-    : status === "saved" ? messages.providerSaved
     : status === "invalid" ? messages.providerInvalid
     : status === "error" ? messages.providerSaveFailed : "";
 
   return <form onBlur={() => { void flush().catch(() => undefined); }} onSubmit={(event) => { event.preventDefault(); if (!testing) void testConnection(); }}>
     <fieldset disabled={testing}>
-        <div className={clsx("server-provider-status", translationService.configured ? "ready" : "missing")}>
-          <HardDrive size={17} />
-          <div>
-            <strong>{messages.serverProvider}</strong>
-            <p>
-              {translationService.configured
-                ? messages.serverProviderReady(translationService.model)
-                : messages.serverProviderMissing}
-            </p>
-          </div>
-        </div>
+        {!translationService.configured && <p className="field-help">{messages.serverProviderMissing}</p>}
 
         <label className="field-label">{messages.provider}</label>
         <div className="segmented">
@@ -250,7 +230,7 @@ function ProviderForm({ translationService, messages }: {
           placeholder={translationService.apiKeyHint || messages.apiKeyPlaceholder}
           onChange={(event) => update({ apiKey: event.target.value })}
         />
-        <p className="field-help">{messages.apiKeyHelp}</p>
+        {translationService.apiKeyHint && <p className="field-help">{messages.apiKeyHelp}</p>}
 
         <div className="field-grid">
           <div>

@@ -577,10 +577,6 @@ function TranslationText({
           <CircleCheck size={18} />
           <p>{messages.blankPage}</p>
         </div>
-        <div className="translation-meta">
-          <CircleCheck size={14} />
-          {messages.blankCached}
-        </div>
       </article>
     );
   }
@@ -677,12 +673,6 @@ function TranslationText({
             return <p key={index} className={className} style={style}>{content}</p>;
           })}
         </div>
-        <div className="translation-meta">
-          <CircleCheck size={14} />
-          {value.boundaryDeduplicated
-            ? messages.boundaryFixed
-            : value.revised ? messages.revised : messages.cachedLayout}
-        </div>
       </article>
     );
   }
@@ -704,10 +694,6 @@ function TranslationText({
           />
         </p>
       ))}
-      <div className="translation-meta">
-        <CircleCheck size={14} />
-        {value.revised ? messages.revised : messages.cached}
-      </div>
     </article>
   );
 }
@@ -1026,7 +1012,6 @@ function LibraryHome({
   const [openActionsId, setOpenActionsId] = useState<string | null>(null);
   const [confirmDiscardId, setConfirmDiscardId] = useState<string | null>(null);
   const [discarding, setDiscarding] = useState<Set<string>>(new Set());
-  const [discardMessages, setDiscardMessages] = useState<Record<string, string>>({});
   const [discardErrors, setDiscardErrors] = useState<Record<string, string>>({});
   const language = translationSettings.targetLanguage;
   const refreshQueue = useCallback(async (signal?: AbortSignal) => {
@@ -1066,7 +1051,6 @@ function LibraryHome({
     if (discarding.has(book.id) || pending.has(book.id)) return;
     if (confirmDiscardId !== book.id) {
       setConfirmDiscardId(book.id);
-      setDiscardMessages((value) => ({ ...value, [book.id]: "" }));
       setDiscardErrors((value) => ({ ...value, [book.id]: "" }));
       return;
     }
@@ -1074,10 +1058,9 @@ function LibraryHome({
     setOpenActionsId(null);
     setDiscarding((value) => new Set(value).add(book.id));
     try {
-      const deleted = await onDiscardTranslations(book);
+      await onDiscardTranslations(book);
       setJobs((value) => value.filter((job) => job.documentId !== book.fingerprint));
       setQueueErrors((value) => ({ ...value, [book.id]: "" }));
-      setDiscardMessages((value) => ({ ...value, [book.id]: messages.translationsDiscarded(deleted) }));
       await refreshQueue().catch((error) => {
         setQueueError(error instanceof Error ? error.message : messages.queueReadFailed);
       });
@@ -1091,7 +1074,6 @@ function LibraryHome({
     setNotice(null);
     setOpenActionsId(null);
     setConfirmDiscardId(null);
-    setDiscardMessages((value) => ({ ...value, [book.id]: "" }));
     setPending((value) => new Set(value).add(book.id));
     setQueueErrors((value) => ({ ...value, [book.id]: "" }));
     try {
@@ -1129,7 +1111,7 @@ function LibraryHome({
           <span>{messages.bookCount(books.length)}</span>
         </div>
         {books.length > 0 && (
-          <p className="library-translation-note"><Languages size={14} /><span>{messages.queueHelp(language)}</span></p>
+          <p className="library-translation-note"><Languages size={14} /><span>{targetLanguageLabel(language, locale)}</span></p>
         )}
         {queueError && <Link href="/queue" className="book-translate-action">{messages.queueNeedsAttention}</Link>}
         {loading ? (
@@ -1184,7 +1166,7 @@ function LibraryHome({
                 }}>
                   <button type="button" className="book-translate-action"
                     disabled={pending.has(book.id) || discarding.has(book.id) || active || complete}
-                    title={messages.translateBook} onClick={() => void enqueue(book)}>
+                    title={`${messages.translateBook} · ${targetLanguageLabel(language, locale)}`} onClick={() => void enqueue(book)}>
                     {active || pending.has(book.id) ? <LoaderCircle className="spin" size={14} />
                       : complete ? <CircleCheck size={14} /> : <Languages size={14} />}
                     <span>{pending.has(book.id) || active ? messages.translatingBookAction
@@ -1225,12 +1207,11 @@ function LibraryHome({
                 </div>
                 {job && !complete && (
                   <div className="book-translation-progress">
-                    <small>{messages.queueStatuses[job.status]} · {job.completedPages} / {job.totalPages}</small>
+                    <small>{job.completedPages} / {job.totalPages}</small>
                     <progress max={job.totalPages} value={job.completedPages} aria-label={messages.queueProgress(job.completedPages, job.totalPages)} />
                   </div>
                 )}
-                {(job || queueErrors[book.id]) && <Link href="/queue" className="book-translate-action">{queueErrors[book.id] || job?.status === "failed" || job?.status === "partial" ? messages.queueNeedsAttention : messages.queueView}</Link>}
-                {discardMessages[book.id] && <small role="status">{discardMessages[book.id]}</small>}
+                {(queueErrors[book.id] || job?.status === "failed" || job?.status === "partial") && <Link href="/queue" className="book-translate-action">{messages.queueNeedsAttention}</Link>}
                 {discardErrors[book.id] && <p className="queue-error" role="alert">{discardErrors[book.id]}</p>}
               </div>
               </article>
@@ -1240,7 +1221,6 @@ function LibraryHome({
           <div className="library-home-empty">
             <span><BookOpen size={30} /></span>
             <strong>{messages.noBooks}</strong>
-            <p>{messages.noBooksHelp}</p>
             <button className="primary-button" onClick={onUpload}><Plus size={16} />{messages.uploadPdf}</button>
           </div>
         )}
@@ -1319,10 +1299,6 @@ function ContentsNavigation({
           <button className="icon-button" disabled={manualOffset == null} aria-label={messages.resetAutomaticOffset} onClick={() => onManualOffsetChange(null)}><RotateCcw size={14} /></button>
         </div>
         <p>{messages.offsetHelp}</p>
-        <div className="toc-status-legend">
-          <span className="calibrated"><i />{messages.tocIndexConfirmed}</span>
-          <span className="uncalibrated"><i />{messages.tocIndexPending}</span>
-        </div>
         {error && <p className="toc-error">{error}</p>}
       </div>}
 
@@ -2766,9 +2742,6 @@ export default function Home() {
                 <nav id="sidebar-pages" role="tabpanel" aria-labelledby="sidebar-tab-pages" className="page-nav" aria-label={messages.pages}>
                   {pageNumbers.map((page) => {
                     const source = translationSources[page];
-                    const status = source === "cache"
-                      ? messages.translationCacheHit
-                      : source === "api" ? messages.translationApiSucceeded : "";
                     return (
                       <button key={page} className={cn(page === currentPage && "active")} onClick={() => {
                         goToPage(page);
@@ -2776,20 +2749,14 @@ export default function Home() {
                       }}>
                         <span className="page-thumbnail">{page <= 2 && isDemo ? <SampleScan page={page} messages={messages} /> : page}</span>
                         <span>{messages.page(page)}</span>
-                        {source === "cache" ? (
-                          <span className="page-translation-status source-cache" title={status} aria-label={status}>
-                            CACHE
-                          </span>
-                        ) : loadingPages.has(page) ? (
+                        {loadingPages.has(page) ? (
                           <span className="page-translation-status loading" title={messages.translationInProgress} aria-label={messages.translationInProgress}>
                             <LoaderCircle className="spin" size={13} aria-hidden="true" />
                           </span>
-                        ) : source ? (
-                          <span className={cn("page-translation-status", `source-${source}`)} title={status} aria-label={status}>
-                            {source.toUpperCase()}
+                        ) : source || translations[page] ? (
+                          <span className="page-translation-status" title={messages.translatedBookAction} aria-label={messages.translatedBookAction}>
+                            <CircleCheck size={14} aria-hidden="true" />
                           </span>
-                        ) : translations[page] ? (
-                          <CircleCheck size={14} aria-hidden="true" />
                         ) : null}
                       </button>
                     );
@@ -2932,8 +2899,6 @@ export default function Home() {
           )}
         </section>
       </div>
-
-      <div className="floating-status"><Sparkles size={15} /><span>{messages.contextWindow}</span><strong>{messages.pageRange(Math.max(1, currentPage - 1), Math.min(totalPages, currentPage + 1))}</strong></div>
     </main>
     </ReaderZoomProvider>
   );
