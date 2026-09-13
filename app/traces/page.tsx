@@ -43,8 +43,7 @@ export default function TracesPage() {
     <header className="topbar library-topbar"><Link href="/" className="brand">Verso</Link><Link href="/settings" className="secondary-button">{zh ? "返回设置" : "Back to settings"}</Link></header>
     <div className="settings-page trace-page">
       <h1>{zh ? "翻译耗时" : "Translation traces"}</h1>
-      <p>{zh ? "每 2 秒刷新；最近 200 条记录保存在本地。点击一页查看各阶段耗时。" : "Refreshes every 2 seconds. The latest 200 completed traces are stored locally. Select a page to inspect its stages."}</p>
-      <p>{zh ? "首个输出包含推理；首段正文需要等模型思考结束，两者不同。各项计时可能重叠，不可直接相加。旧记录可能没有首个输出计时。" : "First output includes reasoning; first text waits for the answer. These are different milestones. Overlapping durations must not be added together. Older traces may not record first output."}</p>
+      <p>{zh ? "首个输出包含推理；各阶段耗时可能重叠。" : "First output includes reasoning. Stage durations may overlap."}</p>
       <a className="secondary-button" href="/api/traces?format=chrome">{zh ? "导出全部 Chrome / Perfetto trace" : "Export all Chrome / Perfetto traces"}</a>
       {error && <p role="alert">{zh ? "无法刷新记录，将自动重试。" : "Unable to refresh traces. Retrying automatically."}</p>}
       {!trace ? <p>{zh ? "还没有记录；开始翻译后会自动显示。" : "No traces yet. Start a translation to see its timings."}</p> : <div className="trace-grid">
