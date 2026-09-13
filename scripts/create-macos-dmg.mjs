@@ -23,7 +23,22 @@ async function detachImage(device, run, wait) {
       // A failed eject may already have unmounted the volume. Track the device, not the mountpoint.
       const { images } = readPlist(run, ['info']);
       if (!images.some(image => image['system-entities'].some(entity => entity['dev-entry'] === device))) return;
-      if (attempt === 3) throw error;
+      if (attempt === 3) {
+        console.error('DMG detach failed; collecting device and process diagnostics.');
+        for (const [tool, args] of [
+          ['/usr/bin/hdiutil', ['info']],
+          ['/usr/sbin/diskutil', ['info', device]],
+          ['/usr/bin/sudo', ['/usr/sbin/lsof', '-nP']],
+        ]) {
+          try {
+            const output = run(tool, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10000 });
+            console.error(tool.endsWith('sudo') ? output.split('\n').filter(line => /verso-dmg|disk\d|diskimage|mds|hdiutil/i.test(line)).join('\n') : output);
+          } catch (diagnosticError) {
+            console.error(`Diagnostic command failed: ${diagnosticError.message}`);
+          }
+        }
+        throw error;
+      }
       await wait(1000 * (attempt + 1));
     }
   }
