@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-15, macos-15-intel]
+        os: [ubuntu-latest, macos-15]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
 
@@ -124,6 +124,7 @@ jobs:
       - name: Validate and package
         run: npm run desktop:package
       - uses: actions/upload-artifact@v4
+        if: github.ref == 'refs/heads/main'
         with:
           name: Verso-macOS-${{ matrix.arch }}
           path: |
