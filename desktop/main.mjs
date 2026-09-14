@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { launchBackend } from './backend.mjs';
 import { APP_URL, createProtocolHandler, isAppUrl } from './protocol.mjs';
+import { createFileMenu } from './file-menu.mjs';
 
 app.setName('Verso');
 let backend;
@@ -25,7 +26,7 @@ function fail(error) {
 }
 
 async function openWindow(initialUrl = origin) {
-  if (window) { window.show(); window.focus(); return; }
+  if (window) { window.show(); window.focus(); return window; }
   window = new BrowserWindow({
     title: 'Verso', width: 1440, height: 960, minWidth: 900, minHeight: 600, show: false,
     backgroundColor: '#f6f4ef',
@@ -96,6 +97,7 @@ async function openWindow(initialUrl = origin) {
     console.log('Verso desktop smoke test passed.');
     app.quit();
   }
+  return window;
 }
 
 if (!app.requestSingleInstanceLock()) {
@@ -129,6 +131,7 @@ if (!app.requestSingleInstanceLock()) {
           } catch (error) { fail(error); }
         } },
         { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }] },
+      createFileMenu({ openWindow: () => origin && !quitting ? openWindow() : undefined, onError: fail }),
       { role: 'editMenu' },
       { label: 'View', submenu: [{ role: 'reload' }, { role: 'togglefullscreen' }] },
       { role: 'windowMenu' },

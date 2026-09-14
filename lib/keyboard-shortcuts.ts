@@ -13,3 +13,10 @@ export function isSettingsShortcut(event: ShortcutEvent) {
     && !event.altKey
     && !event.shiftKey;
 }
+
+export function isOpenFileShortcut(event: ShortcutEvent) {
+  return event.key.toLowerCase() === "o"
+    && (event.ctrlKey !== event.metaKey)
+    && !event.altKey
+    && !event.shiftKey;
+}

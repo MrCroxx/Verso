@@ -50,7 +50,7 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
     <html lang={locale} suppressHydrationWarning>
       <head><script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} /></head>
       <body className={`${geistSans.variable} ${geistMono.variable}`}>
-        <UiLocaleProvider initialLocale={locale}><AppSettingsProvider><AppShortcuts /><QueueFeedbackProvider>{children}</QueueFeedbackProvider></AppSettingsProvider></UiLocaleProvider>
+        <UiLocaleProvider initialLocale={locale}><AppSettingsProvider><AppShortcuts><QueueFeedbackProvider>{children}</QueueFeedbackProvider></AppShortcuts></AppSettingsProvider></UiLocaleProvider>
       </body>
     </html>
   );

@@ -41,6 +41,7 @@ import { useRouter } from "next/navigation";
 import { DEFAULT_SETTINGS, type TranslationSettings } from "../lib/app-settings";
 import { UI_MESSAGES, targetLanguageLabel, type UiMessages } from "../lib/ui-messages";
 import { useAppSettings } from "./app-settings";
+import { useOpenFile } from "./app-shortcuts";
 import { Brand } from "./brand";
 import { ThemeSelect } from "./theme-select";
 import { LOCAL_PDF_RANGE_CHUNK_SIZE, createLocalPdfRangeTransport } from "../lib/local-pdf-range-transport";
@@ -1337,7 +1338,7 @@ function ContentsNavigation({
 type SidebarView = "pages" | "contents" | "search";
 
 export default function Home() {
-  const fileInput = useRef<HTMLInputElement>(null);
+  const { openFile, pendingFile, consumeFile } = useOpenFile();
   const searchInput = useRef<HTMLInputElement>(null);
   const readerMenu = useRef<HTMLDivElement>(null);
   const pdfRef = useRef<PdfDocument | undefined>(undefined);
@@ -2415,6 +2416,16 @@ export default function Home() {
     };
   }, [cancelDocumentWork, loadLocalBook]);
 
+  // Consume route-transferred files after the initial URL restoration.
+  useEffect(() => {
+    if (!pendingFile) return;
+    const timer = window.setTimeout(() => {
+      consumeFile();
+      void handleFile(pendingFile);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [consumeFile, handleFile, pendingFile]);
+
   const pageNumbers = useMemo(() => Array.from({ length: totalPages }, (_, index) => index + 1), [totalPages]);
   const displayedTranslations = useMemo(() => {
     const reconciled = { ...translations };
@@ -2558,15 +2569,10 @@ export default function Home() {
             ? discardCurrentBookTranslations()
             : deleteLocalTranslations(book.fingerprint, messages.localTranslationDiscardFailed)}
           onSelect={(book) => void loadLocalBook(book)}
-          onUpload={() => fileInput.current?.click()}
+          onUpload={openFile}
           onRetry={() => void refreshBooks()}
           onToggleLocale={() => setLocale(locale === "zh-CN" ? "en-US" : "zh-CN")}
         />
-        <input ref={fileInput} type="file" accept="application/pdf" hidden onChange={(event) => {
-          const file = event.currentTarget.files?.[0];
-          event.currentTarget.value = "";
-          void handleFile(file);
-        }} />
       </main>
     );
   }
@@ -2613,7 +2619,7 @@ export default function Home() {
           <button className="icon-button locale-button" title={messages.switchLanguage} aria-label={messages.switchLanguage} onClick={() => setLocale(locale === "zh-CN" ? "en-US" : "zh-CN")}><Globe2 size={16} /><span>{locale === "zh-CN" ? "EN" : "中"}</span></button>
           <ThemeSelect compact />
           <button data-settings-trigger className="icon-button reader-settings-button" title={messages.settings} aria-label={messages.settings} onClick={() => openSettings()}><Settings size={17} /></button>
-          <button className="icon-button reader-upload-button" title={messages.openPdf} aria-label={messages.openPdf} onClick={() => fileInput.current?.click()}><Upload size={17} /></button>
+          <button className="icon-button reader-upload-button" title={messages.openPdf} aria-label={messages.openPdf} onClick={openFile}><Upload size={17} /></button>
           <div className="reader-menu-anchor" ref={readerMenu}>
             <button
               className="icon-button reader-menu-button"
@@ -2648,11 +2654,6 @@ export default function Home() {
               }}><Trash2 size={17} /><span>{messages.discardTranslations}</span></button>}
             </div>
           </div>
-          <input ref={fileInput} type="file" accept="application/pdf" hidden onChange={(event) => {
-            const file = event.currentTarget.files?.[0];
-            event.currentTarget.value = "";
-            void handleFile(file);
-          }} />
         </div>
       </header>
 

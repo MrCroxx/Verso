@@ -12,7 +12,7 @@ import { applyTheme, watchTheme } from "../lib/theme.ts";
 import { createLocalPdfRangeTransport } from "../lib/local-pdf-range-transport.ts";
 import { readLimitedRequestBody, RequestBodyTooLargeError } from "../lib/server-request-body.ts";
 import { createConcurrencyLimiter } from "../lib/concurrency-limiter.ts";
-import { isDocumentSearchShortcut, isSettingsShortcut } from "../lib/keyboard-shortcuts.ts";
+import { isDocumentSearchShortcut, isOpenFileShortcut, isSettingsShortcut } from "../lib/keyboard-shortcuts.ts";
 import { createLatestTaskRegistry } from "../lib/latest-task-registry.ts";
 import {
   calculatePageOffset,
@@ -680,6 +680,19 @@ test("leaves the macOS fullscreen shortcut to the system", () => {
   assert.equal(isDocumentSearchShortcut({
     key: "f", ctrlKey: true, metaKey: true, altKey: false, shiftKey: false,
   }), false);
+});
+
+test("recognizes open-file shortcuts without overriding other modified keys", () => {
+  const plain = { key: "o", ctrlKey: false, metaKey: false, altKey: false, shiftKey: false };
+  assert.equal(isOpenFileShortcut(plain), false);
+  for (const modifier of ["ctrlKey", "metaKey"]) {
+    assert.equal(isOpenFileShortcut({ ...plain, [modifier]: true }), true);
+    assert.equal(isOpenFileShortcut({ ...plain, [modifier]: true, key: "O" }), true);
+    assert.equal(isOpenFileShortcut({ ...plain, [modifier]: true, altKey: true }), false);
+    assert.equal(isOpenFileShortcut({ ...plain, [modifier]: true, shiftKey: true }), false);
+    assert.equal(isOpenFileShortcut({ ...plain, [modifier]: true, key: "p" }), false);
+  }
+  assert.equal(isOpenFileShortcut({ ...plain, ctrlKey: true, metaKey: true }), false);
 });
 
 test("reveals translations at a stable characters-per-second rate", () => {

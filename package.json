@@ -17,7 +17,7 @@
     "desktop:native": "node scripts/bundle-macos-tools.mjs",
     "desktop:package": "node scripts/package-desktop.mjs",
     "test:desktop": "node --test tests/desktop.test.mjs",
-    "test:desktop-ui": "node --test --test-concurrency=1 tests/desktop-navigation.test.mjs tests/reader-zoom.test.mjs tests/queue-ui.test.mjs tests/translation-transfer.test.mjs"
+    "test:desktop-ui": "node --test --test-concurrency=1 tests/desktop-navigation.test.mjs tests/reader-zoom.test.mjs tests/queue-ui.test.mjs tests/translation-transfer.test.mjs tests/file-shortcuts.test.mjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",

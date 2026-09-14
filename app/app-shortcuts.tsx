@@ -1,11 +1,29 @@
 "use client";
 
-import { useEffect } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { isSettingsShortcut } from "../lib/keyboard-shortcuts";
+import { isOpenFileShortcut, isSettingsShortcut } from "../lib/keyboard-shortcuts";
 
-export function AppShortcuts() {
+type OpenFileContextValue = {
+  openFile: () => void;
+  pendingFile: File | null;
+  consumeFile: () => void;
+};
+const OpenFileContext = createContext<OpenFileContextValue | null>(null);
+
+export function useOpenFile() {
+  const context = useContext(OpenFileContext);
+  if (!context) throw new Error("useOpenFile must be used inside AppShortcuts.");
+  return context;
+}
+
+export function AppShortcuts({ children }: { children: ReactNode }) {
   const router = useRouter();
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const openFile = useCallback(() => fileInput.current?.click(), []);
+  const consumeFile = useCallback(() => setPendingFile(null), []);
+  const value = useMemo(() => ({ openFile, pendingFile, consumeFile }), [openFile, pendingFile, consumeFile]);
 
   useEffect(() => {
     function openSettings() {
@@ -16,7 +34,13 @@ export function AppShortcuts() {
       else router.push("/settings");
     }
     function keydown(event: KeyboardEvent) {
-      if (event.defaultPrevented || !isSettingsShortcut(event)) return;
+      if (event.defaultPrevented) return;
+      if (isOpenFileShortcut(event)) {
+        event.preventDefault();
+        openFile();
+        return;
+      }
+      if (!isSettingsShortcut(event)) return;
       event.preventDefault();
       openSettings();
     }
@@ -26,7 +50,17 @@ export function AppShortcuts() {
       window.removeEventListener("keydown", keydown);
       window.removeEventListener("verso:open-settings", openSettings);
     };
-  }, [router]);
+  }, [openFile, router]);
 
-  return null;
+  return <OpenFileContext.Provider value={value}>
+    {children}
+    <input ref={fileInput} data-open-file-input type="file" accept="application/pdf" hidden onChange={(event) => {
+      const file = event.currentTarget.files?.[0];
+      event.currentTarget.value = "";
+      if (!file) return;
+      // Retain the selected file only until the reader consumes it after navigation.
+      setPendingFile(file);
+      if (window.location.pathname !== "/") router.push("/");
+    }} />
+  </OpenFileContext.Provider>;
 }
