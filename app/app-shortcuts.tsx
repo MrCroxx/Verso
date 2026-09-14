@@ -102,16 +102,23 @@ export function AppShortcuts({ children }: { children: ReactNode }) {
       event.stopImmediatePropagation();
       if (!event.repeat) hideHelp();
     }
+    function beforeOpenFile(event: Event) {
+      if (!helpVisible.current) return;
+      event.preventDefault();
+      hideHelp();
+    }
     function visibilityChanged() { if (document.hidden) hideHelp(); }
     window.addEventListener("keydown", dismissHelp, true);
     window.addEventListener("keydown", keydown);
     window.addEventListener("verso:open-settings", openSettings);
+    window.addEventListener("verso:before-open-file", beforeOpenFile);
     window.addEventListener("blur", hideHelp);
     document.addEventListener("visibilitychange", visibilityChanged);
     return () => {
       window.removeEventListener("keydown", dismissHelp, true);
       window.removeEventListener("keydown", keydown);
       window.removeEventListener("verso:open-settings", openSettings);
+      window.removeEventListener("verso:before-open-file", beforeOpenFile);
       window.removeEventListener("blur", hideHelp);
       document.removeEventListener("visibilitychange", visibilityChanged);
     };

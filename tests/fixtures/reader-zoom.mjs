@@ -393,13 +393,19 @@ async function run() {
     window.focus();
     window.webContents.focus();
     await waitFor(() => window.isFocused() && js('document.hasFocus()'));
-    await js(`document.querySelector('.shortcut-help-button').scrollIntoView({ behavior: 'instant', block: 'center' });
+    await js(`window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
       new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));`);
-    const helpPosition = await js(`(() => {
-      const box = document.querySelector('.shortcut-help-button').getBoundingClientRect();
-      return { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2) };
-    })()`);
-    assert.equal(await js(`!!document.elementFromPoint(${helpPosition.x}, ${helpPosition.y})?.closest('.shortcut-help-button')`), true, 'The button must be under the click position');
+    let helpPosition;
+    await waitFor(async () => {
+      helpPosition = await js(`(() => {
+        const button = document.querySelector('.shortcut-help-button');
+        const box = button.getBoundingClientRect();
+        const x = Math.round(box.x + box.width / 2), y = Math.round(box.y + box.height / 2);
+        return { x, y, hit: button.contains(document.elementFromPoint(x, y)) };
+      })()`);
+      return helpPosition.hit;
+    }, 'The help button must settle under the click position');
+    delete helpPosition.hit;
     window.webContents.sendInputEvent({ type: 'mouseMove', ...helpPosition });
     window.webContents.sendInputEvent({ type: 'mouseDown', ...helpPosition, button: 'left', clickCount: 1 });
     window.webContents.sendInputEvent({ type: 'mouseUp', ...helpPosition, button: 'left', clickCount: 1 });
@@ -534,6 +540,11 @@ async function run() {
       url: location.href, page: document.querySelector('.page-stepper strong')?.textContent,
       sidebar: document.querySelector('.sidebar')?.className, active: document.activeElement.outerHTML.slice(0, 200),
       helpVisible: !!document.querySelector('#shortcut-help-panel'),
+      viewport: { width: innerWidth, height: innerHeight, scrollY },
+      helpButton: (() => {
+        const box = document.querySelector('.shortcut-help-button')?.getBoundingClientRect();
+        return box && { box: box.toJSON(), hit: document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)?.outerHTML.slice(0, 300) };
+      })(),
     })`));
     exitCode = 1;
   } finally {

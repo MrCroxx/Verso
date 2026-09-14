@@ -3,7 +3,7 @@ import { app, BrowserWindow, Menu, protocol, session } from 'electron';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { launchBackend } from '../../desktop/backend.mjs';
-import { createFileMenu } from '../../desktop/file-menu.mjs';
+import { createFileMenu, installFileShortcut } from '../../desktop/file-menu.mjs';
 import { APP_URL, createProtocolHandler } from '../../desktop/protocol.mjs';
 
 app.setPath('userData', path.join(process.env.VERSO_TEST_DIRECTORY, 'profile'));
@@ -44,6 +44,7 @@ async function run() {
       webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, backgroundThrottling: false } });
     const js = (code, userGesture = false) => window.webContents.executeJavaScript(code, userGesture);
     const menuErrors = [];
+    installFileShortcut(window, error => menuErrors.push(error));
     const menu = Menu.buildFromTemplate([
       ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
       createFileMenu({ openWindow: async () => window, onError: error => menuErrors.push(error) }),
@@ -105,6 +106,11 @@ async function run() {
     window.focus();
     await waitFor(() => js('!!document.documentElement.dataset.theme && !!document.querySelector(".library-upload-button")'), 'Library must be ready');
     assert.equal(await js('document.querySelector("[data-open-file-input]").accept'), 'application/pdf');
+    await js(`document.body.dispatchEvent(new KeyboardEvent('keydown', { key: '?', bubbles: true, cancelable: true }));`);
+    await waitFor(() => js(`!!document.querySelector('#shortcut-help-panel')`), 'Shortcut help must open');
+    await key([modifier]);
+    await waitFor(() => js(`!document.querySelector('#shortcut-help-panel')`), 'Native open shortcut must dismiss help');
+    assert.equal(choosers.length, 0, 'Dismissing help must not open a chooser');
     await choose(() => key([modifier]));
     assert.equal(await js('location.pathname'), '/');
     assert.equal(await js('!!document.querySelector(".library-shell")'), true, 'Cancelling must preserve the library');

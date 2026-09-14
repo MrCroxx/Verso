@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { launchBackend } from './backend.mjs';
 import { APP_URL, createProtocolHandler, isAppUrl } from './protocol.mjs';
-import { createFileMenu } from './file-menu.mjs';
+import { createFileMenu, installFileShortcut } from './file-menu.mjs';
 
 app.setName('Verso');
 let backend;
@@ -32,6 +32,7 @@ async function openWindow(initialUrl = origin) {
     backgroundColor: '#f6f4ef',
     webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, spellcheck: false },
   });
+  installFileShortcut(window, fail);
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   const guardNavigation = (event, url) => {
     if (!isAppUrl(url)) event.preventDefault();
