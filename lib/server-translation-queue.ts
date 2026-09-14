@@ -121,26 +121,31 @@ async function runPageTranslation(input: TranslationRequest, background: boolean
     signal?.throwIfAborted();
     if (!documentId) return result;
     if ((state.generations.get(documentId) || 0) !== generation) throw new Error("Translation was discarded.");
-    const persisted = startSpan("storage.persist");
-    const revision = result.previousPageRevision;
-    let revisionApplied = false;
-    if (revision?.page === input.page - 1 && previous && revision.blocks.length) {
-      revisionApplied = await saveTranslation(documentId, input.targetLanguage, {
-        ...previous, ...revision, markdown: markdown(revision.blocks), isBlank: !hasLayoutContent(revision.blocks),
-        sourceSummary: previous.sourceSummary || "", previousPageRevision: null, cacheVersion: version, cachedAt: Date.now(),
-      }, previous.cacheVersion ?? 0);
-    }
-    // A parallel predecessor may still be running or may have changed since this request started.
-    // Never deduplicate against a revision that was not actually saved.
-    const previousBlocks = revisionApplied ? revision!.blocks
-      : input.page > 1 ? (await readTranslation(documentId, input.page - 1, input.targetLanguage))?.blocks : undefined;
-    const blocks = previousBlocks ? deduplicatePageBoundary(previousBlocks, result.blocks).blocks : result.blocks;
-    const saved = { ...result, blocks, isBlank: !hasLayoutContent(blocks), markdown: markdown(blocks), cacheVersion: version, cachedAt: Date.now(), serverManaged: true };
-    if ((state.generations.get(documentId) || 0) !== generation) throw new Error("Translation was discarded.");
-    signal?.throwIfAborted();
-    await saveTranslation(documentId, input.targetLanguage, saved);
-    persisted();
-    return saved;
+    // Cache writes and discards share the queue lock, including boundary revisions.
+    return control(async () => {
+      if ((state.generations.get(documentId) || 0) !== generation) throw new Error("Translation was discarded.");
+      signal?.throwIfAborted();
+      const persisted = startSpan("storage.persist");
+      const revision = result.previousPageRevision;
+      let revisionApplied = false;
+      if (revision?.page === input.page - 1 && previous && revision.blocks.length) {
+        revisionApplied = await saveTranslation(documentId, input.targetLanguage, {
+          ...previous, ...revision, markdown: markdown(revision.blocks), isBlank: !hasLayoutContent(revision.blocks),
+          sourceSummary: previous.sourceSummary || "", previousPageRevision: null, cacheVersion: version, cachedAt: Date.now(),
+        }, previous.cacheVersion ?? 0);
+      }
+      // A parallel predecessor may still be running or may have changed since this request started.
+      // Never deduplicate against a revision that was not actually saved.
+      const previousBlocks = revisionApplied ? revision!.blocks
+        : input.page > 1 ? (await readTranslation(documentId, input.page - 1, input.targetLanguage))?.blocks : undefined;
+      const blocks = previousBlocks ? deduplicatePageBoundary(previousBlocks, result.blocks).blocks : result.blocks;
+      const saved = { ...result, blocks, isBlank: !hasLayoutContent(blocks), markdown: markdown(blocks), cacheVersion: version, cachedAt: Date.now(), serverManaged: true };
+      if ((state.generations.get(documentId) || 0) !== generation) throw new Error("Translation was discarded.");
+      signal?.throwIfAborted();
+      await saveTranslation(documentId, input.targetLanguage, saved);
+      persisted();
+      return saved;
+    });
   }), Boolean(input.force));
   } catch (error) { queued("error"); throw error; }
   finally { queued(); progress.release(); }
@@ -157,7 +162,14 @@ async function summarize(row: QueueRow) {
   const retrying = failed.filter((page) => page.status !== "failed");
   const retryCount = pages.reduce((count, page) => count + page.retry_count, 0);
   const remaining = pages.filter((page) => page.status !== "failed");
-  const status = row.next_page > row.total_pages && !remaining.length ? (failed.length ? "partial" : "completed")
+  const exhausted = row.next_page > row.total_pages && !remaining.length;
+  // The cursor tracks dispatched pages, not durable results. History may have been cleared.
+  const saved = exhausted ? await getStorage().db.prepare(`SELECT COUNT(DISTINCT page) AS count FROM translations
+    WHERE document_id = ?1 AND page BETWEEN 1 AND ?2
+    AND cache_key = ?3 || document_id || '::' || page || ?4`)
+    .bind(row.document_id, row.total_pages, `${TRANSLATION_CACHE_LAYOUT_VERSION}::`,
+      `::${TRANSLATION_CACHE_SERVER_VERSION}::${row.target_language}`).first<{ count: number }>() : null;
+  const status = exhausted ? (failed.length || saved?.count !== row.total_pages ? "partial" : "completed")
     : pages.some((page) => page.status === "running") ? "running" : retrying.length ? "retrying" : "queued";
   await getStorage().db.prepare(`UPDATE translation_queue SET
     status = CASE WHEN status = 'stopped' OR (status = 'failed' AND ?3 <> 'completed') THEN status ELSE ?3 END,
@@ -251,6 +263,7 @@ async function pump() {
       }
       if (!selected) break;
       const { row, page } = selected;
+      const generation = state.generations.get(row.document_id) || 0;
       const taskKey = key(row.document_id, page.page, row.target_language);
       const controller = new AbortController();
       state.active.set(taskKey, { documentId: row.document_id, language: row.target_language, page: page.page, controller });
@@ -259,7 +272,10 @@ async function pump() {
       await db.prepare("UPDATE translation_queue SET status = 'running', updated_at = ?3 WHERE document_id = ?1 AND target_language = ?2")
         .bind(row.document_id, row.target_language, Date.now()).run();
       const finish = (error?: unknown) => control(async () => {
-        try { await finishPage(row, page, error); }
+        try {
+          // Deleting and re-enqueuing a book can reuse run_id; discard generations cannot.
+          if ((state.generations.get(row.document_id) || 0) === generation) await finishPage(row, page, error);
+        }
         finally { state.active.delete(taskKey); }
       }).finally(() => { void pump().catch(console.error); });
       void requestPageTranslation({ bookId: row.document_id, page: page.page, totalPages: row.total_pages, targetLanguage: row.target_language,
@@ -302,12 +318,18 @@ export async function enqueueBook(bookId: string, language: string) {
     if (!config?.apiKey || !config.endpoint || !config.model) throw new Error("AI provider is not configured on the server.");
     const result = await db.prepare(`INSERT INTO translation_queue (document_id, target_language, updated_at) VALUES (?1, ?2, ?3)
       ON CONFLICT(document_id, target_language) DO UPDATE SET status = 'queued', error = NULL,
-      next_page = CASE WHEN translation_queue.status = 'completed' THEN 1 ELSE translation_queue.next_page END,
+      next_page = CASE WHEN translation_queue.status IN ('completed', 'partial') THEN 1 ELSE translation_queue.next_page END,
       retry_count = 0, retry_at = 0, run_id = translation_queue.run_id + 1,
       updated_at = excluded.updated_at WHERE translation_queue.status IN ('failed', 'completed', 'stopped', 'partial')`)
       .bind(book.fingerprint, language, Date.now()).run();
-    if (result.changes) await db.prepare(`UPDATE translation_queue_pages SET status = 'queued', retry_count = 0, retry_at = 0, error = NULL
-      WHERE document_id = ?1 AND target_language = ?2`).bind(book.fingerprint, language).run();
+    if (result.changes) {
+      // A full rescan rebuilds page records; retaining exhausted pages would collide with the cursor.
+      await db.prepare(`DELETE FROM translation_queue_pages WHERE document_id = ?1 AND target_language = ?2
+        AND EXISTS (SELECT 1 FROM translation_queue WHERE document_id = ?1 AND target_language = ?2 AND next_page = 1)`)
+        .bind(book.fingerprint, language).run();
+      await db.prepare(`UPDATE translation_queue_pages SET status = 'queued', retry_count = 0, retry_at = 0, error = NULL
+        WHERE document_id = ?1 AND target_language = ?2`).bind(book.fingerprint, language).run();
+    }
   });
   startTranslationWorker();
 }
@@ -318,7 +340,7 @@ export async function listTranslationQueue(language?: string) {
   return control(async () => {
     // Include pages recovered by foreground reading or an explicit cache update.
     const affected = (await db.prepare(`SELECT q.*, b.page_count AS total_pages FROM translation_queue q
-      JOIN books b ON b.fingerprint = q.document_id WHERE q.error IS NOT NULL
+      JOIN books b ON b.fingerprint = q.document_id WHERE (q.error IS NOT NULL OR q.status = 'completed')
       AND (?1 IS NULL OR q.target_language = ?1)`).bind(language ?? null).all<QueueRow>()).results;
     for (const row of affected) {
       await reconcileSuccessfulPages(row);
@@ -362,10 +384,16 @@ export async function stopBookTranslation(bookId: string, language: string) {
   });
 }
 
-export async function discardBookTranslationJobs(documentId: string) {
-  await control(async () => {
+export async function discardBookTranslations(documentId: string) {
+  return control(async () => {
+    const { db } = getStorage();
+    await ensureStorageSchema(db);
     abortPages(documentId);
     state.generations.set(documentId, (state.generations.get(documentId) || 0) + 1);
-    await getStorage().db.prepare("DELETE FROM translation_queue WHERE document_id = ?1").bind(documentId).run();
+    const [, deleted] = await db.batch([
+      db.prepare("DELETE FROM translation_queue WHERE document_id = ?1").bind(documentId),
+      db.prepare("DELETE FROM translations WHERE document_id = ?1").bind(documentId),
+    ]);
+    return Number(deleted.changes);
   });
 }
