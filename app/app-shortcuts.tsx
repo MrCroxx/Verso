@@ -1,17 +1,19 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, ArrowRight, Keyboard, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Keyboard } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { historyShortcutDirection, isEditableShortcutTarget, isOpenFileShortcut, isSettingsShortcut, isShortcutHelpShortcut } from "../lib/keyboard-shortcuts";
 import { UI_MESSAGES } from "../lib/ui-messages";
 import { useUiLocale } from "./ui-locale";
+import styles from "./shortcut-help.module.css";
 
 type AppShortcutContextValue = {
   openFile: () => void;
   pendingFile: File | null;
   consumeFile: () => void;
-  showShortcuts: () => void;
+  setShortcutButtonHeld: (held: boolean) => void;
+  shortcutsVisible: boolean;
   shortcutModifier: string;
   back: () => void;
   forward: () => void;
@@ -28,18 +30,15 @@ export function AppShortcuts({ children }: { children: ReactNode }) {
   const router = useRouter();
   const { locale } = useUiLocale();
   const messages = UI_MESSAGES[locale];
-  const dialog = useRef<HTMLDialogElement>(null);
-  const shortcutHelpOpener = useRef<HTMLElement | null>(null);
+  const heldHelpKey = useRef<string | null>(null);
+  const [shortcutKeyHeld, setShortcutKeyHeld] = useState(false);
+  const [shortcutButtonHeld, setShortcutButtonHeld] = useState(false);
+  const shortcutsVisible = shortcutKeyHeld || shortcutButtonHeld;
   const [shortcutModifier, setShortcutModifier] = useState("Ctrl+");
   const fileInput = useRef<HTMLInputElement>(null);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const openFile = useCallback(() => fileInput.current?.click(), []);
   const consumeFile = useCallback(() => setPendingFile(null), []);
-  const showShortcuts = useCallback(() => {
-    if (dialog.current?.open) return;
-    shortcutHelpOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    dialog.current?.showModal();
-  }, []);
   const back = useCallback(() => {
     window.dispatchEvent(new Event("verso:before-history-navigation"));
     router.back();
@@ -48,8 +47,8 @@ export function AppShortcuts({ children }: { children: ReactNode }) {
     window.dispatchEvent(new Event("verso:before-history-navigation"));
     router.forward();
   }, [router]);
-  const value = useMemo(() => ({ openFile, pendingFile, consumeFile, showShortcuts, shortcutModifier, back, forward }),
-    [openFile, pendingFile, consumeFile, showShortcuts, shortcutModifier, back, forward]);
+  const value = useMemo(() => ({ openFile, pendingFile, consumeFile, setShortcutButtonHeld, shortcutsVisible, shortcutModifier, back, forward }),
+    [openFile, pendingFile, consumeFile, setShortcutButtonHeld, shortcutsVisible, shortcutModifier, back, forward]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setShortcutModifier(/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+"), 0);
@@ -66,11 +65,12 @@ export function AppShortcuts({ children }: { children: ReactNode }) {
     }
     function keydown(event: KeyboardEvent) {
       if (event.defaultPrevented) return;
-      if (dialog.current?.open) return;
       if (!isEditableShortcutTarget(event.target)) {
         if (isShortcutHelpShortcut(event)) {
           event.preventDefault();
-          showShortcuts();
+          if (event.repeat && !heldHelpKey.current) return;
+          heldHelpKey.current = event.code || event.key;
+          setShortcutKeyHeld(true);
           return;
         }
         const direction = historyShortcutDirection(event);
@@ -91,43 +91,72 @@ export function AppShortcuts({ children }: { children: ReactNode }) {
       event.preventDefault();
       openSettings();
     }
+    function keyup(event: KeyboardEvent) {
+      // Shift can be released first, so the same physical key may report "/".
+      if (heldHelpKey.current && (event.code === heldHelpKey.current || event.key === heldHelpKey.current
+        || event.key === "?" || event.key === "/" || event.key === "Shift")) {
+        heldHelpKey.current = null;
+        setShortcutKeyHeld(false);
+      }
+      if (event.key === "Enter" || event.key === " ") setShortcutButtonHeld(false);
+    }
+    function releaseButton() { setShortcutButtonHeld(false); }
+    function releaseHelp() {
+      heldHelpKey.current = null;
+      setShortcutKeyHeld(false);
+      releaseButton();
+    }
+    function visibilityChanged() { if (document.hidden) releaseHelp(); }
     window.addEventListener("keydown", keydown);
     window.addEventListener("verso:open-settings", openSettings);
+    window.addEventListener("keyup", keyup, true);
+    window.addEventListener("pointerup", releaseButton, true);
+    window.addEventListener("pointercancel", releaseButton, true);
+    window.addEventListener("blur", releaseHelp);
+    document.addEventListener("visibilitychange", visibilityChanged);
     return () => {
       window.removeEventListener("keydown", keydown);
       window.removeEventListener("verso:open-settings", openSettings);
+      window.removeEventListener("keyup", keyup, true);
+      window.removeEventListener("pointerup", releaseButton, true);
+      window.removeEventListener("pointercancel", releaseButton, true);
+      window.removeEventListener("blur", releaseHelp);
+      document.removeEventListener("visibilitychange", visibilityChanged);
     };
-  }, [back, forward, openFile, router, showShortcuts]);
+  }, [back, forward, openFile, router]);
 
-  const shortcutRows = [
-    [messages.openPdf, `${shortcutModifier}O`],
-    [messages.settings, `${shortcutModifier},`],
-    [messages.historyBack, `${shortcutModifier}[`],
-    [messages.historyForward, `${shortcutModifier}]`],
-    [messages.toggleSidebar, `${shortcutModifier}B`],
-    [messages.searchPages, `${shortcutModifier}F`],
-    [messages.zoomIn, `${shortcutModifier}+`],
-    [messages.zoomOut, `${shortcutModifier}-`],
-    [messages.fitWidth, `${shortcutModifier}0`],
-    [messages.keyboardShortcuts, "?"],
-    [messages.closeShortcutHelp, "Esc"],
+  const shortcutGroups = [
+    { label: messages.shortcutGeneral, rows: [
+      [messages.openPdf, [`${shortcutModifier}O`]],
+      [messages.settings, [`${shortcutModifier},`]],
+      [messages.historyBack, [`${shortcutModifier}[`]],
+      [messages.historyForward, [`${shortcutModifier}]`]],
+    ] as [string, string[]][] },
+    { label: messages.shortcutReading, rows: [
+      [messages.toggleSidebar, [`${shortcutModifier}B`]],
+      [messages.searchPages, [`${shortcutModifier}F`]],
+      [messages.shortcutZoom, [`${shortcutModifier}+`, `${shortcutModifier}−`]],
+      [messages.fitWidth, [`${shortcutModifier}0`]],
+    ] as [string, string[]][] },
   ];
   return <AppShortcutContext.Provider value={value}>
     {children}
-    <dialog ref={dialog} className="shortcut-dialog" aria-labelledby="shortcut-dialog-title"
-      onClose={() => { if (shortcutHelpOpener.current?.isConnected) shortcutHelpOpener.current.focus({ preventScroll: true }); }}
-      onKeyDown={(event) => event.stopPropagation()} onClick={(event) => {
-        if (event.target !== event.currentTarget) return;
-        const bounds = event.currentTarget.getBoundingClientRect();
-        if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.current?.close();
-      }}>
-      <div className="shortcut-dialog-heading">
-        <h2 id="shortcut-dialog-title">{messages.keyboardShortcuts}</h2>
-        <button type="button" className="icon-button" autoFocus aria-label={messages.closeShortcutHelp} onClick={() => dialog.current?.close()}><X size={18} /></button>
+    {shortcutsVisible && <aside className={styles.panel} id="shortcut-help-panel" role="tooltip" aria-labelledby="shortcut-help-title">
+      <div className={styles.heading}>
+        <span className={styles.icon}><Keyboard size={18} aria-hidden="true" /></span>
+        <h2 id="shortcut-help-title">{messages.keyboardShortcuts}</h2>
+        <kbd className={styles.holdKey}>?</kbd>
       </div>
-      <p>{messages.keyboardShortcutsHelp}</p>
-      <dl>{shortcutRows.map(([label, key]) => <div key={label}><dt>{label}</dt><dd><kbd>{key}</kbd></dd></div>)}</dl>
-    </dialog>
+      <div className={styles.groups}>
+        {shortcutGroups.map((group) => <section className={styles.group} key={group.label}>
+          <h3>{group.label}</h3>
+          <dl>{group.rows.map(([label, keys]) => <div className={styles.row} key={label}>
+            <dt>{label}</dt><dd>{keys.map((key) => <kbd key={key}>{key}</kbd>)}</dd>
+          </div>)}</dl>
+        </section>)}
+      </div>
+      <p className={styles.hint}>{messages.keyboardShortcutsHelp}</p>
+    </aside>}
     <input ref={fileInput} data-open-file-input type="file" accept="application/pdf" hidden onChange={(event) => {
       const file = event.currentTarget.files?.[0];
       event.currentTarget.value = "";
@@ -140,12 +169,25 @@ export function AppShortcuts({ children }: { children: ReactNode }) {
 }
 
 export function ShortcutHelpButton({ menu = false }: { menu?: boolean }) {
-  const { showShortcuts } = useAppShortcuts();
+  const { setShortcutButtonHeld, shortcutsVisible } = useAppShortcuts();
   const { locale } = useUiLocale();
   const label = UI_MESSAGES[locale].keyboardShortcuts;
   return <button type="button" className={menu ? "shortcut-help-button" : "icon-button shortcut-help-button"}
     role={menu ? "menuitem" : undefined} aria-label={label} title={`${label} (?)`} aria-keyshortcuts="?"
-    onClick={showShortcuts}><Keyboard size={17} />{menu && <span>{label}</span>}</button>;
+    aria-describedby={shortcutsVisible ? "shortcut-help-panel" : undefined}
+    onPointerDown={(event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      setShortcutButtonHeld(true);
+    }}
+    onLostPointerCapture={() => setShortcutButtonHeld(false)}
+    onBlur={() => setShortcutButtonHeld(false)}
+    onKeyDown={(event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      if (!event.repeat) setShortcutButtonHeld(true);
+    }}><Keyboard size={17} />{menu && <span>{label}</span>}</button>;
 }
 
 export function NavigationHistoryControls() {
