@@ -13,6 +13,12 @@ All other screenshots in this directory used by the README are direct
 application captures. The reading views use DeepSeek V4.1 or *Midnight Movies*.
 The provider-settings screenshot has its endpoint and API key redacted.
 
+The [smart contents navigation screenshot](smart-contents-navigation-en.png)
+is copied unchanged from the September 13, 2026 UI-update capture
+(`docs/screenshots/2026-09-13-ui-update/15-contents-navigation.png`). It shows
+the English interface with detected Chinese chapter titles, automatic
+page-offset calibration, and section 2 of the DeepSeek V4.1 report open.
+
 ## macOS presentation
 
 Output: [verso-macos-showcase.png](verso-macos-showcase.png)
