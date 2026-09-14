@@ -1,7 +1,14 @@
-type SearchShortcutEvent = Pick<KeyboardEvent, "altKey" | "ctrlKey" | "key" | "metaKey" | "shiftKey">;
+type ShortcutEvent = Pick<KeyboardEvent, "altKey" | "ctrlKey" | "key" | "metaKey" | "shiftKey">;
 
-export function isDocumentSearchShortcut(event: SearchShortcutEvent) {
+export function isDocumentSearchShortcut(event: ShortcutEvent) {
   return event.key.toLocaleLowerCase() === "f"
+    && (event.ctrlKey !== event.metaKey)
+    && !event.altKey
+    && !event.shiftKey;
+}
+
+export function isSettingsShortcut(event: ShortcutEvent) {
+  return event.key === ","
     && (event.ctrlKey !== event.metaKey)
     && !event.altKey
     && !event.shiftKey;

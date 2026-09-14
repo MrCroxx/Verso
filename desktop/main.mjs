@@ -24,7 +24,7 @@ function fail(error) {
   else app.exit(1);
 }
 
-async function openWindow() {
+async function openWindow(initialUrl = origin) {
   if (window) { window.show(); window.focus(); return; }
   window = new BrowserWindow({
     title: 'Verso', width: 1440, height: 960, minWidth: 900, minHeight: 600, show: false,
@@ -39,7 +39,7 @@ async function openWindow() {
   window.webContents.on('will-redirect', guardNavigation);
   window.webContents.on('will-attach-webview', (event) => event.preventDefault());
   window.once('closed', () => { window = undefined; });
-  await window.loadURL(origin);
+  await window.loadURL(initialUrl);
   window.show();
   if (smokeTest) {
     const pdfPath = process.argv.find((argument) => argument.startsWith('--smoke-pdf='))?.slice(12);
@@ -116,7 +116,19 @@ if (!app.requestSingleInstanceLock()) {
   process.on('exit', () => backend?.kill());
   app.whenReady().then(async () => {
     Menu.setApplicationMenu(Menu.buildFromTemplate([
-      { label: 'Verso', submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }] },
+      { label: 'Verso', submenu: [{ role: 'about' }, { type: 'separator' },
+        { label: 'Settings…', accelerator: 'CommandOrControl+,', click: async () => {
+          if (!origin || quitting) return;
+          try {
+            if (!window) {
+              await openWindow(new URL('/settings', origin).href);
+              return;
+            }
+            await openWindow();
+            await window.webContents.executeJavaScript("window.dispatchEvent(new Event('verso:open-settings'))");
+          } catch (error) { fail(error); }
+        } },
+        { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }] },
       { role: 'editMenu' },
       { label: 'View', submenu: [{ role: 'reload' }, { role: 'togglefullscreen' }] },
       { role: 'windowMenu' },

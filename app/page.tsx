@@ -931,7 +931,7 @@ function PageSpread({
           <div className="translation-heading-actions">
             {loading && progress && <TranslationLiveProgress progress={progress} messages={messages} />}
             {!loading && translation?.usage && (
-              <TranslationUsageSummary usage={translation.usage} messages={messages} />
+              <TranslationUsageSummary usage={translation.usage} cachedAt={translation.cachedAt} messages={messages} />
             )}
             {(translation || translating) && (
               <button
@@ -1101,7 +1101,7 @@ function LibraryHome({
           <Link className="icon-button queue-link" href="/queue" title={messages.queueTitle} aria-label={activeJobCount ? `${messages.queueTitle} (${activeJobCount})` : messages.queueTitle}><ListOrdered size={17} />{activeJobCount > 0 && <span className="queue-count" aria-hidden="true">{activeJobCount}</span>}</Link>
           <button className="icon-button locale-button" title={messages.switchLanguage} aria-label={messages.switchLanguage} onClick={onToggleLocale}><Globe2 size={16} /><span>{locale === "zh-CN" ? "EN" : "中"}</span></button>
           <ThemeSelect compact />
-          <Link className="icon-button settings-link" href="/settings" title={messages.settings} aria-label={messages.settings}><Settings size={17} /></Link>
+          <Link data-settings-trigger className="icon-button settings-link" href="/settings" title={messages.settings} aria-label={messages.settings}><Settings size={17} /></Link>
           <button className="icon-button library-upload-button" onClick={onUpload} title={messages.uploadPdf} aria-label={messages.uploadPdf}><Upload size={17} /></button>
         </div>
       </header>
@@ -2612,7 +2612,7 @@ export default function Home() {
           )}
           <button className="icon-button locale-button" title={messages.switchLanguage} aria-label={messages.switchLanguage} onClick={() => setLocale(locale === "zh-CN" ? "en-US" : "zh-CN")}><Globe2 size={16} /><span>{locale === "zh-CN" ? "EN" : "中"}</span></button>
           <ThemeSelect compact />
-          <button className="icon-button reader-settings-button" title={messages.settings} aria-label={messages.settings} onClick={() => openSettings()}><Settings size={17} /></button>
+          <button data-settings-trigger className="icon-button reader-settings-button" title={messages.settings} aria-label={messages.settings} onClick={() => openSettings()}><Settings size={17} /></button>
           <button className="icon-button reader-upload-button" title={messages.openPdf} aria-label={messages.openPdf} onClick={() => fileInput.current?.click()}><Upload size={17} /></button>
           <div className="reader-menu-anchor" ref={readerMenu}>
             <button

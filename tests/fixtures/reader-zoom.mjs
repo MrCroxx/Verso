@@ -55,9 +55,9 @@ async function run() {
       JSON.stringify({ ...metadata, objectKey: upload.objectKey, parts: [part] }));
     for (const page of [1, 10]) await request('/api/translations', 'PUT', JSON.stringify({
       key: translationCacheKey(metadata.fingerprint, page, 'Simplified Chinese'), documentId: metadata.fingerprint, page,
-      translation: { page, blocks: [{ kind: 'paragraph', text: 'Usage display fixture.' }], cachedAt: Date.now(),
+      translation: { page, blocks: [{ kind: 'paragraph', text: 'Usage display fixture.' }], cachedAt: Date.parse('2026-09-14T09:00:00+08:00'),
         usage: { inputTokens: 12000, outputTokens: 3000, totalTokens: 15000, cachedInputTokens: 9000, outputSeconds: 30,
-          cost: { amount: 0.0345, currency: 'USD' } } },
+          ...(page === 1 && { cost: { amount: 0.0345, currency: 'USD' } }) } },
     }));
     protocol.handle('https', createProtocolHandler({ ...ready,
       getCookies: url => session.defaultSession.cookies.get({ url }) }));
@@ -282,8 +282,16 @@ async function run() {
     await waitFor(() => js(`document.querySelector('.reader-viewport')?.dataset.translationFont === 'sans'
       && getComputedStyle(document.querySelector('.spreads')).getPropertyValue('--translation-font-scale').trim() === '1.5'`),
     'Font preferences must persist across a desktop reload');
-    await window.loadURL(`${APP_URL}/settings`);
+    await window.loadURL(`${APP_URL}?book=${metadata.fingerprint}&page=10`);
+    await waitFor(() => js(`!!document.querySelector('[data-page="10"] .translation-usage')`));
+    assert.doesNotMatch(await js(`document.querySelector('[data-page="10"] .translation-usage').textContent`), /USD/);
+    await js(`document.body.dispatchEvent(new KeyboardEvent('keydown', { key: ',', metaKey: true, bubbles: true, cancelable: true }))`);
     await waitFor(() => js(`!!document.querySelector('#pricing-inputPerMillion')`));
+    const settingsUrl = await js('location.href');
+    assert.equal(new URL(settingsUrl).searchParams.get('returnTo'), `/?book=${metadata.fingerprint}&page=10`);
+    await js(`document.querySelector('#pricing-inputPerMillion').focus();
+      document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: ',', metaKey: true, bubbles: true, cancelable: true }))`);
+    assert.equal(await js('location.href'), settingsUrl, 'Repeated shortcuts in Settings must preserve the return path');
     for (const [id, value] of [['pricing-inputPerMillion', '2.5'], ['pricing-outputPerMillion', '8'], ['pricing-cachedInputPerMillion', '0.5']]) {
       await js(`(() => {
         const input = document.getElementById(${JSON.stringify(id)});
@@ -294,6 +302,11 @@ async function run() {
     await waitFor(async () => (await request('/api/settings/ai-provider', 'GET')).pricing?.cachedInputPerMillion === 0.5);
     assert.deepEqual((await request('/api/settings/ai-provider', 'GET')).pricing,
       { currency: 'USD', inputPerMillion: 2.5, outputPerMillion: 8, cachedInputPerMillion: 0.5 });
+    await js(`document.querySelector('.settings-shell .topbar > a.secondary-button').click()`);
+    await waitFor(() => js(`!!document.querySelector('[data-page="10"] .translation-usage')`));
+    assert.match(await js(`document.querySelector('[data-page="10"] .translation-usage').textContent`), /USD\s0.036/);
+    await js(`window.dispatchEvent(new Event('verso:open-settings'))`);
+    await waitFor(() => js(`!!document.querySelector('#pricing-currency')`));
     for (const [id, value] of [['pricing-currency', 'CNY'], ['pricing-schedule', 'deepseek-peak']]) {
       await js(`(() => {
         const select = document.getElementById(${JSON.stringify(id)});
@@ -309,6 +322,15 @@ async function run() {
     assert.equal(await js(`document.querySelector('#pricing-currency').value`), 'CNY');
     await window.loadURL(`${APP_URL}?book=${metadata.fingerprint}`);
     await waitFor(() => js(`/USD\\s0.0345/.test(document.querySelector('[data-page="1"] .translation-usage')?.textContent ?? '')`));
+    await window.loadURL(`${APP_URL}?book=${metadata.fingerprint}&page=10`);
+    await waitFor(() => js(`!!document.querySelector('[data-page="10"] .translation-usage')`));
+    assert.match(await js(`document.querySelector('[data-page="10"] .translation-usage').textContent`), /CNY\s0.072/);
+    const historical = await request(`/api/translations?key=${encodeURIComponent(translationCacheKey(metadata.fingerprint, 10, 'Simplified Chinese'))}`, 'GET');
+    assert.equal(historical.translation.usage.cost, undefined, 'Estimates must leave the original tokens and costs intact');
+    await window.loadURL(APP_URL);
+    await waitFor(() => js(`!!document.querySelector('.settings-link')`));
+    await js(`document.body.dispatchEvent(new KeyboardEvent('keydown', { key: ',', ctrlKey: true, bubbles: true, cancelable: true }))`);
+    await waitFor(() => js(`!!document.querySelector('#pricing-inputPerMillion')`));
     console.log(JSON.stringify({ pages: 80, burstEvents: 40, scaleWrites: burst.writes,
       pointerDrift: { x: continuous.x - before.anchor.x, y: continuous.y - before.anchor.y },
       intrinsicLayoutUnchanged: true, bounds: '50%-300%', controlsAndResize: 'passed', usageAndPricing: 'passed', edges: edgeResults }));

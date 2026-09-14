@@ -9,7 +9,7 @@ import { buildTextPage, boundaryText, canCropBoundary, isTextOnlySvg, needsPrevi
 import { parsePdfWordLayout } from "../lib/source-alignment.ts";
 import { normalizeLayoutBlocks } from "../lib/translation-layout.ts";
 import { makeSourcePdf, sourceFixture } from "./fixtures/source-pages.mjs";
-import { addTranslationUsage, normalizeTranslationUsage, providerTranslationUsage, translationCacheHitRate, translationTokensPerSecond } from "../lib/translation-usage.ts";
+import { addTranslationUsage, normalizeTranslationUsage, providerTranslationUsage, translationCacheHitRate, translationTokensPerSecond, translationUsageCost } from "../lib/translation-usage.ts";
 import { calculateTranslationCost, deepseekPricingPeriod, formatTranslationCost, normalizeTranslationPricing } from "../lib/translation-pricing.ts";
 import { normalizeAiProviderSettingsUpdate } from "../lib/ai-provider-settings.ts";
 
@@ -54,6 +54,26 @@ test("calculates cached input pricing and combines attempt costs and TPS without
   assert.equal(unknown.cost, undefined);
   assert.equal(translationCacheHitRate({ inputTokens: 0, cachedInputTokens: 0 }), 0);
   assert.equal(addTranslationUsage(first, { ...second, outputSeconds: undefined }).outputSeconds, undefined);
+});
+
+test("estimates unpriced history from saved tokens while preserving recorded costs", () => {
+  const usage = { inputTokens: 1000, outputTokens: 100, totalTokens: 1100, cachedInputTokens: 800 };
+  const pricing = { currency: "USD", inputPerMillion: 2, outputPerMillion: 8, cachedInputPerMillion: 0.5 };
+  assert.equal(translationUsageCost(usage), undefined);
+  assert.deepEqual(translationUsageCost(usage, pricing), { currency: "USD", amount: 0.0016 });
+  assert.deepEqual(translationUsageCost(usage, { ...pricing, outputPerMillion: 10 }), { currency: "USD", amount: 0.0018 });
+  const savedCost = { currency: "EUR", amount: 0 };
+  assert.deepEqual(translationUsageCost({ ...usage, cost: savedCost }, pricing), savedCost);
+  assert.equal(usage.cost, undefined, "Display estimates must not modify stored usage");
+  assert.equal(translationUsageCost({ totalTokens: 1100 }, pricing), undefined);
+  assert.equal(translationUsageCost(usage, { currency: "USD", inputPerMillion: 2 }), undefined);
+  assert.equal(translationUsageCost({ ...usage, cachedInputTokens: undefined }, pricing), undefined);
+  const scheduled = { ...pricing, schedule: "deepseek-peak" };
+  assert.deepEqual(translationUsageCost(usage, scheduled, Date.parse("2026-09-14T09:00:00+08:00")),
+    { currency: "USD", amount: 0.0032, period: "peak" });
+  assert.deepEqual(translationUsageCost(usage, scheduled, Date.parse("2026-09-14T12:00:00+08:00")),
+    { currency: "USD", amount: 0.0016, period: "offPeak" });
+  assert.equal(translationUsageCost(usage, scheduled), undefined, "Unknown dates must not use today's peak period");
 });
 
 test("validates optional prices, preserves same-model pricing and clears it on model changes", () => {

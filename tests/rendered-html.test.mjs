@@ -12,7 +12,7 @@ import { applyTheme, watchTheme } from "../lib/theme.ts";
 import { createLocalPdfRangeTransport } from "../lib/local-pdf-range-transport.ts";
 import { readLimitedRequestBody, RequestBodyTooLargeError } from "../lib/server-request-body.ts";
 import { createConcurrencyLimiter } from "../lib/concurrency-limiter.ts";
-import { isDocumentSearchShortcut } from "../lib/keyboard-shortcuts.ts";
+import { isDocumentSearchShortcut, isSettingsShortcut } from "../lib/keyboard-shortcuts.ts";
 import { createLatestTaskRegistry } from "../lib/latest-task-registry.ts";
 import {
   calculatePageOffset,
@@ -662,6 +662,18 @@ test("recognizes browser find shortcuts without hijacking modified keys", () => 
     assert.equal(isDocumentSearchShortcut({ ...plainKey, [modifier]: true, altKey: true }), false);
     assert.equal(isDocumentSearchShortcut({ ...plainKey, [modifier]: true, shiftKey: true }), false);
   }
+});
+
+test("recognizes Command/Ctrl comma without hijacking other modified keys", () => {
+  const plain = { key: ",", ctrlKey: false, metaKey: false, altKey: false, shiftKey: false };
+  assert.equal(isSettingsShortcut(plain), false);
+  for (const modifier of ["ctrlKey", "metaKey"]) {
+    assert.equal(isSettingsShortcut({ ...plain, [modifier]: true }), true);
+    assert.equal(isSettingsShortcut({ ...plain, [modifier]: true, shiftKey: true }), false);
+    assert.equal(isSettingsShortcut({ ...plain, [modifier]: true, altKey: true }), false);
+    assert.equal(isSettingsShortcut({ ...plain, [modifier]: true, key: "." }), false);
+  }
+  assert.equal(isSettingsShortcut({ ...plain, ctrlKey: true, metaKey: true }), false);
 });
 
 test("leaves the macOS fullscreen shortcut to the system", () => {
