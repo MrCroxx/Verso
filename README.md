@@ -19,8 +19,10 @@ translation, keeping illustrations, structure, and source context in view.
 - **Keep the page's structure.** Preserve headings, paragraphs, lists, captions,
   figures, and page numbers. Render text tables, copyable code blocks, and
   KaTeX formulas when they can be extracted reliably.
-- **Find your place.** Navigate pages and detected contents, calibrate printed
-  page numbers, and search saved translations with **Cmd/Ctrl + F**.
+- **Smart contents navigation.** Automatically build a clickable chapter list
+  from translated contents pages and match printed page numbers to PDF pages.
+- **Find your place.** Browse page thumbnails and search saved translations
+  with **Cmd/Ctrl + F**.
 - **Translate a whole book.** Queue books in the background with bounded
   concurrency, automatic retries, and stop/resume controls. Reading takes
   priority over pending background work.
@@ -41,6 +43,17 @@ window of adjacent pages provides context and helps resolve split paragraphs.
 
 ![A translated sentence in the DeepSeek report highlights its original English lines](docs/images/sentence-alignment-en.png)
 
+### Smart contents navigation
+
+Turn a book's printed table of contents into clickable chapter navigation.
+After a contents page is translated, Verso automatically extracts its entries
+and hierarchy into the **Contents** sidebar. Detected printed page numbers
+calibrate the offset to PDF pages, helping chapter links account for covers
+and front matter. Adjust the offset manually when needed, or reset it to
+automatic calibration.
+
+![Automatically detected chapters in the Contents sidebar, with automatic page-offset calibration and the selected section open](docs/images/smart-contents-navigation-en.png)
+
 ### A library that stays with you
 
 Upload PDFs, reopen saved translations, and queue longer books for later.
@@ -49,8 +62,7 @@ book does not need to be rendered or translated all at once.
 
 ![Verso library in the English interface](docs/images/library-en.png)
 
-<details>
-<summary><strong>Background translation</strong></summary>
+### Background translation
 
 Work continues while the browser is closed, as long as the server is running.
 Saved jobs resume after a restart. Completed pages are reused, and retries
@@ -62,10 +74,7 @@ separately.
 See the [translation guide](docs/translation-guide.md#background-translation-queue)
 for retry limits, cancellation, and recovery.
 
-</details>
-
-<details>
-<summary><strong>Dark mode and reading preferences</strong></summary>
+### Dark mode and reading preferences
 
 The interface and translated page adapt to dark mode while the source scan
 keeps its original appearance. Adjust the translation font, fit the spread to
@@ -75,10 +84,7 @@ width, or zoom with the toolbar and keyboard shortcuts.
 
 ![Reading preferences, translation backups, and independent interface language](docs/images/reader-settings-en.png)
 
-</details>
-
-<details>
-<summary><strong>Provider settings and translation costs</strong></summary>
+### Provider settings and translation costs
 
 Configure your endpoint, API key, model, reasoning effort, and optional token
 prices in Settings. Provider credentials stay in the local backend; the
@@ -86,8 +92,6 @@ settings API returns only a masked key hint. Prices you enter are used for
 estimates when compatible usage data is available.
 
 ![English provider settings with the endpoint and API key redacted](docs/images/provider-settings-en.png)
-
-</details>
 
 ## Get started
 
