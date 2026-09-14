@@ -113,7 +113,7 @@ try {
   console.error(error);
   exitCode = 1;
 } finally {
-  window?.destroy();
+  // Keep Electron alive until async cleanup finishes; app.exit closes the windows.
   await backend?.stop();
   app.exit(exitCode);
 }

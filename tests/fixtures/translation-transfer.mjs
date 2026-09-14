@@ -34,6 +34,7 @@ function makePdf(pageCount) {
 
 async function run() {
   try {
+    console.log('Translation transfer: starting Electron and backend');
     await app.whenReady();
     backend = launchBackend({ nodePath: process.env.VERSO_TEST_NODE,
       serverRoot: process.env.VERSO_TEST_SERVER,
@@ -60,6 +61,7 @@ async function run() {
     const js = code => window.webContents.executeJavaScript(code).catch(error => { throw new Error(`${code}: ${error.message}`); });
     const act = code => js(`(async () => { ${code} })()`);
     await window.loadURL(APP_URL);
+    console.log('Translation transfer: library loaded');
     await waitFor(() => js('document.querySelectorAll(".library-book").length === 1'));
     assert.equal(await js('Boolean(document.querySelector(".translation-transfer"))'), false);
     await js('document.querySelector("a.settings-link").click()');
@@ -99,19 +101,23 @@ async function run() {
       return JSON.parse(await readFile(downloaded.path, 'utf8'));
     };
     const libraryDownload = await exportArchive();
+    console.log('Translation transfer: library export completed');
     assert.equal(libraryDownload.books.length, 1);
     assert.equal(libraryDownload.books[0].fingerprint, metadata.fingerprint);
     assert.equal(libraryDownload.books[0].translations.length, 0);
     await importArchive(archive(2));
+    console.log('Translation transfer: library import completed');
     assert.equal(await js('Boolean(document.querySelector(".translation-transfer-notice"))'), false);
     await act('document.querySelector(".settings-card#library").scrollIntoView({ block: "center", behavior: "instant" }); for (let i = 0; i < 3; i++) await new Promise(requestAnimationFrame);');
     await writeFile('/tmp/verso-transfer-settings.png', (await window.webContents.capturePage()).toPNG());
+    console.log('Translation transfer: desktop settings captured');
     window.setContentSize(390, 844);
     await waitFor(() => js('window.innerWidth === 390'));
     await waitFor(() => js('document.documentElement.scrollWidth <= window.innerWidth'), 'The layout overflows at phone width');
     await act('for (let i = 0; i < 3; i++) await new Promise(requestAnimationFrame);');
     await act('document.querySelector(".settings-card#library").scrollIntoView({ block: "center", behavior: "instant" }); for (let i = 0; i < 3; i++) await new Promise(requestAnimationFrame);');
     await writeFile('/tmp/verso-transfer-settings-mobile.png', (await window.webContents.capturePage()).toPNG());
+    console.log('Translation transfer: mobile settings captured');
     window.setContentSize(1400, 900);
     await js('document.querySelector("header a.secondary-button").click()');
     await waitFor(() => js('Boolean(document.querySelector(".library-book"))'));
@@ -133,15 +139,18 @@ async function run() {
     const pendingImport = importArchive(archive(1));
     await js('document.querySelector(".reader-menu-button").click()');
     await pendingImport;
+    console.log('Translation transfer: reader import completed');
     assert.equal(await js('Boolean(document.querySelector(".translation-transfer-notice"))'), false);
     await waitFor(() => js(`document.querySelector('[data-page="1"]').innerText.includes("Restored translation page 1")`), 'Imported page did not appear without reloading');
     assert.equal(await js('document.querySelector("#reader-overflow-menu").hidden'), true);
     await js('document.querySelector(".reader-menu-button").click()');
     const bookDownload = await exportArchive();
+    console.log('Translation transfer: book export completed');
     assert.equal(bookDownload.books.length, 1);
     assert.equal(bookDownload.books[0].translations.length, 2);
     await act('for (let i = 0; i < 3; i++) await new Promise(requestAnimationFrame);');
     await writeFile('/tmp/verso-transfer-reader.png', (await window.webContents.capturePage()).toPNG());
+    console.log('Translation transfer: desktop reader captured');
     window.setContentSize(390, 844);
     await waitFor(() => js('window.innerWidth === 390'));
     await waitFor(() => js('getComputedStyle(document.querySelector(".reader")).marginLeft === "0px"'));
@@ -156,8 +165,10 @@ async function run() {
     console.error(error);
     exitCode = 1;
   } finally {
-    window?.destroy();
+    console.log('Translation transfer: stopping backend');
+    // Keep Electron alive until async cleanup finishes; app.exit closes the windows.
     await backend?.stop();
+    console.log('Translation transfer: exiting Electron');
     app.exit(exitCode);
   }
 }

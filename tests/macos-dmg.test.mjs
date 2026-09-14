@@ -16,7 +16,7 @@ async function fixture(t, { busyAttempts = 0, disappear = false, iconError, unkn
   let mount;
   let attached = false;
   let attempts = 0;
-  const busy = new Error('Resource busy');
+  const busy = Object.assign(new Error('Resource busy'), { status: 16 });
   const entities = [{ 'dev-entry': '/dev/disk42' }, { 'dev-entry': '/dev/disk42s1', 'mount-point': '/private/volume' }];
   const run = (tool, args, options) => {
     commands.push({ tool, args });
@@ -80,10 +80,31 @@ test('DMG packaging retries a busy device after its mountpoint disappears', asyn
 });
 
 test('DMG packaging forces detach only after bounded normal retries', async t => {
-  const f = await fixture(t, { busyAttempts: 3 });
+  const f = await fixture(t, { busyAttempts: 15 });
   await f.build();
   assert.deepEqual(f.detaches().at(-1), ['detach', '/dev/disk42', '-force']);
-  assert.deepEqual(f.delays, [1000, 2000, 3000]);
+  assert.equal(f.delays.reduce((total, delay) => total + delay, 0), 65_000);
+  assert.equal(f.detaches().slice(0, -1).some(args => args.includes('-force')), false);
+});
+
+test('DMG packaging recovers when a device stays busy beyond the original retry window', async t => {
+  const f = await fixture(t, { busyAttempts: 7 });
+  await f.build();
+  assert.equal(f.detaches().length, 8);
+  assert.deepEqual(f.delays, [1000, 2000, 3000, 4000, 5000, 5000, 5000]);
+  assert.equal(f.detaches().some(args => args.includes('-force')), false);
+  assert.ok(f.commands.some(command => command.args[0] === 'convert'));
+  assert.equal(existsSync(f.temporary()), false);
+});
+
+test('DMG packaging fails immediately for a detach error other than resource busy', async t => {
+  const f = await fixture(t, { busyAttempts: Infinity });
+  f.busy.status = 1;
+  await assert.rejects(f.build(), error => error === f.busy);
+  assert.equal(f.detaches().length, 1);
+  assert.deepEqual(f.delays, []);
+  assert.equal(f.commands.some(command => command.args[0] === 'convert'), false);
+  assert.equal(existsSync(f.temporary()), true);
 });
 
 test('DMG packaging accepts a failed detach only if the device is no longer attached', async t => {
@@ -97,7 +118,7 @@ test('DMG packaging accepts a failed detach only if the device is no longer atta
 test('DMG packaging stops and preserves temporary files if detach remains unsuccessful', async t => {
   const f = await fixture(t, { busyAttempts: Infinity });
   await assert.rejects(f.build(), error => error === f.busy);
-  assert.equal(f.detaches().length, 4);
+  assert.equal(f.detaches().length, 16);
   assert.equal(f.commands.some(command => command.args[0] === 'convert'), false);
   assert.equal(existsSync(f.temporary()), true);
 });
