@@ -11,6 +11,7 @@ import { UI_MESSAGES, targetLanguageLabel, type UiMessages } from "../../lib/ui-
 import { useAppSettings } from "../app-settings";
 import { useUiLocale } from "../ui-locale";
 import { Brand } from "../brand";
+import { ShortcutHelpButton } from "../app-shortcuts";
 import { ThemeSelect } from "../theme-select";
 import { TranslationTransfer } from "../translation-transfer";
 
@@ -42,7 +43,7 @@ export function SettingsScreen({ backHref }: { backHref: string }) {
         <Link href={backHref} className="secondary-button"><ArrowLeft size={16} />{backHref === "/" ? copy.library : copy.back}</Link>
       </header>
       <div className="settings-page">
-        <div className="settings-heading"><h1>{messages.settings}</h1></div>
+        <div className="settings-heading"><h1>{messages.settings}</h1><ShortcutHelpButton /></div>
         <div className="settings-sections">
           <section id="ai-provider" className="settings-card" aria-labelledby="ai-heading">
             <h2 id="ai-heading">{messages.serverProvider}</h2>

@@ -1,4 +1,4 @@
-import { isPricingCurrency, type TranslationCost } from "./translation-pricing.ts";
+import { calculateTranslationCost, isPricingCurrency, type TranslationCost, type TranslationPricing } from "./translation-pricing.ts";
 
 export type TranslationUsage = {
   totalTokens: number;
@@ -8,6 +8,11 @@ export type TranslationUsage = {
   outputSeconds?: number;
   cost?: TranslationCost;
 };
+
+export function translationUsageCost(usage: TranslationUsage, pricing?: TranslationPricing, cachedAt?: number): TranslationCost | undefined {
+  // Preserve recorded charges; estimate unpriced history at its original time.
+  return usage.cost ?? calculateTranslationCost(usage, pricing, cachedAt ?? Number.NaN);
+}
 
 function tokenCount(value: unknown): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;

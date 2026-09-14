@@ -1,17 +1,19 @@
 import { useId, useState } from "react";
 import { Info } from "lucide-react";
-import { translationCacheHitRate, translationTokensPerSecond, type TranslationUsage } from "../lib/translation-usage";
+import { translationCacheHitRate, translationTokensPerSecond, translationUsageCost, type TranslationUsage } from "../lib/translation-usage";
 import type { UiMessages } from "../lib/ui-messages";
 import { formatTranslationCost } from "../lib/translation-pricing";
 import { useUiLocale } from "./ui-locale";
+import { useAppSettings } from "./app-settings";
 
-export function TranslationUsageSummary({ usage, messages }: { usage: TranslationUsage; messages: UiMessages }) {
+export function TranslationUsageSummary({ usage, cachedAt, messages }: { usage: TranslationUsage; cachedAt?: number; messages: UiMessages }) {
   const { locale } = useUiLocale();
+  const { translationService } = useAppSettings();
   const tooltipId = useId();
   const [open, setOpen] = useState(false);
   const rate = translationTokensPerSecond(usage);
   const cacheRate = translationCacheHitRate(usage);
-  const cost = usage.cost;
+  const cost = translationUsageCost(usage, translationService.pricing, cachedAt);
   const rows = [
     { label: "In", value: usage.inputTokens?.toLocaleString(locale) ?? "—", help: messages.translationInputHelp },
     { label: "Out", value: usage.outputTokens?.toLocaleString(locale) ?? "—", help: messages.translationOutputHelp },

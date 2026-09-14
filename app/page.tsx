@@ -41,6 +41,7 @@ import { useRouter } from "next/navigation";
 import { DEFAULT_SETTINGS, type TranslationSettings } from "../lib/app-settings";
 import { UI_MESSAGES, targetLanguageLabel, type UiMessages } from "../lib/ui-messages";
 import { useAppSettings } from "./app-settings";
+import { NavigationHistoryControls, ShortcutHelpButton, useAppShortcuts } from "./app-shortcuts";
 import { Brand } from "./brand";
 import { ThemeSelect } from "./theme-select";
 import { LOCAL_PDF_RANGE_CHUNK_SIZE, createLocalPdfRangeTransport } from "../lib/local-pdf-range-transport";
@@ -58,7 +59,7 @@ import {
   type TocEntry,
 } from "../lib/document-navigation";
 import { createLatestTaskRegistry } from "../lib/latest-task-registry";
-import { isDocumentSearchShortcut } from "../lib/keyboard-shortcuts";
+import { isDocumentSearchShortcut, isEditableShortcutTarget, isSidebarShortcut } from "../lib/keyboard-shortcuts";
 import { deduplicatePageBoundary, hasLayoutContent, normalizeTranslationPayload, type LayoutBlock, type SourceRect } from "../lib/translation-layout";
 import { searchTranslationPayload } from "../lib/translation-search";
 import { groupTranslationMedia, imagePlacement } from "../lib/translation-media";
@@ -159,7 +160,10 @@ function bookIdFromUrl() {
 function updateBookInUrl(bookId: string | null, mode: "push" | "replace" = "replace") {
   const url = new URL(window.location.href);
   if (bookId) url.searchParams.set(BOOK_QUERY_PARAMETER, bookId);
-  else url.searchParams.delete(BOOK_QUERY_PARAMETER);
+  else {
+    url.searchParams.delete(BOOK_QUERY_PARAMETER);
+    url.searchParams.delete("page");
+  }
   const nextUrl = `${url.pathname}${url.search}${url.hash}`;
   if (mode === "push") window.history.pushState(window.history.state, "", nextUrl);
   else window.history.replaceState(window.history.state, "", nextUrl);
@@ -931,7 +935,7 @@ function PageSpread({
           <div className="translation-heading-actions">
             {loading && progress && <TranslationLiveProgress progress={progress} messages={messages} />}
             {!loading && translation?.usage && (
-              <TranslationUsageSummary usage={translation.usage} messages={messages} />
+              <TranslationUsageSummary usage={translation.usage} cachedAt={translation.cachedAt} messages={messages} />
             )}
             {(translation || translating) && (
               <button
@@ -1101,7 +1105,8 @@ function LibraryHome({
           <Link className="icon-button queue-link" href="/queue" title={messages.queueTitle} aria-label={activeJobCount ? `${messages.queueTitle} (${activeJobCount})` : messages.queueTitle}><ListOrdered size={17} />{activeJobCount > 0 && <span className="queue-count" aria-hidden="true">{activeJobCount}</span>}</Link>
           <button className="icon-button locale-button" title={messages.switchLanguage} aria-label={messages.switchLanguage} onClick={onToggleLocale}><Globe2 size={16} /><span>{locale === "zh-CN" ? "EN" : "中"}</span></button>
           <ThemeSelect compact />
-          <Link className="icon-button settings-link" href="/settings" title={messages.settings} aria-label={messages.settings}><Settings size={17} /></Link>
+          <ShortcutHelpButton />
+          <Link data-settings-trigger className="icon-button settings-link" href="/settings" title={messages.settings} aria-label={messages.settings}><Settings size={17} /></Link>
           <button className="icon-button library-upload-button" onClick={onUpload} title={messages.uploadPdf} aria-label={messages.uploadPdf}><Upload size={17} /></button>
         </div>
       </header>
@@ -1337,7 +1342,7 @@ function ContentsNavigation({
 type SidebarView = "pages" | "contents" | "search";
 
 export default function Home() {
-  const fileInput = useRef<HTMLInputElement>(null);
+  const { openFile, pendingFile, consumeFile, shortcutModifier } = useAppShortcuts();
   const searchInput = useRef<HTMLInputElement>(null);
   const readerMenu = useRef<HTMLDivElement>(null);
   const pdfRef = useRef<PdfDocument | undefined>(undefined);
@@ -1750,6 +1755,8 @@ export default function Home() {
   }, [cancelDocumentWork]);
 
   const openLibrary = useCallback(() => {
+    window.dispatchEvent(new Event("verso:before-history-navigation"));
+    documentLoadSequence.current++;
     cancelDocumentWork();
     setReaderMenuOpen(false);
     setShowLibraryHome(true);
@@ -2339,6 +2346,7 @@ export default function Home() {
   }, [beginDocumentLoad, finishDocumentLoad, loadNavigation, messages, translationSettings, uploadToLocal]);
 
   const loadLocalBook = useCallback(async (book: LocalBook, updateUrl = true) => {
+    if (updateUrl) window.dispatchEvent(new Event("verso:before-history-navigation"));
     setShowLibraryHome(false);
     if (updateUrl) updateBookInUrl(book.fingerprint, "push");
     const sequence = beginDocumentLoad(book.fingerprint, book.name, book.pageCount, true);
@@ -2391,17 +2399,23 @@ export default function Home() {
   }, [beginDocumentLoad, finishDocumentLoad, loadNavigation, translationSettings]);
 
   useEffect(() => {
+    let restoration = 0;
+    const invalidateRestoration = () => { restoration++; };
     const restoreFromUrl = () => {
+      const request = ++restoration;
       const requestedBookId = bookIdFromUrl();
+      const isCurrent = () => request === restoration && requestedBookId === bookIdFromUrl();
       if (!requestedBookId) {
+        documentLoadSequence.current++;
         cancelDocumentWork();
         setShowLibraryHome(true);
         return;
       }
       setShowLibraryHome(false);
       void readLocalBook(requestedBookId, messagesRef.current.libraryReadFailed)
-        .then((book) => loadLocalBook(book, false))
+        .then((book) => { if (isCurrent()) return loadLocalBook(book, false); })
         .catch((error) => {
+          if (!isCurrent()) return;
           const detail = error instanceof Error ? error.message : messagesRef.current.libraryReadFailed;
           setStorageMessage(messagesRef.current.openLocalFailed(detail));
           setShowLibraryHome(true);
@@ -2409,11 +2423,24 @@ export default function Home() {
     };
     const restoreTimer = window.setTimeout(restoreFromUrl, 0);
     window.addEventListener("popstate", restoreFromUrl);
+    window.addEventListener("verso:before-history-navigation", invalidateRestoration);
     return () => {
+      invalidateRestoration();
       window.clearTimeout(restoreTimer);
       window.removeEventListener("popstate", restoreFromUrl);
+      window.removeEventListener("verso:before-history-navigation", invalidateRestoration);
     };
   }, [cancelDocumentWork, loadLocalBook]);
+
+  // Consume route-transferred files after the initial URL restoration.
+  useEffect(() => {
+    if (!pendingFile) return;
+    const timer = window.setTimeout(() => {
+      consumeFile();
+      void handleFile(pendingFile);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [consumeFile, handleFile, pendingFile]);
 
   const pageNumbers = useMemo(() => Array.from({ length: totalPages }, (_, index) => index + 1), [totalPages]);
   const displayedTranslations = useMemo(() => {
@@ -2523,6 +2550,39 @@ export default function Home() {
     }
   }, []);
 
+  const toggleSidebar = useCallback(() => {
+    if (window.matchMedia("(max-width: 900px)").matches) {
+      setSidebarOpen(true);
+      setSidebarDrawerOpen((open) => !open);
+    } else {
+      setSidebarOpen((open) => !open);
+    }
+  }, []);
+
+  useEffect(() => {
+    function handleSidebarShortcut(event: KeyboardEvent) {
+      if (showLibraryHome || event.defaultPrevented || isEditableShortcutTarget(event.target)
+        || !isSidebarShortcut(event)) return;
+      event.preventDefault();
+      if (event.repeat) return;
+      toggleSidebar();
+    }
+    window.addEventListener("keydown", handleSidebarShortcut);
+    return () => window.removeEventListener("keydown", handleSidebarShortcut);
+  }, [showLibraryHome, toggleSidebar]);
+
+  useEffect(() => {
+    if (showLibraryHome || !serverBookAvailable || !documentReady) return;
+    const preservePosition = () => {
+      const url = new URL(window.location.href);
+      if (url.searchParams.get("book") !== documentId) return;
+      url.searchParams.set("page", String(currentPage));
+      window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}`);
+    };
+    window.addEventListener("verso:before-history-navigation", preservePosition);
+    return () => window.removeEventListener("verso:before-history-navigation", preservePosition);
+  }, [currentPage, documentId, documentReady, serverBookAvailable, showLibraryHome]);
+
   const openSettings = () => {
     const returnTo = serverBookAvailable && !showLibraryHome
       ? `/?book=${encodeURIComponent(documentId)}&page=${currentPage}`
@@ -2537,6 +2597,8 @@ export default function Home() {
     const page = Number(url.searchParams.get("page"));
     if (!Number.isSafeInteger(page) || page < 1) return;
     const frame = window.requestAnimationFrame(() => {
+      // Navigation may have changed the entry before React cleans up this frame.
+      if (window.location.href !== url.href) return;
       url.searchParams.delete("page");
       window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}`);
       goToPage(page);
@@ -2558,15 +2620,10 @@ export default function Home() {
             ? discardCurrentBookTranslations()
             : deleteLocalTranslations(book.fingerprint, messages.localTranslationDiscardFailed)}
           onSelect={(book) => void loadLocalBook(book)}
-          onUpload={() => fileInput.current?.click()}
+          onUpload={openFile}
           onRetry={() => void refreshBooks()}
           onToggleLocale={() => setLocale(locale === "zh-CN" ? "en-US" : "zh-CN")}
         />
-        <input ref={fileInput} type="file" accept="application/pdf" hidden onChange={(event) => {
-          const file = event.currentTarget.files?.[0];
-          event.currentTarget.value = "";
-          void handleFile(file);
-        }} />
       </main>
     );
   }
@@ -2587,10 +2644,13 @@ export default function Home() {
             <button
               className={cn("icon-button", "reader-sidebar-button", sidebarOpen && "desktop-hidden")}
               aria-label={messages.toggleSidebar}
-              onClick={() => openSidebarView("pages")}
+              title={`${messages.toggleSidebar} (${shortcutModifier}B)`}
+              aria-keyshortcuts="Meta+B Control+B"
+              onClick={toggleSidebar}
             >
               <Menu size={19} />
             </button>
+            <NavigationHistoryControls />
             <div className="page-stepper">
               <button className="icon-button" onClick={() => goToPage(currentPage - 1, "adjacent")} aria-label={messages.previousPage}><ChevronLeft size={17} /></button>
               <span><strong>{currentPage}</strong> / {totalPages}</span>
@@ -2612,8 +2672,8 @@ export default function Home() {
           )}
           <button className="icon-button locale-button" title={messages.switchLanguage} aria-label={messages.switchLanguage} onClick={() => setLocale(locale === "zh-CN" ? "en-US" : "zh-CN")}><Globe2 size={16} /><span>{locale === "zh-CN" ? "EN" : "中"}</span></button>
           <ThemeSelect compact />
-          <button className="icon-button reader-settings-button" title={messages.settings} aria-label={messages.settings} onClick={() => openSettings()}><Settings size={17} /></button>
-          <button className="icon-button reader-upload-button" title={messages.openPdf} aria-label={messages.openPdf} onClick={() => fileInput.current?.click()}><Upload size={17} /></button>
+          <button data-settings-trigger className="icon-button reader-settings-button" title={messages.settings} aria-label={messages.settings} onClick={() => openSettings()}><Settings size={17} /></button>
+          <button className="icon-button reader-upload-button" title={messages.openPdf} aria-label={messages.openPdf} onClick={openFile}><Upload size={17} /></button>
           <div className="reader-menu-anchor" ref={readerMenu}>
             <button
               className="icon-button reader-menu-button"
@@ -2628,6 +2688,7 @@ export default function Home() {
             </button>
             {/* Keep transfers mounted when the menu closes during file selection or import. */}
             <div id="reader-overflow-menu" className="reader-overflow-menu" role="menu" hidden={!readerMenuOpen}>
+              <ShortcutHelpButton menu />
               <button role="menuitem" onClick={() => openSidebarView("pages")}><FileText size={17} /><span>{messages.pages}</span></button>
               <button role="menuitem" onClick={() => openSidebarView("contents")}><ListTree size={17} /><span>{messages.contents}</span></button>
               <button role="menuitem" onClick={() => openSidebarView("search")}><Search size={17} /><span>{messages.searchPages}</span></button>
@@ -2648,11 +2709,6 @@ export default function Home() {
               }}><Trash2 size={17} /><span>{messages.discardTranslations}</span></button>}
             </div>
           </div>
-          <input ref={fileInput} type="file" accept="application/pdf" hidden onChange={(event) => {
-            const file = event.currentTarget.files?.[0];
-            event.currentTarget.value = "";
-            void handleFile(file);
-          }} />
         </div>
       </header>
 
@@ -2666,7 +2722,8 @@ export default function Home() {
         />
         <aside className={cn("sidebar", !sidebarOpen && "collapsed", sidebarDrawerOpen && "mobile-open")}>
           <div className="sidebar-head">
-            <button className="icon-button sidebar-close-button" aria-label={messages.toggleSidebar} onClick={closeSidebar}>
+            <button className="icon-button sidebar-close-button" aria-label={messages.toggleSidebar}
+              title={`${messages.toggleSidebar} (${shortcutModifier}B)`} aria-keyshortcuts="Meta+B Control+B" onClick={closeSidebar}>
               <PanelLeftClose className="desktop-sidebar-close" size={18} />
               <X className="mobile-sidebar-close" size={19} />
             </button>

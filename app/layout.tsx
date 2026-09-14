@@ -8,6 +8,7 @@ import { UiLocaleProvider } from "./ui-locale";
 import { AppSettingsProvider } from "./app-settings";
 import { QueueFeedbackProvider } from "./queue-feedback";
 import { THEME_INIT_SCRIPT } from "../lib/theme";
+import { AppShortcuts } from "./app-shortcuts";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
@@ -49,7 +50,7 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
     <html lang={locale} suppressHydrationWarning>
       <head><script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} /></head>
       <body className={`${geistSans.variable} ${geistMono.variable}`}>
-        <UiLocaleProvider initialLocale={locale}><AppSettingsProvider><QueueFeedbackProvider>{children}</QueueFeedbackProvider></AppSettingsProvider></UiLocaleProvider>
+        <UiLocaleProvider initialLocale={locale}><AppSettingsProvider><AppShortcuts><QueueFeedbackProvider>{children}</QueueFeedbackProvider></AppShortcuts></AppSettingsProvider></UiLocaleProvider>
       </body>
     </html>
   );

@@ -717,3 +717,6 @@ body, .topbar, .sidebar, .reader-toolbar, .page-spread, .page-surface, .settings
 
 .mapped-source-image { cursor: pointer; }
 .mapped-source-image:hover, .mapped-source-image:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
+
+.navigation-history-controls { display: flex; align-items: center; gap: 2px; }
+.settings-heading:has(.shortcut-help-button) { display: flex; align-items: center; justify-content: space-between; gap: 12px; }

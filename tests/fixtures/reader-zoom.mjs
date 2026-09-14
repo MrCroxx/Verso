@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { app, BrowserWindow, protocol, session } from 'electron';
 import path from 'node:path';
-import { writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { launchBackend } from '../../desktop/backend.mjs';
 import { APP_URL, createProtocolHandler } from '../../desktop/protocol.mjs';
 import { translationCacheKey } from '../../lib/translation-cache.ts';
@@ -55,9 +55,9 @@ async function run() {
       JSON.stringify({ ...metadata, objectKey: upload.objectKey, parts: [part] }));
     for (const page of [1, 10]) await request('/api/translations', 'PUT', JSON.stringify({
       key: translationCacheKey(metadata.fingerprint, page, 'Simplified Chinese'), documentId: metadata.fingerprint, page,
-      translation: { page, blocks: [{ kind: 'paragraph', text: 'Usage display fixture.' }], cachedAt: Date.now(),
+      translation: { page, blocks: [{ kind: 'paragraph', text: 'Usage display fixture.' }], cachedAt: Date.parse('2026-09-14T09:00:00+08:00'),
         usage: { inputTokens: 12000, outputTokens: 3000, totalTokens: 15000, cachedInputTokens: 9000, outputSeconds: 30,
-          cost: { amount: 0.0345, currency: 'USD' } } },
+          ...(page === 1 && { cost: { amount: 0.0345, currency: 'USD' } }) } },
     }));
     protocol.handle('https', createProtocolHandler({ ...ready,
       getCookies: url => session.defaultSession.cookies.get({ url }) }));
@@ -65,8 +65,13 @@ async function run() {
     window = new BrowserWindow({ show: true, width: 1400, height: 900,
       webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, backgroundThrottling: false } });
     const js = code => window.webContents.executeJavaScript(code);
+    const loadPage = async url => {
+      await window.loadURL(url);
+      await waitFor(() => js(`document.querySelector('[data-open-file-input]')?.dataset.shortcutsReady === 'true'`),
+        'App keyboard listeners must be ready after navigation');
+    };
     const act = code => js(`(async () => { ${code} })()`);
-    await window.loadURL(`${APP_URL}?book=${metadata.fingerprint}`);
+    await loadPage(`${APP_URL}?book=${metadata.fingerprint}`);
     window.focus();
     await waitFor(() => js('document.querySelectorAll(".page-spread").length === 80 && !!document.querySelector(".reader-zoom")'));
     await waitFor(() => js(`document.querySelector('[data-page="1"] .translation-usage')?.textContent.includes('0.0345')`));
@@ -282,8 +287,16 @@ async function run() {
     await waitFor(() => js(`document.querySelector('.reader-viewport')?.dataset.translationFont === 'sans'
       && getComputedStyle(document.querySelector('.spreads')).getPropertyValue('--translation-font-scale').trim() === '1.5'`),
     'Font preferences must persist across a desktop reload');
-    await window.loadURL(`${APP_URL}/settings`);
+    await loadPage(`${APP_URL}?book=${metadata.fingerprint}&page=10`);
+    await waitFor(() => js(`!!document.querySelector('[data-page="10"] .translation-usage')`));
+    assert.doesNotMatch(await js(`document.querySelector('[data-page="10"] .translation-usage').textContent`), /USD/);
+    await js(`document.body.dispatchEvent(new KeyboardEvent('keydown', { key: ',', metaKey: true, bubbles: true, cancelable: true }))`);
     await waitFor(() => js(`!!document.querySelector('#pricing-inputPerMillion')`));
+    const settingsUrl = await js('location.href');
+    assert.equal(new URL(settingsUrl).searchParams.get('returnTo'), `/?book=${metadata.fingerprint}&page=10`);
+    await js(`document.querySelector('#pricing-inputPerMillion').focus();
+      document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: ',', metaKey: true, bubbles: true, cancelable: true }))`);
+    assert.equal(await js('location.href'), settingsUrl, 'Repeated shortcuts in Settings must preserve the return path');
     for (const [id, value] of [['pricing-inputPerMillion', '2.5'], ['pricing-outputPerMillion', '8'], ['pricing-cachedInputPerMillion', '0.5']]) {
       await js(`(() => {
         const input = document.getElementById(${JSON.stringify(id)});
@@ -294,6 +307,11 @@ async function run() {
     await waitFor(async () => (await request('/api/settings/ai-provider', 'GET')).pricing?.cachedInputPerMillion === 0.5);
     assert.deepEqual((await request('/api/settings/ai-provider', 'GET')).pricing,
       { currency: 'USD', inputPerMillion: 2.5, outputPerMillion: 8, cachedInputPerMillion: 0.5 });
+    await js(`document.querySelector('.settings-shell .topbar > a.secondary-button').click()`);
+    await waitFor(() => js(`!!document.querySelector('[data-page="10"] .translation-usage')`));
+    assert.match(await js(`document.querySelector('[data-page="10"] .translation-usage').textContent`), /USD\s0.036/);
+    await js(`window.dispatchEvent(new Event('verso:open-settings'))`);
+    await waitFor(() => js(`!!document.querySelector('#pricing-currency')`));
     for (const [id, value] of [['pricing-currency', 'CNY'], ['pricing-schedule', 'deepseek-peak']]) {
       await js(`(() => {
         const select = document.getElementById(${JSON.stringify(id)});
@@ -303,17 +321,237 @@ async function run() {
     }
     await waitFor(async () => (await request('/api/settings/ai-provider', 'GET')).pricing?.schedule === 'deepseek-peak');
     assert.equal((await request('/api/settings/ai-provider', 'GET')).pricing.currency, 'CNY');
-    await window.loadURL(`${APP_URL}/settings`);
+    await loadPage(`${APP_URL}/settings`);
     await waitFor(() => js(`document.querySelector('#pricing-inputPerMillion')?.value === '2.5'`));
     assert.equal(await js(`document.querySelector('#pricing-schedule').value`), 'deepseek-peak');
     assert.equal(await js(`document.querySelector('#pricing-currency').value`), 'CNY');
-    await window.loadURL(`${APP_URL}?book=${metadata.fingerprint}`);
+    await loadPage(`${APP_URL}?book=${metadata.fingerprint}`);
     await waitFor(() => js(`/USD\\s0.0345/.test(document.querySelector('[data-page="1"] .translation-usage')?.textContent ?? '')`));
+    await loadPage(`${APP_URL}?book=${metadata.fingerprint}&page=10`);
+    await waitFor(() => js(`!!document.querySelector('[data-page="10"] .translation-usage')`));
+    assert.match(await js(`document.querySelector('[data-page="10"] .translation-usage').textContent`), /CNY\s0.072/);
+    const historical = await request(`/api/translations?key=${encodeURIComponent(translationCacheKey(metadata.fingerprint, 10, 'Simplified Chinese'))}`, 'GET');
+    assert.equal(historical.translation.usage.cost, undefined, 'Estimates must leave the original tokens and costs intact');
+    await loadPage(APP_URL);
+    await waitFor(() => js(`!!document.querySelector('.settings-link')`));
+    await js(`document.body.dispatchEvent(new KeyboardEvent('keydown', { key: ',', ctrlKey: true, bubbles: true, cancelable: true }))`);
+    await waitFor(() => js(`!!document.querySelector('#pricing-inputPerMillion')`));
+    // Help is a styled, nonmodal card that stays open until the next key press.
+    await js(`window.shortcutKey = (key, extra = {}) => document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {
+      key, metaKey: false, ctrlKey: false, bubbles: true, cancelable: true, ...extra,
+    })); document.querySelector('#pricing-inputPerMillion').focus(); shortcutKey('?');`);
+    assert.equal(await js(`!!document.querySelector('#shortcut-help-panel')`), false);
+    const settingsBeforeTyping = await js('location.href');
+    await js(`shortcutKey('[', { metaKey: true });`);
+    assert.equal(await js('location.href'), settingsBeforeTyping);
+    await js(`document.querySelector('.shortcut-help-button').focus();`);
+    window.webContents.sendInputEvent({ type: 'keyDown', keyCode: '?', modifiers: ['shift'] });
+    await waitFor(() => js(`!!document.querySelector('#shortcut-help-panel')`));
+    assert.equal(await js(`document.activeElement.classList.contains('shortcut-help-button')`), true);
+    const help = await js(`document.querySelector('#shortcut-help-panel').textContent`);
+    assert.match(help, /Keyboard shortcuts/);
+    assert.match(help, /Press any key to hide\./);
+    assert.match(help, /(?:⌘|Ctrl\+)B/);
+    assert.match(help, /(?:⌘|Ctrl\+)\[/);
+    assert.doesNotMatch(help, /Esc|Close keyboard shortcuts/);
+    assert.equal(await js(`!!document.querySelector('dialog[open], #shortcut-help-panel button')`), false);
+    const panelStyle = await js(`(() => {
+      const panel = document.querySelector('#shortcut-help-panel');
+      const style = getComputedStyle(panel), box = panel.getBoundingClientRect();
+      return { position: style.position, radius: style.borderRadius, width: box.width, height: box.height,
+        left: box.left, right: box.right, bottom: box.bottom, viewportWidth: innerWidth, viewportHeight: innerHeight,
+        paper: style.backgroundColor, pagePaper: getComputedStyle(document.querySelector('.settings-card')).backgroundColor };
+    })()`);
+    assert.equal(panelStyle.position, 'fixed', 'The overlay CSS must be included in the production build');
+    assert.equal(panelStyle.radius, '12px');
+    assert.ok(panelStyle.width <= 560 && panelStyle.height < 400);
+    assert.ok(panelStyle.left >= 16 && panelStyle.right <= panelStyle.viewportWidth - 16 && panelStyle.bottom <= panelStyle.viewportHeight);
+    assert.equal(panelStyle.paper, panelStyle.pagePaper, 'The overlay must use the existing surface color');
+    window.webContents.sendInputEvent({ type: 'keyUp', keyCode: '/', modifiers: [] });
+    await js(`window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Shift', code: 'ShiftLeft' }));
+      shortcutKey('?', { repeat: true });`);
+    assert.equal(await js(`!!document.querySelector('#shortcut-help-panel')`), true, 'Release and auto-repeat must leave help visible');
+    window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'A' });
+    window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'A' });
+    await waitFor(() => js(`!document.querySelector('#shortcut-help-panel')`));
+
+    // The next press of ? dismisses without reopening; form fields cannot swallow dismissal.
+    await js(`shortcutKey('?');`);
+    await waitFor(() => js(`!!document.querySelector('#shortcut-help-panel')`));
+    await js(`shortcutKey('?'); shortcutKey('?', { repeat: true });`);
+    await waitFor(() => js(`!document.querySelector('#shortcut-help-panel')`));
+    await js(`shortcutKey('?');`);
+    await waitFor(() => js(`!!document.querySelector('#shortcut-help-panel')`));
+    const priceBeforeDismissal = await js(`document.querySelector('#pricing-inputPerMillion').value`);
+    await js(`document.querySelector('#pricing-inputPerMillion').focus();
+      document.activeElement.addEventListener('keydown', event => event.stopPropagation(), { once: true });`);
+    window.webContents.sendInputEvent({ type: 'keyDown', keyCode: '9' });
+    window.webContents.sendInputEvent({ type: 'keyUp', keyCode: '9' });
+    await waitFor(() => js(`!document.querySelector('#shortcut-help-panel')`));
+    assert.equal(await js(`document.querySelector('#pricing-inputPerMillion').value`), priceBeforeDismissal, 'Dismissal must not edit the focused field');
+    await js(`document.querySelector('.shortcut-help-button').focus(); shortcutKey('?');`);
+    await waitFor(() => js(`!!document.querySelector('#shortcut-help-panel')`));
+    await js(`window.dispatchEvent(new Event('blur')); shortcutKey('?', { repeat: true });`);
+    await waitFor(() => js(`!document.querySelector('#shortcut-help-panel')`));
+
+    app.focus({ steal: true });
+    window.focus();
+    window.webContents.focus();
+    await waitFor(() => window.isFocused() && js('document.hasFocus()'));
+    let helpPosition;
+    await waitFor(async () => {
+      helpPosition = await js(`(async () => {
+        const button = document.querySelector('.shortcut-help-button');
+        button.focus({ preventScroll: true });
+        button.scrollIntoView({ behavior: 'instant', block: 'center' });
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const box = button.getBoundingClientRect();
+        const x = Math.round(box.x + box.width / 2), y = Math.round(box.y + box.height / 2);
+        return { x, y, hit: button.contains(document.elementFromPoint(x, y)) };
+      })()`);
+      return helpPosition.hit;
+    }, 'The help button must settle under the click position');
+    delete helpPosition.hit;
+    window.webContents.sendInputEvent({ type: 'mouseMove', ...helpPosition });
+    window.webContents.sendInputEvent({ type: 'mouseDown', ...helpPosition, button: 'left', clickCount: 1 });
+    window.webContents.sendInputEvent({ type: 'mouseUp', ...helpPosition, button: 'left', clickCount: 1 });
+    await waitFor(() => js(`!!document.querySelector('#shortcut-help-panel')`));
+    window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' });
+    window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' });
+    await waitFor(() => js(`!document.querySelector('#shortcut-help-panel')`));
+    for (const keyCode of [' ', 'Enter']) {
+      await js(`document.querySelector('.shortcut-help-button').focus();`);
+      window.webContents.sendInputEvent({ type: 'keyDown', keyCode });
+      // Electron requires a separate character event for native Enter activation.
+      if (keyCode === 'Enter') window.webContents.sendInputEvent({ type: 'char', keyCode: '\r' });
+      window.webContents.sendInputEvent({ type: 'keyUp', keyCode });
+      await waitFor(() => js(`!!document.querySelector('#shortcut-help-panel')`));
+      window.webContents.sendInputEvent({ type: 'keyDown', keyCode });
+      window.webContents.sendInputEvent({ type: 'keyUp', keyCode });
+      await waitFor(() => js(`!document.querySelector('#shortcut-help-panel')`));
+    }
+
+    await loadPage(`${APP_URL}?book=${metadata.fingerprint}&page=10`);
+    await waitFor(() => js(`document.querySelector('.page-stepper strong')?.textContent === '10'
+      && !!document.querySelector('[data-page="10"] .translation-usage')`));
+    await js(`window.shortcutKey = (key, extra = {}) => document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {
+      key, metaKey: true, bubbles: true, cancelable: true, ...extra,
+    })); document.activeElement.blur(); shortcutKey('b'); shortcutKey('b', { repeat: true });`);
+    await waitFor(() => js(`document.querySelector('.sidebar').classList.contains('collapsed')`));
+    assert.match(await js(`document.querySelector('.reader-sidebar-button').title`), /(?:⌘|Ctrl\+)B/);
+    const zoomBeforeDismissal = await js(`document.querySelector('.reader-zoom').textContent`);
+    for (const key of ['b', '+', ',']) {
+      await js(`shortcutKey('?', { metaKey: false });`);
+      await waitFor(() => js(`!!document.querySelector('#shortcut-help-panel')`));
+      await js(`shortcutKey(${JSON.stringify(key)});`);
+      await waitFor(() => js(`!document.querySelector('#shortcut-help-panel')`));
+      assert.equal(await js(`document.querySelector('.sidebar')?.classList.contains('collapsed')`), true);
+      assert.equal(await js(`document.querySelector('.reader-zoom').textContent`), zoomBeforeDismissal);
+      assert.equal(await js(`location.pathname`), '/', 'Dismissal must not trigger another app shortcut');
+    }
+    await js(`shortcutKey('b');`);
+    await waitFor(() => js(`!document.querySelector('.sidebar').classList.contains('collapsed')`));
+    await js(`document.querySelector('#sidebar-tab-search').click();`);
+    await waitFor(() => js(`!!document.querySelector('#sidebar-search input')`));
+    await js(`document.querySelector('#sidebar-search input').focus(); shortcutKey('b'); shortcutKey('?', { metaKey: false });`);
+    assert.equal(await js(`document.querySelector('.sidebar').classList.contains('collapsed')`), false);
+    assert.equal(await js(`!!document.querySelector('#shortcut-help-panel')`), false);
+    await js(`document.activeElement.blur(); shortcutKey('b');`);
+    await waitFor(() => js(`document.querySelector('.sidebar').classList.contains('collapsed')`));
+    await js(`shortcutKey('b');`);
+    await waitFor(() => js(`document.querySelector('#sidebar-tab-search')?.getAttribute('aria-selected') === 'true'`));
+    window.setSize(600, 900);
+    await waitFor(() => js(`innerWidth <= 900`));
+    await js(`document.activeElement.blur(); shortcutKey('b');`);
+    await waitFor(() => js(`document.querySelector('.sidebar').classList.contains('mobile-open')`));
+    await js(`shortcutKey('b');`);
+    await waitFor(() => js(`!document.querySelector('.sidebar').classList.contains('mobile-open')`));
+    window.setSize(1400, 900);
+    await waitFor(() => js(`innerWidth > 900`));
+
+    // History traverses actual app entries and preserves the book's page on repeated visits.
+    await js(`document.querySelector('#sidebar-tab-pages').click();`);
+    await waitFor(() => js(`!!document.querySelector('#sidebar-pages button:nth-child(10)')`));
+    await js(`document.querySelector('#sidebar-pages button:nth-child(10)').click();`);
+    await waitFor(() => js(`document.querySelector('.page-stepper strong')?.textContent === '10'`));
+    await js(`document.querySelector('.reader-settings-button').click();`);
+    await waitFor(() => js(`location.pathname === '/settings' && !!document.querySelector('#pricing-inputPerMillion')`));
+    await js(`document.activeElement.blur(); shortcutKey('[');`);
+    await waitFor(() => js(`location.pathname === '/' && document.querySelector('.page-stepper strong')?.textContent === '10'`));
+    assert.match(await js(`document.querySelector('.history-forward-button').title`), /(?:⌘|Ctrl\+)\]/);
+    await js(`document.querySelector('.history-forward-button').click();`);
+    await waitFor(() => js(`location.pathname === '/settings'`));
+    await js(`document.activeElement.blur(); shortcutKey('[');`);
+    await waitFor(() => js(`document.querySelector('.page-stepper strong')?.textContent === '10'`));
+    await js(`document.querySelector('.reader-identity .brand-button').click();`);
+    await waitFor(() => js(`!!document.querySelector('.library-shell')`));
+    await js(`document.activeElement.blur(); shortcutKey('[');`);
+    await waitFor(() => js(`document.querySelector('.page-stepper strong')?.textContent === '10'`));
+    await js(`document.activeElement.blur(); shortcutKey(']');`);
+    await waitFor(() => js(`!!document.querySelector('.library-shell')`));
+    // A slow metadata lookup must not reopen a reader after navigation to the library.
+    await loadPage(APP_URL);
+    await waitFor(() => js(`!!document.querySelector('.library-shell .library-book')`));
+    for (const rejectLookup of [false, true]) {
+      await js(`(() => {
+        const originalFetch = window.fetch;
+        window.releaseBookLookup = null;
+        window.fetch = async (...args) => {
+          if (args[0] !== '/api/books/${metadata.fingerprint}') return originalFetch(...args);
+          window.fetch = originalFetch;
+          const response = await originalFetch(...args);
+          return new Promise((resolve, reject) => {
+            window.releaseBookLookup = () => ${rejectLookup} ? reject(new Error('Delayed metadata failure')) : resolve(response);
+          });
+        };
+        history.pushState(history.state, '', '/?book=${metadata.fingerprint}&page=10');
+        dispatchEvent(new PopStateEvent('popstate', { state: history.state }));
+      })()`);
+      await waitFor(() => js(`typeof releaseBookLookup === 'function'`), 'Metadata request must be held pending');
+      await js(`history.back();`);
+      await waitFor(() => js(`!!document.querySelector('.library-shell') && !location.search.includes('book=')`));
+      await js(`releaseBookLookup(); new Promise(resolve => setTimeout(() => requestAnimationFrame(() => requestAnimationFrame(resolve)), 0));`);
+      assert.equal(await js(`!!document.querySelector('.library-shell') && !location.search`), true,
+        'A superseded metadata response must not change the current screen or URL');
+    }
+
+    // Capture both themes from the actual production renderer and check the compact layout.
+    await loadPage(APP_URL);
+    await waitFor(() => js(`!!document.querySelector('.library-shell .library-book')`));
+    await js(`document.documentElement.dataset.theme = 'light';
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: '?', bubbles: true, cancelable: true }));`);
+    await waitFor(() => js(`!!document.querySelector('#shortcut-help-panel')`));
+    const captureDirectory = process.env.VERSO_TEST_SHORTCUT_SCREENSHOTS;
+    await js(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+    if (captureDirectory) {
+      await mkdir(captureDirectory, { recursive: true });
+      await writeFile(path.join(captureDirectory, 'shortcuts-light.png'), (await window.webContents.capturePage()).toPNG());
+    }
+    await js(`document.documentElement.dataset.theme = 'dark'; new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+    assert.equal(await js(`getComputedStyle(document.querySelector('#shortcut-help-panel')).backgroundColor`), 'rgb(27, 33, 29)');
+    if (captureDirectory) await writeFile(path.join(captureDirectory, 'shortcuts-dark.png'), (await window.webContents.capturePage()).toPNG());
+    window.setSize(390, 700);
+    await waitFor(() => js(`innerWidth <= 390`));
+    assert.equal(await js(`(() => { const box = document.querySelector('#shortcut-help-panel').getBoundingClientRect();
+      return box.left >= 16 && box.right <= innerWidth - 16 && box.bottom <= innerHeight; })()`), true);
+    if (captureDirectory) await writeFile(path.join(captureDirectory, 'shortcuts-mobile.png'), (await window.webContents.capturePage()).toPNG());
+    await js(`document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true, cancelable: true }));`);
+    await waitFor(() => js(`!document.querySelector('#shortcut-help-panel')`));
     console.log(JSON.stringify({ pages: 80, burstEvents: 40, scaleWrites: burst.writes,
       pointerDrift: { x: continuous.x - before.anchor.x, y: continuous.y - before.anchor.y },
-      intrinsicLayoutUnchanged: true, bounds: '50%-300%', controlsAndResize: 'passed', usageAndPricing: 'passed', edges: edgeResults }));
+      intrinsicLayoutUnchanged: true, bounds: '50%-300%', controlsAndResize: 'passed', usageAndPricing: 'passed', appShortcuts: 'passed', edges: edgeResults }));
   } catch (error) {
     console.error(error);
+    if (window && !window.isDestroyed()) console.error(await window.webContents.executeJavaScript(`JSON.stringify({
+      url: location.href, page: document.querySelector('.page-stepper strong')?.textContent,
+      sidebar: document.querySelector('.sidebar')?.className, active: document.activeElement.outerHTML.slice(0, 200),
+      helpVisible: !!document.querySelector('#shortcut-help-panel'),
+      viewport: { width: innerWidth, height: innerHeight, scrollY },
+      helpButton: (() => {
+        const box = document.querySelector('.shortcut-help-button')?.getBoundingClientRect();
+        return box && { box: box.toJSON(), hit: document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)?.outerHTML.slice(0, 300) };
+      })(),
+    })`));
     exitCode = 1;
   } finally {
     // Keep Electron alive until async cleanup finishes; app.exit closes the windows.
