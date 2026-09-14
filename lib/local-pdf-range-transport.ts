@@ -80,8 +80,9 @@ export function createLocalPdfRangeTransport({
       if (aborted) throw new DOMException("Local PDF request was aborted.", "AbortError");
       const controller = new AbortController();
       controllers.add(controller);
+      let response: Response | undefined;
       try {
-        const response = await fetcher(url, {
+        response = await fetcher(url, {
           headers: { Range: `bytes=${begin}-${end - 1}` },
           cache: "no-store",
           signal: controller.signal,
@@ -95,11 +96,15 @@ export function createLocalPdfRangeTransport({
       } catch (error) {
         lastError = error;
         if (aborted || controller.signal.aborted) throw error;
-        if (attempt + 1 < normalizedAttempts) {
-          await new Promise((resolve) => setTimeout(resolve, RETRY_BASE_DELAY_MS * 2 ** attempt));
-        }
       } finally {
+        controller.abort();
+        if (response?.body && !response.bodyUsed) {
+          await response.body.cancel().catch(() => undefined);
+        }
         controllers.delete(controller);
+      }
+      if (attempt + 1 < normalizedAttempts) {
+        await new Promise((resolve) => setTimeout(resolve, RETRY_BASE_DELAY_MS * 2 ** attempt));
       }
     }
     throw normalizeError(lastError);
