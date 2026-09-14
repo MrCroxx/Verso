@@ -393,12 +393,13 @@ async function run() {
     window.focus();
     window.webContents.focus();
     await waitFor(() => window.isFocused() && js('document.hasFocus()'));
-    await js(`window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
-      new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));`);
     let helpPosition;
     await waitFor(async () => {
-      helpPosition = await js(`(() => {
+      helpPosition = await js(`(async () => {
         const button = document.querySelector('.shortcut-help-button');
+        button.focus({ preventScroll: true });
+        button.scrollIntoView({ behavior: 'instant', block: 'center' });
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         const box = button.getBoundingClientRect();
         const x = Math.round(box.x + box.width / 2), y = Math.round(box.y + box.height / 2);
         return { x, y, hit: button.contains(document.elementFromPoint(x, y)) };
