@@ -160,7 +160,10 @@ function bookIdFromUrl() {
 function updateBookInUrl(bookId: string | null, mode: "push" | "replace" = "replace") {
   const url = new URL(window.location.href);
   if (bookId) url.searchParams.set(BOOK_QUERY_PARAMETER, bookId);
-  else url.searchParams.delete(BOOK_QUERY_PARAMETER);
+  else {
+    url.searchParams.delete(BOOK_QUERY_PARAMETER);
+    url.searchParams.delete("page");
+  }
   const nextUrl = `${url.pathname}${url.search}${url.hash}`;
   if (mode === "push") window.history.pushState(window.history.state, "", nextUrl);
   else window.history.replaceState(window.history.state, "", nextUrl);
@@ -1753,6 +1756,7 @@ export default function Home() {
 
   const openLibrary = useCallback(() => {
     window.dispatchEvent(new Event("verso:before-history-navigation"));
+    documentLoadSequence.current++;
     cancelDocumentWork();
     setReaderMenuOpen(false);
     setShowLibraryHome(true);
@@ -2395,17 +2399,23 @@ export default function Home() {
   }, [beginDocumentLoad, finishDocumentLoad, loadNavigation, translationSettings]);
 
   useEffect(() => {
+    let restoration = 0;
+    const invalidateRestoration = () => { restoration++; };
     const restoreFromUrl = () => {
+      const request = ++restoration;
       const requestedBookId = bookIdFromUrl();
+      const isCurrent = () => request === restoration && requestedBookId === bookIdFromUrl();
       if (!requestedBookId) {
+        documentLoadSequence.current++;
         cancelDocumentWork();
         setShowLibraryHome(true);
         return;
       }
       setShowLibraryHome(false);
       void readLocalBook(requestedBookId, messagesRef.current.libraryReadFailed)
-        .then((book) => loadLocalBook(book, false))
+        .then((book) => { if (isCurrent()) return loadLocalBook(book, false); })
         .catch((error) => {
+          if (!isCurrent()) return;
           const detail = error instanceof Error ? error.message : messagesRef.current.libraryReadFailed;
           setStorageMessage(messagesRef.current.openLocalFailed(detail));
           setShowLibraryHome(true);
@@ -2413,9 +2423,12 @@ export default function Home() {
     };
     const restoreTimer = window.setTimeout(restoreFromUrl, 0);
     window.addEventListener("popstate", restoreFromUrl);
+    window.addEventListener("verso:before-history-navigation", invalidateRestoration);
     return () => {
+      invalidateRestoration();
       window.clearTimeout(restoreTimer);
       window.removeEventListener("popstate", restoreFromUrl);
+      window.removeEventListener("verso:before-history-navigation", invalidateRestoration);
     };
   }, [cancelDocumentWork, loadLocalBook]);
 
@@ -2584,6 +2597,8 @@ export default function Home() {
     const page = Number(url.searchParams.get("page"));
     if (!Number.isSafeInteger(page) || page < 1) return;
     const frame = window.requestAnimationFrame(() => {
+      // Navigation may have changed the entry before React cleans up this frame.
+      if (window.location.href !== url.href) return;
       url.searchParams.delete("page");
       window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}`);
       goToPage(page);

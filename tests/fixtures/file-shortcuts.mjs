@@ -43,6 +43,24 @@ async function run() {
     window = new BrowserWindow({ show: true,
       webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, backgroundThrottling: false } });
     const js = (code, userGesture = false) => window.webContents.executeJavaScript(code, userGesture);
+    const menuErrors = [];
+    const menu = Menu.buildFromTemplate([
+      ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
+      createFileMenu({ openWindow: async () => window, onError: error => menuErrors.push(error) }),
+      { role: 'editMenu' },
+    ]);
+    Menu.setApplicationMenu(menu);
+    const openItem = menu.items.find(item => item.label === 'File').submenu.items[0];
+    const inputEvents = [];
+    window.webContents.on('before-input-event', (_event, input) => {
+      inputEvents.push({ type: input.type, key: input.key, meta: input.meta, control: input.control });
+    });
+    const focusWindow = async () => {
+      app.focus({ steal: true });
+      window.focus();
+      window.webContents.focus();
+      await waitFor(() => window.isFocused() && js('document.hasFocus()'), 'The test window must have keyboard focus');
+    };
     const debuggerClient = window.webContents.debugger;
     const choosers = [];
     debuggerClient.on('message', (_event, method, params) => {
@@ -59,12 +77,21 @@ async function run() {
     const choose = async (trigger, files = []) => {
       const count = choosers.length;
       await timed(Promise.resolve(trigger()), `file chooser trigger ${count + 1}`);
-      await waitFor(() => choosers.length === count + 1, 'The action must open exactly one file chooser');
+      await waitFor(() => choosers.length === count + 1, 'The action must open exactly one file chooser')
+        .catch(error => { throw new Error(`${error.message}: ${JSON.stringify({ before: count, received: choosers.length, input: inputEvents.slice(-4), menuErrors: menuErrors.map(error => error.message) })}`); });
       const chooser = choosers.at(-1);
       assert.equal(chooser.mode, 'selectSingle');
       await timed(debuggerClient.sendCommand('DOM.setFileInputFiles', { files, backendNodeId: chooser.backendNodeId }), `file chooser selection ${count + 1}`);
     };
-    const key = (modifiers, keyCode = 'O') => {
+    const key = async (modifiers, keyCode = 'O') => {
+      await focusWindow();
+      await js(`if (!window.shortcutEvents) {
+        window.shortcutEvents = [];
+        addEventListener('keydown', event => setTimeout(() => shortcutEvents.push({
+          key: event.key, meta: event.metaKey, control: event.ctrlKey, prevented: event.defaultPrevented,
+          target: event.target.id || event.target.tagName,
+        }), 0), true);
+      }`);
       window.webContents.sendInputEvent({ type: 'keyDown', keyCode, modifiers });
       window.webContents.sendInputEvent({ type: 'keyUp', keyCode, modifiers });
     };
@@ -100,10 +127,6 @@ async function run() {
     await waitFor(() => js('location.search.includes("book=")'), 'The same file must be selectable again');
     assert.equal(await js(`fetch('/api/books').then(r => r.json()).then(r => r.books.length)`), 1, 'Reopening must reuse the existing local upload');
 
-    const menuErrors = [];
-    const menu = Menu.buildFromTemplate([createFileMenu({ openWindow: async () => window, onError: error => menuErrors.push(error) })]);
-    Menu.setApplicationMenu(menu);
-    const openItem = menu.items[0].submenu.items[0];
     assert.equal(openItem.accelerator, 'CommandOrControl+O');
     await choose(() => openItem.click());
     assert.deepEqual(menuErrors, []);
@@ -116,7 +139,7 @@ async function run() {
   } catch (error) {
     console.error(error);
     if (window && !window.isDestroyed()) console.error(await window.webContents.executeJavaScript(
-      "JSON.stringify({ url: location.href, text: document.body.innerText, files: document.querySelector('[data-open-file-input]')?.files.length })"));
+      "JSON.stringify({ url: location.href, focused: document.hasFocus(), active: document.activeElement?.id, input: window.shortcutEvents, files: document.querySelector('[data-open-file-input]')?.files.length })"));
     exitCode = 1;
   } finally {
     await backend?.stop();

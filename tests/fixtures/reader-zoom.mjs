@@ -389,10 +389,18 @@ async function run() {
     await js(`window.dispatchEvent(new Event('blur')); shortcutKey('?', { repeat: true });`);
     await waitFor(() => js(`!document.querySelector('#shortcut-help-panel')`));
 
+    app.focus({ steal: true });
+    window.focus();
+    window.webContents.focus();
+    await waitFor(() => window.isFocused() && js('document.hasFocus()'));
+    await js(`document.querySelector('.shortcut-help-button').scrollIntoView({ behavior: 'instant', block: 'center' });
+      new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));`);
     const helpPosition = await js(`(() => {
       const box = document.querySelector('.shortcut-help-button').getBoundingClientRect();
       return { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2) };
     })()`);
+    assert.equal(await js(`!!document.elementFromPoint(${helpPosition.x}, ${helpPosition.y})?.closest('.shortcut-help-button')`), true, 'The button must be under the click position');
+    window.webContents.sendInputEvent({ type: 'mouseMove', ...helpPosition });
     window.webContents.sendInputEvent({ type: 'mouseDown', ...helpPosition, button: 'left', clickCount: 1 });
     window.webContents.sendInputEvent({ type: 'mouseUp', ...helpPosition, button: 'left', clickCount: 1 });
     await waitFor(() => js(`!!document.querySelector('#shortcut-help-panel')`));
@@ -469,6 +477,32 @@ async function run() {
     await waitFor(() => js(`document.querySelector('.page-stepper strong')?.textContent === '10'`));
     await js(`document.activeElement.blur(); shortcutKey(']');`);
     await waitFor(() => js(`!!document.querySelector('.library-shell')`));
+    // A slow metadata lookup must not reopen a reader after navigation to the library.
+    await window.loadURL(APP_URL);
+    await waitFor(() => js(`!!document.querySelector('.library-shell .library-book')`));
+    for (const rejectLookup of [false, true]) {
+      await js(`(() => {
+        const originalFetch = window.fetch;
+        window.releaseBookLookup = null;
+        window.fetch = async (...args) => {
+          if (args[0] !== '/api/books/${metadata.fingerprint}') return originalFetch(...args);
+          window.fetch = originalFetch;
+          const response = await originalFetch(...args);
+          return new Promise((resolve, reject) => {
+            window.releaseBookLookup = () => ${rejectLookup} ? reject(new Error('Delayed metadata failure')) : resolve(response);
+          });
+        };
+        history.pushState(history.state, '', '/?book=${metadata.fingerprint}&page=10');
+        dispatchEvent(new PopStateEvent('popstate', { state: history.state }));
+      })()`);
+      await waitFor(() => js(`typeof releaseBookLookup === 'function'`), 'Metadata request must be held pending');
+      await js(`history.back();`);
+      await waitFor(() => js(`!!document.querySelector('.library-shell') && !location.search.includes('book=')`));
+      await js(`releaseBookLookup(); new Promise(resolve => setTimeout(() => requestAnimationFrame(() => requestAnimationFrame(resolve)), 0));`);
+      assert.equal(await js(`!!document.querySelector('.library-shell') && !location.search`), true,
+        'A superseded metadata response must not change the current screen or URL');
+    }
+
     // Capture both themes from the actual production renderer and check the compact layout.
     await window.loadURL(APP_URL);
     await waitFor(() => js(`!!document.querySelector('.library-shell .library-book')`));
