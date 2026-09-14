@@ -44,8 +44,15 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      - name: Build and test
-        run: npm test
+      - name: Build
+        run: npm run build
+
+      - name: Unit and integration tests
+        run: npm run test:core
+
+      - name: macOS desktop UI tests
+        if: runner.os == 'macOS'
+        run: npm run test:desktop-ui
 
   publish-image:
     name: Build Docker image
