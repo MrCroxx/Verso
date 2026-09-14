@@ -41,7 +41,7 @@ import { useRouter } from "next/navigation";
 import { DEFAULT_SETTINGS, type TranslationSettings } from "../lib/app-settings";
 import { UI_MESSAGES, targetLanguageLabel, type UiMessages } from "../lib/ui-messages";
 import { useAppSettings } from "./app-settings";
-import { useOpenFile } from "./app-shortcuts";
+import { NavigationHistoryControls, ShortcutHelpButton, useAppShortcuts } from "./app-shortcuts";
 import { Brand } from "./brand";
 import { ThemeSelect } from "./theme-select";
 import { LOCAL_PDF_RANGE_CHUNK_SIZE, createLocalPdfRangeTransport } from "../lib/local-pdf-range-transport";
@@ -59,7 +59,7 @@ import {
   type TocEntry,
 } from "../lib/document-navigation";
 import { createLatestTaskRegistry } from "../lib/latest-task-registry";
-import { isDocumentSearchShortcut } from "../lib/keyboard-shortcuts";
+import { isDocumentSearchShortcut, isEditableShortcutTarget, isSidebarShortcut } from "../lib/keyboard-shortcuts";
 import { deduplicatePageBoundary, hasLayoutContent, normalizeTranslationPayload, type LayoutBlock, type SourceRect } from "../lib/translation-layout";
 import { searchTranslationPayload } from "../lib/translation-search";
 import { groupTranslationMedia, imagePlacement } from "../lib/translation-media";
@@ -1102,6 +1102,7 @@ function LibraryHome({
           <Link className="icon-button queue-link" href="/queue" title={messages.queueTitle} aria-label={activeJobCount ? `${messages.queueTitle} (${activeJobCount})` : messages.queueTitle}><ListOrdered size={17} />{activeJobCount > 0 && <span className="queue-count" aria-hidden="true">{activeJobCount}</span>}</Link>
           <button className="icon-button locale-button" title={messages.switchLanguage} aria-label={messages.switchLanguage} onClick={onToggleLocale}><Globe2 size={16} /><span>{locale === "zh-CN" ? "EN" : "中"}</span></button>
           <ThemeSelect compact />
+          <ShortcutHelpButton />
           <Link data-settings-trigger className="icon-button settings-link" href="/settings" title={messages.settings} aria-label={messages.settings}><Settings size={17} /></Link>
           <button className="icon-button library-upload-button" onClick={onUpload} title={messages.uploadPdf} aria-label={messages.uploadPdf}><Upload size={17} /></button>
         </div>
@@ -1338,7 +1339,7 @@ function ContentsNavigation({
 type SidebarView = "pages" | "contents" | "search";
 
 export default function Home() {
-  const { openFile, pendingFile, consumeFile } = useOpenFile();
+  const { openFile, pendingFile, consumeFile, shortcutModifier } = useAppShortcuts();
   const searchInput = useRef<HTMLInputElement>(null);
   const readerMenu = useRef<HTMLDivElement>(null);
   const pdfRef = useRef<PdfDocument | undefined>(undefined);
@@ -1751,6 +1752,7 @@ export default function Home() {
   }, [cancelDocumentWork]);
 
   const openLibrary = useCallback(() => {
+    window.dispatchEvent(new Event("verso:before-history-navigation"));
     cancelDocumentWork();
     setReaderMenuOpen(false);
     setShowLibraryHome(true);
@@ -2340,6 +2342,7 @@ export default function Home() {
   }, [beginDocumentLoad, finishDocumentLoad, loadNavigation, messages, translationSettings, uploadToLocal]);
 
   const loadLocalBook = useCallback(async (book: LocalBook, updateUrl = true) => {
+    if (updateUrl) window.dispatchEvent(new Event("verso:before-history-navigation"));
     setShowLibraryHome(false);
     if (updateUrl) updateBookInUrl(book.fingerprint, "push");
     const sequence = beginDocumentLoad(book.fingerprint, book.name, book.pageCount, true);
@@ -2534,6 +2537,39 @@ export default function Home() {
     }
   }, []);
 
+  const toggleSidebar = useCallback(() => {
+    if (window.matchMedia("(max-width: 900px)").matches) {
+      setSidebarOpen(true);
+      setSidebarDrawerOpen((open) => !open);
+    } else {
+      setSidebarOpen((open) => !open);
+    }
+  }, []);
+
+  useEffect(() => {
+    function handleSidebarShortcut(event: KeyboardEvent) {
+      if (showLibraryHome || event.defaultPrevented || isEditableShortcutTarget(event.target)
+        || !isSidebarShortcut(event)) return;
+      event.preventDefault();
+      if (event.repeat) return;
+      toggleSidebar();
+    }
+    window.addEventListener("keydown", handleSidebarShortcut);
+    return () => window.removeEventListener("keydown", handleSidebarShortcut);
+  }, [showLibraryHome, toggleSidebar]);
+
+  useEffect(() => {
+    if (showLibraryHome || !serverBookAvailable || !documentReady) return;
+    const preservePosition = () => {
+      const url = new URL(window.location.href);
+      if (url.searchParams.get("book") !== documentId) return;
+      url.searchParams.set("page", String(currentPage));
+      window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}`);
+    };
+    window.addEventListener("verso:before-history-navigation", preservePosition);
+    return () => window.removeEventListener("verso:before-history-navigation", preservePosition);
+  }, [currentPage, documentId, documentReady, serverBookAvailable, showLibraryHome]);
+
   const openSettings = () => {
     const returnTo = serverBookAvailable && !showLibraryHome
       ? `/?book=${encodeURIComponent(documentId)}&page=${currentPage}`
@@ -2593,10 +2629,13 @@ export default function Home() {
             <button
               className={cn("icon-button", "reader-sidebar-button", sidebarOpen && "desktop-hidden")}
               aria-label={messages.toggleSidebar}
-              onClick={() => openSidebarView("pages")}
+              title={`${messages.toggleSidebar} (${shortcutModifier}B)`}
+              aria-keyshortcuts="Meta+B Control+B"
+              onClick={toggleSidebar}
             >
               <Menu size={19} />
             </button>
+            <NavigationHistoryControls />
             <div className="page-stepper">
               <button className="icon-button" onClick={() => goToPage(currentPage - 1, "adjacent")} aria-label={messages.previousPage}><ChevronLeft size={17} /></button>
               <span><strong>{currentPage}</strong> / {totalPages}</span>
@@ -2634,6 +2673,7 @@ export default function Home() {
             </button>
             {/* Keep transfers mounted when the menu closes during file selection or import. */}
             <div id="reader-overflow-menu" className="reader-overflow-menu" role="menu" hidden={!readerMenuOpen}>
+              <ShortcutHelpButton menu />
               <button role="menuitem" onClick={() => openSidebarView("pages")}><FileText size={17} /><span>{messages.pages}</span></button>
               <button role="menuitem" onClick={() => openSidebarView("contents")}><ListTree size={17} /><span>{messages.contents}</span></button>
               <button role="menuitem" onClick={() => openSidebarView("search")}><Search size={17} /><span>{messages.searchPages}</span></button>
@@ -2667,7 +2707,8 @@ export default function Home() {
         />
         <aside className={cn("sidebar", !sidebarOpen && "collapsed", sidebarDrawerOpen && "mobile-open")}>
           <div className="sidebar-head">
-            <button className="icon-button sidebar-close-button" aria-label={messages.toggleSidebar} onClick={closeSidebar}>
+            <button className="icon-button sidebar-close-button" aria-label={messages.toggleSidebar}
+              title={`${messages.toggleSidebar} (${shortcutModifier}B)`} aria-keyshortcuts="Meta+B Control+B" onClick={closeSidebar}>
               <PanelLeftClose className="desktop-sidebar-close" size={18} />
               <X className="mobile-sidebar-close" size={19} />
             </button>

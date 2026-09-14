@@ -717,3 +717,15 @@ body, .topbar, .sidebar, .reader-toolbar, .page-spread, .page-surface, .settings
 
 .mapped-source-image { cursor: pointer; }
 .mapped-source-image:hover, .mapped-source-image:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
+
+.navigation-history-controls { display: flex; align-items: center; gap: 2px; }
+.shortcut-dialog { width: min(460px, calc(100vw - 32px)); max-height: min(85dvh, 700px); margin: auto; padding: 22px; overflow-y: auto; border: 1px solid var(--line); border-radius: 14px; color: var(--ink); background: var(--paper); box-shadow: 0 20px 80px rgba(0,0,0,.25); }
+.shortcut-dialog::backdrop { background: rgba(0,0,0,.4); }
+.shortcut-dialog-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.shortcut-dialog h2 { margin: 0; font-size: 18px; }
+.shortcut-dialog p { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.shortcut-dialog dl { margin: 18px 0 0; }
+.shortcut-dialog dl > div { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 9px 0; border-top: 1px solid var(--line); font-size: 13px; }
+.shortcut-dialog dd { margin: 0; flex-shrink: 0; }
+.shortcut-dialog kbd { padding: 3px 7px; border: 1px solid var(--line); border-radius: 5px; background: var(--canvas); font-family: var(--font-geist-mono), monospace; font-size: 12px; white-space: nowrap; }
+.settings-heading:has(.shortcut-help-button) { display: flex; align-items: center; justify-content: space-between; gap: 12px; }

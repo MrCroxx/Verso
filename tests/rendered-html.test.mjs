@@ -12,7 +12,7 @@ import { applyTheme, watchTheme } from "../lib/theme.ts";
 import { createLocalPdfRangeTransport } from "../lib/local-pdf-range-transport.ts";
 import { readLimitedRequestBody, RequestBodyTooLargeError } from "../lib/server-request-body.ts";
 import { createConcurrencyLimiter } from "../lib/concurrency-limiter.ts";
-import { isDocumentSearchShortcut, isOpenFileShortcut, isSettingsShortcut } from "../lib/keyboard-shortcuts.ts";
+import { historyShortcutDirection, isDocumentSearchShortcut, isOpenFileShortcut, isSettingsShortcut, isShortcutHelpShortcut, isSidebarShortcut } from "../lib/keyboard-shortcuts.ts";
 import { createLatestTaskRegistry } from "../lib/latest-task-registry.ts";
 import {
   calculatePageOffset,
@@ -674,6 +674,29 @@ test("recognizes Command/Ctrl comma without hijacking other modified keys", () =
     assert.equal(isSettingsShortcut({ ...plain, [modifier]: true, key: "." }), false);
   }
   assert.equal(isSettingsShortcut({ ...plain, ctrlKey: true, metaKey: true }), false);
+});
+
+test("recognizes sidebar, history, and help shortcuts without overriding modified keys", () => {
+  const plain = { key: "b", ctrlKey: false, metaKey: false, altKey: false, shiftKey: false };
+  assert.equal(isSidebarShortcut(plain), false);
+  assert.equal(historyShortcutDirection({ ...plain, key: "[" }), undefined);
+  for (const modifier of ["ctrlKey", "metaKey"]) {
+    const event = { ...plain, [modifier]: true };
+    assert.equal(isSidebarShortcut(event), true);
+    assert.equal(isSidebarShortcut({ ...event, key: "B" }), true);
+    assert.equal(historyShortcutDirection({ ...event, key: "[" }), "back");
+    assert.equal(historyShortcutDirection({ ...event, key: "]" }), "forward");
+    for (const extra of ["altKey", "shiftKey", modifier === "ctrlKey" ? "metaKey" : "ctrlKey"]) {
+      assert.equal(isSidebarShortcut({ ...event, [extra]: true }), false);
+      assert.equal(historyShortcutDirection({ ...event, key: "[", [extra]: true }), undefined);
+    }
+  }
+  assert.equal(isShortcutHelpShortcut({ ...plain, key: "?" }), true);
+  assert.equal(isShortcutHelpShortcut({ ...plain, key: "?", shiftKey: true }), true);
+  assert.equal(isShortcutHelpShortcut({ ...plain, key: "/" }), false);
+  for (const modifier of ["ctrlKey", "metaKey", "altKey"]) {
+    assert.equal(isShortcutHelpShortcut({ ...plain, key: "?", [modifier]: true }), false);
+  }
 });
 
 test("leaves the macOS fullscreen shortcut to the system", () => {

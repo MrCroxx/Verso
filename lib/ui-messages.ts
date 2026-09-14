@@ -39,6 +39,11 @@ export const UI_MESSAGES = {
     zoomIn: "放大阅读视图",
     zoomOut: "缩小阅读视图",
     fitWidth: "适应宽度",
+    historyBack: "后退",
+    historyForward: "前进",
+    keyboardShortcuts: "快捷键",
+    closeShortcutHelp: "关闭快捷键说明",
+    keyboardShortcutsHelp: "前进与后退沿用应用导航历史。侧栏、搜索与缩放用于阅读器；输入文字时不会触发侧栏、历史或问号快捷键。",
     readerZoom: "阅读视图缩放",
     readerFont: {
       label: "字体", title: "译文字体", size: "字号", decrease: "缩小译文字号", increase: "放大译文字号",
@@ -243,6 +248,11 @@ export const UI_MESSAGES = {
     zoomIn: "Zoom in reading view",
     zoomOut: "Zoom out reading view",
     fitWidth: "Fit width",
+    historyBack: "Back",
+    historyForward: "Forward",
+    keyboardShortcuts: "Keyboard shortcuts",
+    closeShortcutHelp: "Close keyboard shortcuts",
+    keyboardShortcutsHelp: "Back and forward follow app navigation history. Sidebar, search, and zoom apply to the reader. Sidebar, history, and question-mark shortcuts are inactive while typing.",
     readerZoom: "Reading view zoom",
     readerFont: {
       label: "Font", title: "Translation font", size: "Font size", decrease: "Decrease translation font size", increase: "Increase translation font size",
