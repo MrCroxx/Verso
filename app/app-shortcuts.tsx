@@ -114,7 +114,11 @@ export function AppShortcuts({ children }: { children: ReactNode }) {
     window.addEventListener("verso:before-open-file", beforeOpenFile);
     window.addEventListener("blur", hideHelp);
     document.addEventListener("visibilitychange", visibilityChanged);
+    // Server-rendered controls can exist before their keyboard listeners are attached.
+    const input = fileInput.current;
+    input?.setAttribute("data-shortcuts-ready", "true");
     return () => {
+      input?.removeAttribute("data-shortcuts-ready");
       window.removeEventListener("keydown", dismissHelp, true);
       window.removeEventListener("keydown", keydown);
       window.removeEventListener("verso:open-settings", openSettings);

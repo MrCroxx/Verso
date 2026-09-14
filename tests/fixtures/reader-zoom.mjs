@@ -65,8 +65,13 @@ async function run() {
     window = new BrowserWindow({ show: true, width: 1400, height: 900,
       webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, backgroundThrottling: false } });
     const js = code => window.webContents.executeJavaScript(code);
+    const loadPage = async url => {
+      await window.loadURL(url);
+      await waitFor(() => js(`document.querySelector('[data-open-file-input]')?.dataset.shortcutsReady === 'true'`),
+        'App keyboard listeners must be ready after navigation');
+    };
     const act = code => js(`(async () => { ${code} })()`);
-    await window.loadURL(`${APP_URL}?book=${metadata.fingerprint}`);
+    await loadPage(`${APP_URL}?book=${metadata.fingerprint}`);
     window.focus();
     await waitFor(() => js('document.querySelectorAll(".page-spread").length === 80 && !!document.querySelector(".reader-zoom")'));
     await waitFor(() => js(`document.querySelector('[data-page="1"] .translation-usage')?.textContent.includes('0.0345')`));
@@ -282,7 +287,7 @@ async function run() {
     await waitFor(() => js(`document.querySelector('.reader-viewport')?.dataset.translationFont === 'sans'
       && getComputedStyle(document.querySelector('.spreads')).getPropertyValue('--translation-font-scale').trim() === '1.5'`),
     'Font preferences must persist across a desktop reload');
-    await window.loadURL(`${APP_URL}?book=${metadata.fingerprint}&page=10`);
+    await loadPage(`${APP_URL}?book=${metadata.fingerprint}&page=10`);
     await waitFor(() => js(`!!document.querySelector('[data-page="10"] .translation-usage')`));
     assert.doesNotMatch(await js(`document.querySelector('[data-page="10"] .translation-usage').textContent`), /USD/);
     await js(`document.body.dispatchEvent(new KeyboardEvent('keydown', { key: ',', metaKey: true, bubbles: true, cancelable: true }))`);
@@ -316,18 +321,18 @@ async function run() {
     }
     await waitFor(async () => (await request('/api/settings/ai-provider', 'GET')).pricing?.schedule === 'deepseek-peak');
     assert.equal((await request('/api/settings/ai-provider', 'GET')).pricing.currency, 'CNY');
-    await window.loadURL(`${APP_URL}/settings`);
+    await loadPage(`${APP_URL}/settings`);
     await waitFor(() => js(`document.querySelector('#pricing-inputPerMillion')?.value === '2.5'`));
     assert.equal(await js(`document.querySelector('#pricing-schedule').value`), 'deepseek-peak');
     assert.equal(await js(`document.querySelector('#pricing-currency').value`), 'CNY');
-    await window.loadURL(`${APP_URL}?book=${metadata.fingerprint}`);
+    await loadPage(`${APP_URL}?book=${metadata.fingerprint}`);
     await waitFor(() => js(`/USD\\s0.0345/.test(document.querySelector('[data-page="1"] .translation-usage')?.textContent ?? '')`));
-    await window.loadURL(`${APP_URL}?book=${metadata.fingerprint}&page=10`);
+    await loadPage(`${APP_URL}?book=${metadata.fingerprint}&page=10`);
     await waitFor(() => js(`!!document.querySelector('[data-page="10"] .translation-usage')`));
     assert.match(await js(`document.querySelector('[data-page="10"] .translation-usage').textContent`), /CNY\s0.072/);
     const historical = await request(`/api/translations?key=${encodeURIComponent(translationCacheKey(metadata.fingerprint, 10, 'Simplified Chinese'))}`, 'GET');
     assert.equal(historical.translation.usage.cost, undefined, 'Estimates must leave the original tokens and costs intact');
-    await window.loadURL(APP_URL);
+    await loadPage(APP_URL);
     await waitFor(() => js(`!!document.querySelector('.settings-link')`));
     await js(`document.body.dispatchEvent(new KeyboardEvent('keydown', { key: ',', ctrlKey: true, bubbles: true, cancelable: true }))`);
     await waitFor(() => js(`!!document.querySelector('#pricing-inputPerMillion')`));
@@ -426,7 +431,7 @@ async function run() {
       await waitFor(() => js(`!document.querySelector('#shortcut-help-panel')`));
     }
 
-    await window.loadURL(`${APP_URL}?book=${metadata.fingerprint}&page=10`);
+    await loadPage(`${APP_URL}?book=${metadata.fingerprint}&page=10`);
     await waitFor(() => js(`document.querySelector('.page-stepper strong')?.textContent === '10'
       && !!document.querySelector('[data-page="10"] .translation-usage')`));
     await js(`window.shortcutKey = (key, extra = {}) => document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {
@@ -485,7 +490,7 @@ async function run() {
     await js(`document.activeElement.blur(); shortcutKey(']');`);
     await waitFor(() => js(`!!document.querySelector('.library-shell')`));
     // A slow metadata lookup must not reopen a reader after navigation to the library.
-    await window.loadURL(APP_URL);
+    await loadPage(APP_URL);
     await waitFor(() => js(`!!document.querySelector('.library-shell .library-book')`));
     for (const rejectLookup of [false, true]) {
       await js(`(() => {
@@ -511,7 +516,7 @@ async function run() {
     }
 
     // Capture both themes from the actual production renderer and check the compact layout.
-    await window.loadURL(APP_URL);
+    await loadPage(APP_URL);
     await waitFor(() => js(`!!document.querySelector('.library-shell .library-book')`));
     await js(`document.documentElement.dataset.theme = 'light';
       document.body.dispatchEvent(new KeyboardEvent('keydown', { key: '?', bubbles: true, cancelable: true }));`);

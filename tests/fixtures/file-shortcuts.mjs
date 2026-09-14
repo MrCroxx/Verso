@@ -43,6 +43,11 @@ async function run() {
     window = new BrowserWindow({ show: true,
       webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, backgroundThrottling: false } });
     const js = (code, userGesture = false) => window.webContents.executeJavaScript(code, userGesture);
+    const loadPage = async url => {
+      await window.loadURL(url);
+      await waitFor(() => js(`document.querySelector('[data-open-file-input]')?.dataset.shortcutsReady === 'true'`),
+        'App keyboard listeners must be ready after navigation');
+    };
     const menuErrors = [];
     installFileShortcut(window, error => menuErrors.push(error));
     const menu = Menu.buildFromTemplate([
@@ -99,7 +104,7 @@ async function run() {
     const modifier = process.platform === 'darwin' ? 'meta' : 'control';
     const pdfPath = path.join(process.env.VERSO_TEST_DIRECTORY, 'Shortcut upload.pdf');
     await writeFile(pdfPath, makePdf());
-    await window.loadURL(APP_URL);
+    await loadPage(APP_URL);
     debuggerClient.attach('1.3');
     await debuggerClient.sendCommand('Page.enable');
     await debuggerClient.sendCommand('Page.setInterceptFileChooserDialog', { enabled: true });
@@ -116,7 +121,7 @@ async function run() {
     assert.equal(await js('!!document.querySelector(".library-shell")'), true, 'Cancelling must preserve the library');
     await choose(() => js('document.querySelector(".library-upload-button").click()', true));
 
-    await window.loadURL(`${APP_URL}/settings`);
+    await loadPage(`${APP_URL}/settings`);
     await waitFor(() => js('!!document.querySelector("#ai-model")'), 'Settings must be ready');
     await js('document.querySelector("#ai-model").focus()');
     await choose(() => key([modifier]));
@@ -137,7 +142,7 @@ async function run() {
     await choose(() => openItem.click());
     assert.deepEqual(menuErrors, []);
     assert.equal(await js('location.href'), readerUrl, 'Cancelling the native menu action must preserve the reader');
-    await window.loadURL(`${APP_URL}/settings`);
+    await loadPage(`${APP_URL}/settings`);
     await waitFor(() => js('!!document.querySelector("#ai-model")'), 'Settings must reload');
     await choose(() => openItem.click(), [pdfPath]);
     await waitFor(() => js('!!document.querySelector(".reader-shell")'), 'The native menu must open a PDF from Settings');
