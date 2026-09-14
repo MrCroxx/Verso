@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { ensureStorageSchema, getStorage } from "../../../db/books";
 import { normalizeTranslationPayload } from "../../../lib/translation-layout";
 
-import { discardBookTranslationJobs } from "../../../lib/server-translation-queue";
+import { discardBookTranslations } from "../../../lib/server-translation-queue";
 
 export const runtime = "nodejs";
 
@@ -95,13 +95,8 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: "Invalid document ID." }, { status: 400 });
     }
 
-    const { db } = getStorage();
-    await ensureStorageSchema(db);
-    await discardBookTranslationJobs(documentId);
-    const result = await db.prepare("DELETE FROM translations WHERE document_id = ?1")
-      .bind(documentId)
-      .run();
-    return NextResponse.json({ deleted: Number(result.changes) });
+    const deleted = await discardBookTranslations(documentId);
+    return NextResponse.json({ deleted });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to discard translation cache.";
     return NextResponse.json({ error: message }, { status: 503 });
