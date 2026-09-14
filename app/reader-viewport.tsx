@@ -317,14 +317,15 @@ export function ReaderViewport({ children, currentPage, dividerLabel, dividerVal
     };
     window.addEventListener("click", controlLayout, { capture: true });
     window.addEventListener("input", controlLayout, { capture: true });
-    window.addEventListener("keydown", keydown, { capture: true });
+    // App-level overlays intercept keys at the window before reader controls.
+    document.addEventListener("keydown", keydown, { capture: true });
     window.addEventListener("wheel", wheel, { passive: false, capture: true });
     return () => {
       window.cancelAnimationFrame(frame);
       stopGesture();
       window.removeEventListener("click", controlLayout, { capture: true });
       window.removeEventListener("input", controlLayout, { capture: true });
-      window.removeEventListener("keydown", keydown, { capture: true });
+      document.removeEventListener("keydown", keydown, { capture: true });
       window.removeEventListener("wheel", wheel, { capture: true });
     };
   }, [onZoom, rememberAnchor, settleHorizontalPosition]);

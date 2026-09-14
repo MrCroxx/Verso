@@ -12,7 +12,7 @@ type AppShortcutContextValue = {
   openFile: () => void;
   pendingFile: File | null;
   consumeFile: () => void;
-  setShortcutButtonHeld: (held: boolean) => void;
+  showShortcuts: () => void;
   shortcutsVisible: boolean;
   shortcutModifier: string;
   back: () => void;
@@ -30,10 +30,12 @@ export function AppShortcuts({ children }: { children: ReactNode }) {
   const router = useRouter();
   const { locale } = useUiLocale();
   const messages = UI_MESSAGES[locale];
-  const heldHelpKey = useRef<string | null>(null);
-  const [shortcutKeyHeld, setShortcutKeyHeld] = useState(false);
-  const [shortcutButtonHeld, setShortcutButtonHeld] = useState(false);
-  const shortcutsVisible = shortcutKeyHeld || shortcutButtonHeld;
+  const helpVisible = useRef(false);
+  const [shortcutsVisible, setShortcutsVisible] = useState(false);
+  const showShortcuts = useCallback(() => {
+    helpVisible.current = true;
+    setShortcutsVisible(true);
+  }, []);
   const [shortcutModifier, setShortcutModifier] = useState("Ctrl+");
   const fileInput = useRef<HTMLInputElement>(null);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
@@ -47,8 +49,8 @@ export function AppShortcuts({ children }: { children: ReactNode }) {
     window.dispatchEvent(new Event("verso:before-history-navigation"));
     router.forward();
   }, [router]);
-  const value = useMemo(() => ({ openFile, pendingFile, consumeFile, setShortcutButtonHeld, shortcutsVisible, shortcutModifier, back, forward }),
-    [openFile, pendingFile, consumeFile, setShortcutButtonHeld, shortcutsVisible, shortcutModifier, back, forward]);
+  const value = useMemo(() => ({ openFile, pendingFile, consumeFile, showShortcuts, shortcutsVisible, shortcutModifier, back, forward }),
+    [openFile, pendingFile, consumeFile, showShortcuts, shortcutsVisible, shortcutModifier, back, forward]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setShortcutModifier(/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+"), 0);
@@ -68,9 +70,7 @@ export function AppShortcuts({ children }: { children: ReactNode }) {
       if (!isEditableShortcutTarget(event.target)) {
         if (isShortcutHelpShortcut(event)) {
           event.preventDefault();
-          if (event.repeat && !heldHelpKey.current) return;
-          heldHelpKey.current = event.code || event.key;
-          setShortcutKeyHeld(true);
+          if (!event.repeat) showShortcuts();
           return;
         }
         const direction = historyShortcutDirection(event);
@@ -91,39 +91,31 @@ export function AppShortcuts({ children }: { children: ReactNode }) {
       event.preventDefault();
       openSettings();
     }
-    function keyup(event: KeyboardEvent) {
-      // Shift can be released first, so the same physical key may report "/".
-      if (heldHelpKey.current && (event.code === heldHelpKey.current || event.key === heldHelpKey.current
-        || event.key === "?" || event.key === "/" || event.key === "Shift")) {
-        heldHelpKey.current = null;
-        setShortcutKeyHeld(false);
-      }
-      if (event.key === "Enter" || event.key === " ") setShortcutButtonHeld(false);
+    function hideHelp() {
+      helpVisible.current = false;
+      setShortcutsVisible(false);
     }
-    function releaseButton() { setShortcutButtonHeld(false); }
-    function releaseHelp() {
-      heldHelpKey.current = null;
-      setShortcutKeyHeld(false);
-      releaseButton();
+    function dismissHelp(event: KeyboardEvent) {
+      if (!helpVisible.current) return;
+      // Consume dismissal before focused controls or other shortcuts handle it.
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (!event.repeat) hideHelp();
     }
-    function visibilityChanged() { if (document.hidden) releaseHelp(); }
+    function visibilityChanged() { if (document.hidden) hideHelp(); }
+    window.addEventListener("keydown", dismissHelp, true);
     window.addEventListener("keydown", keydown);
     window.addEventListener("verso:open-settings", openSettings);
-    window.addEventListener("keyup", keyup, true);
-    window.addEventListener("pointerup", releaseButton, true);
-    window.addEventListener("pointercancel", releaseButton, true);
-    window.addEventListener("blur", releaseHelp);
+    window.addEventListener("blur", hideHelp);
     document.addEventListener("visibilitychange", visibilityChanged);
     return () => {
+      window.removeEventListener("keydown", dismissHelp, true);
       window.removeEventListener("keydown", keydown);
       window.removeEventListener("verso:open-settings", openSettings);
-      window.removeEventListener("keyup", keyup, true);
-      window.removeEventListener("pointerup", releaseButton, true);
-      window.removeEventListener("pointercancel", releaseButton, true);
-      window.removeEventListener("blur", releaseHelp);
+      window.removeEventListener("blur", hideHelp);
       document.removeEventListener("visibilitychange", visibilityChanged);
     };
-  }, [back, forward, openFile, router]);
+  }, [back, forward, openFile, router, showShortcuts]);
 
   const shortcutGroups = [
     { label: messages.shortcutGeneral, rows: [
@@ -145,7 +137,7 @@ export function AppShortcuts({ children }: { children: ReactNode }) {
       <div className={styles.heading}>
         <span className={styles.icon}><Keyboard size={18} aria-hidden="true" /></span>
         <h2 id="shortcut-help-title">{messages.keyboardShortcuts}</h2>
-        <kbd className={styles.holdKey}>?</kbd>
+        <kbd className={styles.triggerKey}>?</kbd>
       </div>
       <div className={styles.groups}>
         {shortcutGroups.map((group) => <section className={styles.group} key={group.label}>
@@ -169,25 +161,13 @@ export function AppShortcuts({ children }: { children: ReactNode }) {
 }
 
 export function ShortcutHelpButton({ menu = false }: { menu?: boolean }) {
-  const { setShortcutButtonHeld, shortcutsVisible } = useAppShortcuts();
+  const { showShortcuts, shortcutsVisible } = useAppShortcuts();
   const { locale } = useUiLocale();
   const label = UI_MESSAGES[locale].keyboardShortcuts;
   return <button type="button" className={menu ? "shortcut-help-button" : "icon-button shortcut-help-button"}
     role={menu ? "menuitem" : undefined} aria-label={label} title={`${label} (?)`} aria-keyshortcuts="?"
     aria-describedby={shortcutsVisible ? "shortcut-help-panel" : undefined}
-    onPointerDown={(event) => {
-      if (event.button !== 0) return;
-      event.preventDefault();
-      event.currentTarget.setPointerCapture(event.pointerId);
-      setShortcutButtonHeld(true);
-    }}
-    onLostPointerCapture={() => setShortcutButtonHeld(false)}
-    onBlur={() => setShortcutButtonHeld(false)}
-    onKeyDown={(event) => {
-      if (event.key !== "Enter" && event.key !== " ") return;
-      event.preventDefault();
-      if (!event.repeat) setShortcutButtonHeld(true);
-    }}><Keyboard size={17} />{menu && <span>{label}</span>}</button>;
+    onClick={showShortcuts}><Keyboard size={17} />{menu && <span>{label}</span>}</button>;
 }
 
 export function NavigationHistoryControls() {

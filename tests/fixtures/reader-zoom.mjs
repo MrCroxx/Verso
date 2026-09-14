@@ -331,7 +331,7 @@ async function run() {
     await waitFor(() => js(`!!document.querySelector('.settings-link')`));
     await js(`document.body.dispatchEvent(new KeyboardEvent('keydown', { key: ',', ctrlKey: true, bubbles: true, cancelable: true }))`);
     await waitFor(() => js(`!!document.querySelector('#pricing-inputPerMillion')`));
-    // Help is a styled, nonmodal peek that follows the held key without moving focus.
+    // Help is a styled, nonmodal card that stays open until the next key press.
     await js(`window.shortcutKey = (key, extra = {}) => document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {
       key, metaKey: false, ctrlKey: false, bubbles: true, cancelable: true, ...extra,
     })); document.querySelector('#pricing-inputPerMillion').focus(); shortcutKey('?');`);
@@ -345,6 +345,7 @@ async function run() {
     assert.equal(await js(`document.activeElement.classList.contains('shortcut-help-button')`), true);
     const help = await js(`document.querySelector('#shortcut-help-panel').textContent`);
     assert.match(help, /Keyboard shortcuts/);
+    assert.match(help, /Press any key to hide\./);
     assert.match(help, /(?:⌘|Ctrl\+)B/);
     assert.match(help, /(?:⌘|Ctrl\+)\[/);
     assert.doesNotMatch(help, /Esc|Close keyboard shortcuts/);
@@ -361,26 +362,31 @@ async function run() {
     assert.ok(panelStyle.width <= 560 && panelStyle.height < 400);
     assert.ok(panelStyle.left >= 16 && panelStyle.right <= panelStyle.viewportWidth - 16 && panelStyle.bottom <= panelStyle.viewportHeight);
     assert.equal(panelStyle.paper, panelStyle.pagePaper, 'The overlay must use the existing surface color');
-    window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' });
-    window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' });
-    assert.equal(await js(`!!document.querySelector('#shortcut-help-panel')`), true, 'Help remains visible while ? is held');
     window.webContents.sendInputEvent({ type: 'keyUp', keyCode: '/', modifiers: [] });
+    await js(`window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Shift', code: 'ShiftLeft' }));
+      shortcutKey('?', { repeat: true });`);
+    assert.equal(await js(`!!document.querySelector('#shortcut-help-panel')`), true, 'Release and auto-repeat must leave help visible');
+    window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'A' });
+    window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'A' });
     await waitFor(() => js(`!document.querySelector('#shortcut-help-panel')`));
 
-    // Releasing Shift first, releasing over a form field, and losing the window must all dismiss it.
-    await js(`shortcutKey('?', { code: 'Slash', shiftKey: true });`);
+    // The next press of ? dismisses without reopening; form fields cannot swallow dismissal.
+    await js(`shortcutKey('?');`);
     await waitFor(() => js(`!!document.querySelector('#shortcut-help-panel')`));
-    await js(`window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Shift', code: 'ShiftLeft' }));`);
+    await js(`shortcutKey('?'); shortcutKey('?', { repeat: true });`);
     await waitFor(() => js(`!document.querySelector('#shortcut-help-panel')`));
-    await js(`shortcutKey('?', { code: 'Slash', shiftKey: true });`);
+    await js(`shortcutKey('?');`);
     await waitFor(() => js(`!!document.querySelector('#shortcut-help-panel')`));
+    const priceBeforeDismissal = await js(`document.querySelector('#pricing-inputPerMillion').value`);
     await js(`document.querySelector('#pricing-inputPerMillion').focus();
-      document.activeElement.addEventListener('keyup', event => event.stopPropagation(), { once: true });
-      document.activeElement.dispatchEvent(new KeyboardEvent('keyup', { key: '/', code: 'Slash', bubbles: true }));`);
+      document.activeElement.addEventListener('keydown', event => event.stopPropagation(), { once: true });`);
+    window.webContents.sendInputEvent({ type: 'keyDown', keyCode: '9' });
+    window.webContents.sendInputEvent({ type: 'keyUp', keyCode: '9' });
     await waitFor(() => js(`!document.querySelector('#shortcut-help-panel')`));
-    await js(`document.querySelector('.shortcut-help-button').focus(); shortcutKey('?', { code: 'Slash' });`);
+    assert.equal(await js(`document.querySelector('#pricing-inputPerMillion').value`), priceBeforeDismissal, 'Dismissal must not edit the focused field');
+    await js(`document.querySelector('.shortcut-help-button').focus(); shortcutKey('?');`);
     await waitFor(() => js(`!!document.querySelector('#shortcut-help-panel')`));
-    await js(`window.dispatchEvent(new Event('blur')); shortcutKey('?', { code: 'Slash', repeat: true });`);
+    await js(`window.dispatchEvent(new Event('blur')); shortcutKey('?', { repeat: true });`);
     await waitFor(() => js(`!document.querySelector('#shortcut-help-panel')`));
 
     const helpPosition = await js(`(() => {
@@ -388,14 +394,22 @@ async function run() {
       return { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2) };
     })()`);
     window.webContents.sendInputEvent({ type: 'mouseDown', ...helpPosition, button: 'left', clickCount: 1 });
+    window.webContents.sendInputEvent({ type: 'mouseUp', ...helpPosition, button: 'left', clickCount: 1 });
     await waitFor(() => js(`!!document.querySelector('#shortcut-help-panel')`));
-    window.webContents.sendInputEvent({ type: 'mouseMove', x: 10, y: 10 });
-    window.webContents.sendInputEvent({ type: 'mouseUp', x: 10, y: 10, button: 'left', clickCount: 1 });
+    window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' });
+    window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' });
     await waitFor(() => js(`!document.querySelector('#shortcut-help-panel')`));
-    await js(`document.querySelector('.shortcut-help-button').focus(); shortcutKey(' ');`);
-    await waitFor(() => js(`!!document.querySelector('#shortcut-help-panel')`));
-    await js(`window.dispatchEvent(new KeyboardEvent('keyup', { key: ' ' }));`);
-    await waitFor(() => js(`!document.querySelector('#shortcut-help-panel')`));
+    for (const keyCode of [' ', 'Enter']) {
+      await js(`document.querySelector('.shortcut-help-button').focus();`);
+      window.webContents.sendInputEvent({ type: 'keyDown', keyCode });
+      // Electron requires a separate character event for native Enter activation.
+      if (keyCode === 'Enter') window.webContents.sendInputEvent({ type: 'char', keyCode: '\r' });
+      window.webContents.sendInputEvent({ type: 'keyUp', keyCode });
+      await waitFor(() => js(`!!document.querySelector('#shortcut-help-panel')`));
+      window.webContents.sendInputEvent({ type: 'keyDown', keyCode });
+      window.webContents.sendInputEvent({ type: 'keyUp', keyCode });
+      await waitFor(() => js(`!document.querySelector('#shortcut-help-panel')`));
+    }
 
     await window.loadURL(`${APP_URL}?book=${metadata.fingerprint}&page=10`);
     await waitFor(() => js(`document.querySelector('.page-stepper strong')?.textContent === '10'
@@ -405,6 +419,16 @@ async function run() {
     })); document.activeElement.blur(); shortcutKey('b'); shortcutKey('b', { repeat: true });`);
     await waitFor(() => js(`document.querySelector('.sidebar').classList.contains('collapsed')`));
     assert.match(await js(`document.querySelector('.reader-sidebar-button').title`), /(?:⌘|Ctrl\+)B/);
+    const zoomBeforeDismissal = await js(`document.querySelector('.reader-zoom').textContent`);
+    for (const key of ['b', '+', ',']) {
+      await js(`shortcutKey('?', { metaKey: false });`);
+      await waitFor(() => js(`!!document.querySelector('#shortcut-help-panel')`));
+      await js(`shortcutKey(${JSON.stringify(key)});`);
+      await waitFor(() => js(`!document.querySelector('#shortcut-help-panel')`));
+      assert.equal(await js(`document.querySelector('.sidebar')?.classList.contains('collapsed')`), true);
+      assert.equal(await js(`document.querySelector('.reader-zoom').textContent`), zoomBeforeDismissal);
+      assert.equal(await js(`location.pathname`), '/', 'Dismissal must not trigger another app shortcut');
+    }
     await js(`shortcutKey('b');`);
     await waitFor(() => js(`!document.querySelector('.sidebar').classList.contains('collapsed')`));
     await js(`document.querySelector('#sidebar-tab-search').click();`);
@@ -465,7 +489,7 @@ async function run() {
     assert.equal(await js(`(() => { const box = document.querySelector('#shortcut-help-panel').getBoundingClientRect();
       return box.left >= 16 && box.right <= innerWidth - 16 && box.bottom <= innerHeight; })()`), true);
     if (captureDirectory) await writeFile(path.join(captureDirectory, 'shortcuts-mobile.png'), (await window.webContents.capturePage()).toPNG());
-    await js(`window.dispatchEvent(new KeyboardEvent('keyup', { key: '/' }));`);
+    await js(`document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true, cancelable: true }));`);
     await waitFor(() => js(`!document.querySelector('#shortcut-help-panel')`));
     console.log(JSON.stringify({ pages: 80, burstEvents: 40, scaleWrites: burst.writes,
       pointerDrift: { x: continuous.x - before.anchor.x, y: continuous.y - before.anchor.y },
