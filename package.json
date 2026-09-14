@@ -10,13 +10,14 @@
     "dev": "next dev --hostname 0.0.0.0",
     "build": "next build",
     "start": "node scripts/start-standalone.mjs",
-    "test": "npm run build && node --test tests/rendered-html.test.mjs tests/translation-optimization.test.mjs tests/source-presentation.test.mjs tests/source-code.test.mjs tests/source-table.test.mjs tests/desktop.test.mjs tests/provider-timeout.test.mjs tests/desktop-navigation.test.mjs tests/reader-zoom.test.mjs tests/queue-ui.test.mjs tests/macos-dmg.test.mjs tests/translation-transfer.test.mjs",
+    "test": "npm run build && node --test tests/rendered-html.test.mjs tests/translation-optimization.test.mjs tests/source-presentation.test.mjs tests/source-code.test.mjs tests/source-table.test.mjs tests/desktop.test.mjs tests/provider-timeout.test.mjs tests/macos-dmg.test.mjs && npm run test:desktop-ui",
     "lint": "eslint . --ignore-pattern .next --ignore-pattern public/pdfjs",
     "desktop:prepare": "node scripts/prepare-desktop.mjs",
     "desktop:dev": "npm run build && npm run desktop:prepare && node scripts/start-desktop.mjs",
     "desktop:native": "node scripts/bundle-macos-tools.mjs",
     "desktop:package": "node scripts/package-desktop.mjs",
-    "test:desktop": "node --test tests/desktop.test.mjs"
+    "test:desktop": "node --test tests/desktop.test.mjs",
+    "test:desktop-ui": "node --test --test-concurrency=1 tests/desktop-navigation.test.mjs tests/reader-zoom.test.mjs tests/queue-ui.test.mjs tests/translation-transfer.test.mjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",

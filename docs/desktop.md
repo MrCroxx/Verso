@@ -82,18 +82,26 @@ for DMG and ZIP files. Dependencies are locked to patched versions. npm's
 unrelated install scripts are not blanket-approved.
 
 The **CI** GitHub Actions workflow runs lint, the production build, and tests on
-Linux and macOS for pull requests, pushes to `main`, version tags, and manual
-dispatch. Pull requests do not package installers or publish Docker images;
-both jobs appear as skipped checks.
+Linux and Apple Silicon macOS for pull requests, pushes to `main`, version tags,
+and manual dispatch.
 
-After both validation jobs pass, the same workflow produces ad-hoc signed arm64
-and x64 artifacts on pushes to `main`, version tags, and manual dispatch. Docker
-image publishing also waits for both validation jobs and runs only on pushes to
-`main`. Download the DMG and ZIP installers from the successful CI run's
+After all validation jobs pass, the same workflow produces ad-hoc signed arm64
+and x64 installers and builds Docker images for both `linux/amd64` and
+`linux/arm64`, including on pull requests. Pull requests test the complete builds
+without pushing images or uploading installers or Docker build records.
+Installers and Docker build records are uploaded as artifacts only when the
+workflow runs on `main`. Docker images are pushed only on pushes to `main`.
+Download the DMG and ZIP installers from a successful `main` CI run's
 `Verso-macOS-arm64` or `Verso-macOS-x64` artifacts. The workflow does not upload
 GitHub Releases.
 
 ## Packaging and validation
+
+`npm test` builds the application, runs the server and unit tests, and then runs
+the four Electron UI integration tests sequentially via `npm run test:desktop-ui`.
+Serial execution keeps the desktop fixtures from competing for the macOS runner’s
+window server and rendering resources. Fixtures finish asynchronous backend
+cleanup before asking Electron to exit and close their windows.
 
 The Electron renderer uses a stable `https://verso.localhost` origin intercepted
 inside the app, without DNS or an external HTTPS server, so theme, locale,
