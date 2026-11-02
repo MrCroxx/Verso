@@ -501,6 +501,52 @@ test("connection testing checks the saved model through both provider protocols 
   assert.deepEqual(await unreachable.json(), { error: "connection_failed" });
 });
 
+test("word lookup uses the configured provider and caches definitions", async () => {
+  let calls = 0;
+  const provider = createHttpServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    calls += 1;
+    const body = JSON.parse(Buffer.concat(chunks).toString());
+    assert.equal(body.model, "lookup-model");
+    assert.match(JSON.stringify(body.input), /Word: ephemeral/);
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({
+      output_text: JSON.stringify({
+        lemma: "ephemeral",
+        ipa: "/ɪˈfem(ə)rəl/",
+        senses: [{ pos: "adj.", definition: "短暂的" }],
+        note: null,
+      }),
+    }));
+  });
+  await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
+  try {
+    const settings = { provider: "openai", endpoint: `http://127.0.0.1:${provider.address().port}/v1`, apiKey: "lookup-key", model: "lookup-model", reasoningEffort: "none" };
+    assert.equal((await fetch(`${baseUrl}/api/settings/ai-provider`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(settings) })).status, 200);
+    const lookup = () => fetch(`${baseUrl}/api/lookup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ word: "ephemeral", context: "an ephemeral moment", targetLanguage: "Simplified Chinese" }),
+    });
+    const first = await lookup();
+    assert.equal(first.status, 200);
+    assert.deepEqual(await first.json(), {
+      word: "ephemeral", lemma: "ephemeral", phonetic: "/ɪˈfem(ə)rəl/",
+      meanings: [{ pos: "adj.", text: "短暂的" }],
+    });
+    const second = await lookup();
+    assert.equal(second.status, 200);
+    assert.equal(calls, 1);
+    const invalid = await fetch(`${baseUrl}/api/lookup`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ word: "", targetLanguage: "Simplified Chinese" }),
+    });
+    assert.equal(invalid.status, 400);
+  } finally {
+    await new Promise((resolve, reject) => provider.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
 test("rejects incomplete search requests", async () => {
   const response = await fetch(`${baseUrl}/api/search`, {
       method: "POST",

@@ -3,13 +3,13 @@ import { recoverSourceCodeBlocks } from "./source-code.ts";
 import { normalizeSourceRect, type LayoutBlock, type SourceRect } from "./translation-layout.ts";
 
 export type SourceWord = { text: string; rect: SourceRect; line: number; block?: number; fontSize?: number };
-export type SourcePageLayout = { width: number; height: number; words: SourceWord[]; method: "pdf" | "ocr"; confidence?: number; retainedWordRatio?: number };
+export type SourcePageLayout = { width: number; height: number; words: SourceWord[]; method: "pdf" | "ocr" | "sentence"; confidence?: number; retainedWordRatio?: number };
 
 export function isSourcePageLayout(value: unknown): value is SourcePageLayout {
   if (!value || typeof value !== "object") return false;
   const layout = value as SourcePageLayout;
   return Number.isFinite(layout.width) && layout.width > 0 && Number.isFinite(layout.height) && layout.height > 0
-    && ["pdf", "ocr"].includes(layout.method) && Array.isArray(layout.words) && layout.words.length <= 100_000
+    && ["pdf", "ocr", "sentence"].includes(layout.method) && Array.isArray(layout.words) && layout.words.length <= 100_000
     && layout.words.every((word) => word && typeof word.text === "string" && Number.isSafeInteger(word.line)
       && Boolean(normalizeSourceRect(word.rect)));
 }

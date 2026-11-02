@@ -163,6 +163,14 @@ export async function ensureStorageSchema(db: LocalDatabase = getStorage().db) {
         reasoning_effort TEXT NOT NULL CHECK (reasoning_effort IN ('none', 'low', 'medium', 'high', 'xhigh', 'max')),
         updated_at INTEGER NOT NULL
       )`,
+      `CREATE TABLE IF NOT EXISTS word_lookups (
+        cache_key TEXT PRIMARY KEY NOT NULL,
+        word TEXT NOT NULL,
+        target_language TEXT NOT NULL,
+        model TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`,
     ];
     for (const statement of statements) await db.prepare(statement).run();
     const providerColumns = await db.prepare("PRAGMA table_info(ai_provider_settings)").all<{ name: string }>();
