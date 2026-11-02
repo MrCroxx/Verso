@@ -71,7 +71,9 @@ import { SourceImageCrop } from "./source-image-crop";
 import { ReaderDivider, ReaderViewport, ReaderZoomProvider, ReaderZoomControls, READER_PAGE_WIDTH } from "./reader-viewport";
 import { ReaderFontControls } from "./reader-font-controls";
 import { TranslationTransfer } from "./translation-transfer";
-import { alignSourceBlocks, type SourcePageLayout } from "../lib/source-alignment";
+import { alignSourceBlocks, isSourcePageLayout, type SourcePageLayout, type SourceWord } from "../lib/source-alignment";
+import { layoutFromPdfTextContent, layoutFromTranslationBlocks, trimWordEdge, wordAtPoint, wordContext, type PdfTextItem } from "../lib/source-words";
+import { SourceWordLookup } from "./source-word-lookup";
 import { DisplayEquation, MathText } from "./math-content";
 import { translationCacheKey, translationCacheSuffix } from "../lib/translation-cache";
 
@@ -748,6 +750,8 @@ type PageSpreadProps = {
   setCurrentPage: (page: number) => void;
   messages: UiMessages;
   searchQuery: string;
+  lookupLanguage: string;
+  readPageWords?: (page: number) => Promise<SourcePageLayout | null>;
 };
 
 function PageSpread({
@@ -772,11 +776,46 @@ function PageSpread({
   setCurrentPage,
   messages,
   searchQuery,
+  lookupLanguage,
+  readPageWords,
 }: PageSpreadProps) {
   const { ref, near } = useNearViewport(`${Math.max(1, nearbyPages) * 720}px 0px`);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [sourceActive, setSourceActive] = useState(false);
   const [sourceLayout, setSourceLayout] = useState<SourcePageLayout | null>(null);
+  const [lookup, setLookup] = useState<{
+    anchor: { left: number; top: number; width: number; height: number };
+    word?: SourceWord;
+    context?: string;
+    notice?: "unavailable" | "noWord";
+  } | null>(null);
+  const rasterRef = useRef<HTMLDivElement>(null);
+  const layoutJob = useRef<Promise<SourcePageLayout | null> | null>(null);
+  const lookupSequence = useRef(0);
+  const translationLayout = useMemo(
+    () => translation?.blocks?.length ? layoutFromTranslationBlocks(translation.blocks) : null,
+    [translation],
+  );
+  const loadSourceLayout = useCallback((): Promise<SourcePageLayout | null> => {
+    if (sourceLayout) return Promise.resolve(sourceLayout);
+    if (layoutJob.current) return layoutJob.current;
+    const job = (async () => {
+      if (pageImageUrl) {
+        const response = await fetch(`${pageImageUrl.split("?")[0]}/layout`, { cache: "no-store" });
+        if (response.ok) {
+          const value: unknown = await response.json();
+          if (isSourcePageLayout(value) && value.words.length) return value;
+        }
+      }
+      const fromPdf = readPageWords ? await readPageWords(page) : null;
+      return fromPdf ?? translationLayout;
+    })().catch(() => null).then((layout) => {
+      if (layout) setSourceLayout(layout);
+      return layout;
+    }).finally(() => { layoutJob.current = null; });
+    layoutJob.current = job;
+    return job;
+  }, [page, pageImageUrl, readPageWords, sourceLayout, translationLayout]);
   const alignedTranslation = useMemo(() => translation?.blocks ? {
     ...translation,
     blocks: sourceLayout ? alignSourceBlocks(translation.blocks, sourceLayout) : translation.blocks.map((block) => ({
@@ -785,23 +824,48 @@ function PageSpread({
   } : translation, [translation, sourceLayout]);
   const needsAlignment = Boolean(translation?.blocks?.some((block) => block.text.trim() || (block.kind === "image" && block.sourceRect && block.imageRole !== "decoration")));
   useEffect(() => {
-    if (!sourceActive || !pageImageUrl || !needsAlignment) return;
-    const controller = new AbortController();
-    const url = `${pageImageUrl.split("?")[0]}/layout`;
-    void fetch(url, { signal: controller.signal, cache: "no-store" })
-      .then(async (response) => {
-        if (!response.ok) return;
-        const layout = await response.json() as SourcePageLayout;
-        if (!controller.signal.aborted) setSourceLayout(layout);
-      }).catch(() => undefined);
-    return () => controller.abort();
-  }, [sourceActive, pageImageUrl, needsAlignment]);
+    if (!sourceActive || !needsAlignment) return;
+    void loadSourceLayout();
+  }, [sourceActive, needsAlignment, loadSourceLayout, pdfReady]);
   const [sourceReady, setSourceReady] = useState(false);
   const [sourceAspectRatio, setSourceAspectRatio] = useState("1 / 1.4142");
   const [sourceRaster, setSourceRaster] = useState<HTMLImageElement | HTMLCanvasElement | null>(null);
   const [highlight, setHighlight] = useState<{ translation: Translation | undefined; rects: SourceRect[] } | null>(null);
   const highlightSource = useCallback((rects: SourceRect[]) => setHighlight({ translation, rects }), [translation]);
   const highlightRects = sourceReady && highlight?.translation === translation ? highlight?.rects ?? [] : [];
+  const openLookup = useCallback(async (clientX: number, clientY: number) => {
+    const raster = rasterRef.current;
+    if (!raster || !sourceReady) return;
+    const bounds = raster.getBoundingClientRect();
+    if (!bounds.width || !bounds.height) return;
+    const x = (clientX - bounds.left) / bounds.width;
+    const y = (clientY - bounds.top) / bounds.height;
+    if (x < 0 || x > 1 || y < 0 || y > 1) return;
+    const sequence = ++lookupSequence.current;
+    const point = { left: clientX, top: clientY, width: 0, height: 0 };
+    setLookup({ anchor: point });
+    const layout = await loadSourceLayout();
+    if (sequence !== lookupSequence.current) return;
+    if (!layout) { setLookup({ anchor: point, notice: "unavailable" }); return; }
+    const found = wordAtPoint(layout.words, x, y);
+    if (!found) { setLookup({ anchor: point, notice: "noWord" }); return; }
+    const word = trimWordEdge(found);
+    const current = rasterRef.current?.getBoundingClientRect() ?? bounds;
+    setLookup({
+      anchor: {
+        left: current.left + word.rect.x * current.width,
+        top: current.top + word.rect.y * current.height,
+        width: word.rect.width * current.width,
+        height: word.rect.height * current.height,
+      },
+      word,
+      context: wordContext(layout.words, found),
+    });
+  }, [loadSourceLayout, sourceReady]);
+  const closeLookup = useCallback(() => {
+    lookupSequence.current += 1;
+    setLookup(null);
+  }, []);
   const [serverImageFailed, setServerImageFailed] = useState(false);
   const [renderError, setRenderError] = useState("");
   const [renderAttempt, setRenderAttempt] = useState(0);
@@ -821,6 +885,8 @@ function PageSpread({
         setSourceRaster(null);
         setSourceLayout(null);
         setHighlight(null);
+        setLookup(null);
+        lookupSequence.current += 1;
         setServerImageFailed(false);
         setRenderError("");
       }, 500);
@@ -876,7 +942,16 @@ function PageSpread({
     <section className="page-spread" ref={ref} data-page={page}>
       <div className="source-page page-surface">
         <div className="page-label">{messages.sourcePage(page)}</div>
-        <div className="source-raster" style={isDemo ? undefined : { aspectRatio: sourceAspectRatio }}>
+        <div
+          ref={rasterRef}
+          className={`source-raster${sourceReady ? " lookup-ready" : ""}`}
+          style={isDemo ? undefined : { aspectRatio: sourceAspectRatio }}
+          onClick={(event) => {
+            if (isDemo) return;
+            if ((event.target as HTMLElement).closest("button, .page-loading, .page-render-error")) return;
+            void openLookup(event.clientX, event.clientY);
+          }}
+        >
           {isDemo ? (
             <SampleScan page={page} messages={messages} />
           ) : renderError ? (
@@ -926,7 +1001,25 @@ function PageSpread({
               <span key={index} style={{ left: `${rect.x * 100}%`, top: `${rect.y * 100}%`, width: `${rect.width * 100}%`, height: `${rect.height * 100}%` }} />
             ))}
           </div>
+          {lookup?.word && (
+            <span className="source-word-highlight" aria-hidden="true" style={{
+              left: `${lookup.word.rect.x * 100}%`, top: `${lookup.word.rect.y * 100}%`,
+              width: `${lookup.word.rect.width * 100}%`, height: `${lookup.word.rect.height * 100}%`,
+            }} />
+          )}
         </div>
+        {lookup && (
+          <SourceWordLookup
+            key={`${lookup.word?.text ?? lookup.notice ?? "loading"}|${lookupLanguage}`}
+            anchor={lookup.anchor}
+            word={lookup.word}
+            notice={lookup.notice}
+            context={lookup.context}
+            targetLanguage={lookupLanguage}
+            messages={messages}
+            onClose={closeLookup}
+          />
+        )}
       </div>
       <ReaderDivider />
       <div className="translated-page page-surface">
@@ -2047,6 +2140,21 @@ export default function Home() {
     await renderPdfPageToCanvas(pageNumber, canvas, targetWidth, signal);
   }, [renderPdfPageToCanvas]);
 
+  const readPageWords = useCallback(async (pageNumber: number): Promise<SourcePageLayout | null> => {
+    const pdf = pdfRef.current || await pdfLoadingTaskRef.current?.promise;
+    if (!pdf) return null;
+    const page = await pdf.getPage(pageNumber);
+    const viewport = page.getViewport({ scale: 1 });
+    const content = await page.getTextContent();
+    const items: PdfTextItem[] = [];
+    for (const item of content.items) {
+      if (!("str" in item) || typeof item.str !== "string") continue;
+      items.push({ str: item.str, transform: item.transform, width: item.width, height: item.height, hasEOL: item.hasEOL });
+    }
+    const layout = layoutFromPdfTextContent(items, { width: viewport.width, height: viewport.height, transform: viewport.transform });
+    return layout.words.length ? layout : null;
+  }, []);
+
   const renderPage = useCallback(async (pageNumber: number) => {
     const cached = imageCache.current.get(pageNumber);
     if (cached) {
@@ -2950,6 +3058,8 @@ export default function Home() {
                   setCurrentPage={observeCurrentPage}
                   messages={messages}
                   searchQuery={sidebarView === "search" ? searchQuery.trim() : ""}
+                  lookupLanguage={settings.targetLanguage}
+                  readPageWords={readPageWords}
                 />
               ))}
             </ReaderViewport>

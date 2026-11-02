@@ -13,6 +13,22 @@ const run = promisify(execFile);
 const limiter = createConcurrencyLimiter();
 const jobs = new Map<string, Promise<SourcePageLayout>>();
 const embeddedJobs = new Map<string, Promise<SourcePageLayout | null>>();
+let ocrLanguages: string | undefined;
+
+// Language packs are optional. Use whichever requested languages are
+// installed instead of failing when tesseract-lang is absent.
+async function availableOcrLanguages() {
+  if (ocrLanguages) return ocrLanguages;
+  try {
+    const { stdout } = await run("tesseract", ["--list-langs"], { timeout: 5000, maxBuffer: 1024 * 1024 });
+    const installed = new Set(stdout.split(/\r?\n/).map((line) => line.trim()));
+    const wanted = ["eng", "chi_sim", "chi_tra", "jpn"].filter((language) => installed.has(language));
+    ocrLanguages = wanted.length ? wanted.join("+") : "eng";
+  } catch {
+    ocrLanguages = "eng";
+  }
+  return ocrLanguages;
+}
 
 export async function getSourcePageLayout(book: StoredBook, page: number): Promise<SourcePageLayout> {
   if (!Number.isSafeInteger(page) || page < 1 || page > book.pageCount) throw new RangeError("Invalid source layout page.");
@@ -35,7 +51,7 @@ export async function getSourcePageLayout(book: StoredBook, page: number): Promi
       const input = `${cachePath}.${randomUUID()}.jpg`;
       try {
         await writeFile(input, rendered.bytes, { mode: 0o600 });
-        const result = await traceStep("source.ocr", () => run("tesseract", [input, "stdout", "-l", "eng+chi_sim+chi_tra+jpn", "tsv"], { timeout: 60_000, maxBuffer: 8 * 1024 * 1024, env: { ...process.env, OMP_THREAD_LIMIT: "1" } }), { page });
+        const result = await traceStep("source.ocr", async () => run("tesseract", [input, "stdout", "-l", await availableOcrLanguages(), "tsv"], { timeout: 60_000, maxBuffer: 8 * 1024 * 1024, env: { ...process.env, OMP_THREAD_LIMIT: "1" } }), { page });
         layout = parseOcrWordLayout(result.stdout);
       } finally { await rm(input, { force: true }); }
     }
