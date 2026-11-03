@@ -74,6 +74,7 @@ import { TranslationTransfer } from "./translation-transfer";
 import { alignSourceBlocks, type SourcePageLayout } from "../lib/source-alignment";
 import { DisplayEquation, MathText } from "./math-content";
 import { translationCacheKey, translationCacheSuffix } from "../lib/translation-cache";
+import { readReadingProgress, writeReadingProgress } from "../lib/reading-progress";
 
 type PdfDocument = import("pdfjs-dist").PDFDocumentProxy;
 type PdfLoadingTask = import("pdfjs-dist").PDFDocumentLoadingTask;
@@ -1365,6 +1366,7 @@ export default function Home() {
   const userScrollIntentUntil = useRef(0);
   const navigationTarget = useRef<number | null>(null);
   const documentLoadSequence = useRef(0);
+  const restoredDocumentLoad = useRef(0);
   const documentIdRef = useRef("verso-demo");
   const currentPageRef = useRef(1);
   const translationAnimationEnabledRef = useRef(DEFAULT_SETTINGS.translationAnimation);
@@ -1397,6 +1399,7 @@ export default function Home() {
   const [fileName, setFileName] = useState("The Shape of Attention.pdf");
   const [totalPages, setTotalPages] = useState(2);
   const [currentPage, setCurrentPage] = useState(1);
+  const [documentLoadKey, setDocumentLoadKey] = useState(0);
   const [viewportWorkEnabled, setViewportWorkEnabled] = useState(true);
   const [loadingDocument, setLoadingDocument] = useState(false);
   const [documentReady, setDocumentReady] = useState(true);
@@ -1422,6 +1425,14 @@ export default function Home() {
   useLayoutEffect(() => {
     currentPageRef.current = currentPage;
   }, [currentPage]);
+
+  useEffect(() => {
+    if (isDemo || showLibraryHome || !documentReady || documentId === "verso-demo") return;
+    // Wait for the cursor restoration pass so a not-yet-known page count cannot
+    // overwrite the saved page with 1.
+    if (restoredDocumentLoad.current !== documentLoadKey) return;
+    writeReadingProgress(documentId, currentPage);
+  }, [currentPage, documentId, documentLoadKey, documentReady, isDemo, showLibraryHome]);
 
   useLayoutEffect(() => {
     translationSourcesRef.current = translationSources;
@@ -1746,6 +1757,16 @@ export default function Home() {
     };
   }, [scheduleViewportResume, suspendViewportWork]);
 
+  useEffect(() => {
+    const saveProgress = () => {
+      if (documentIdRef.current !== "verso-demo" && restoredDocumentLoad.current === documentLoadSequence.current) {
+        writeReadingProgress(documentIdRef.current, currentPageRef.current);
+      }
+    };
+    window.addEventListener("pagehide", saveProgress);
+    return () => window.removeEventListener("pagehide", saveProgress);
+  }, []);
+
   useEffect(() => () => {
     pageNavigationCleanup.current();
     if (viewportSettleTimer.current) window.clearTimeout(viewportSettleTimer.current);
@@ -1828,8 +1849,11 @@ export default function Home() {
     documentIdRef.current = id;
     setDocumentId(id);
     setFileName(name);
-    setTotalPages(Math.max(1, pageCount));
-    setCurrentPage(1);
+    const safePageCount = Math.max(1, pageCount);
+    const initialPage = Math.min(safePageCount, readReadingProgress(id) ?? 1);
+    setTotalPages(safePageCount);
+    setCurrentPage(initialPage);
+    setDocumentLoadKey(sequence);
     translationsRef.current = {};
     setTranslations({});
     setTranslationSources({});
@@ -2592,19 +2616,24 @@ export default function Home() {
   };
 
   useEffect(() => {
-    if (showLibraryHome || !documentReady || loadingDocument || isDemo || documentId !== bookIdFromUrl()) return;
+    if (!documentLoadKey || showLibraryHome || !documentReady || loadingDocument || isDemo) return;
+    if (restoredDocumentLoad.current === documentLoadKey) return;
+    restoredDocumentLoad.current = documentLoadKey;
     const url = new URL(window.location.href);
-    const page = Number(url.searchParams.get("page"));
-    if (!Number.isSafeInteger(page) || page < 1) return;
+    const rawPage = Number(url.searchParams.get("page"));
+    const urlPage = Number.isSafeInteger(rawPage) && rawPage >= 1 ? rawPage : undefined;
+    const page = urlPage ?? readReadingProgress(documentId);
+    if (!page) return;
     const frame = window.requestAnimationFrame(() => {
-      // Navigation may have changed the entry before React cleans up this frame.
-      if (window.location.href !== url.href) return;
-      url.searchParams.delete("page");
-      window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}`);
+      if (urlPage !== undefined) {
+        url.searchParams.delete("page");
+        const nextUrl = `${url.pathname}${url.search}`;
+        if (window.location.href !== nextUrl) window.history.replaceState(window.history.state, "", nextUrl);
+      }
       goToPage(page);
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [documentId, documentReady, goToPage, isDemo, loadingDocument, showLibraryHome]);
+  }, [documentId, documentLoadKey, documentReady, goToPage, isDemo, loadingDocument, showLibraryHome]);
 
   if (showLibraryHome) {
     return (

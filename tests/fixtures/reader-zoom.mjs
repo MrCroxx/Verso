@@ -325,11 +325,16 @@ async function run() {
     await waitFor(() => js(`document.querySelector('#pricing-inputPerMillion')?.value === '2.5'`));
     assert.equal(await js(`document.querySelector('#pricing-schedule').value`), 'deepseek-peak');
     assert.equal(await js(`document.querySelector('#pricing-currency').value`), 'CNY');
-    await loadPage(`${APP_URL}?book=${metadata.fingerprint}`);
+    await loadPage(`${APP_URL}?book=${metadata.fingerprint}&page=1`);
     await waitFor(() => js(`/USD\\s0.0345/.test(document.querySelector('[data-page="1"] .translation-usage')?.textContent ?? '')`));
     await loadPage(`${APP_URL}?book=${metadata.fingerprint}&page=10`);
     await waitFor(() => js(`!!document.querySelector('[data-page="10"] .translation-usage')`));
     assert.match(await js(`document.querySelector('[data-page="10"] .translation-usage').textContent`), /CNY\s0.072/);
+    // Reopening from the library resumes at the saved cursor.
+    await loadPage(APP_URL);
+    await waitFor(() => js(`!!document.querySelector('.library-shell .library-book')`));
+    await js(`document.querySelector('.library-book').click()`);
+    await waitFor(() => js(`document.querySelector('.page-stepper strong')?.textContent === '10'`));
     const historical = await request(`/api/translations?key=${encodeURIComponent(translationCacheKey(metadata.fingerprint, 10, 'Simplified Chinese'))}`, 'GET');
     assert.equal(historical.translation.usage.cost, undefined, 'Estimates must leave the original tokens and costs intact');
     await loadPage(APP_URL);
